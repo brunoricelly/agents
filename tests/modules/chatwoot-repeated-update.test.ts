@@ -414,6 +414,29 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     expect((await deliver(body("message_updated", stamped))).rows).toBe(0);
   });
 
+  // The accepted limit (docs/chatwoot.md, step 3a): a shared row whose value goes A, B, A while the
+  // conversation's clock stands still is left with B by a dropped repeat, and the next delivery that
+  // is not a receipt writes A back.
+  test("a value that went back while the clock stood still waits for the next delivery that is not a receipt", async () => {
+    // A clock ahead of every other test's, since the inbox row is shared by the whole file.
+    const s = { conv: 1017, msg: 91017, updatedAt: 1_791_000_900.5 };
+    await deliver(body("message_created", s));
+    const other = { ...s, msg: 91117 };
+    await deliver(body("message_created", other));
+    await deliver(body("message_updated", { ...other, inboxName: "Vendas" }));
+    expect((await deliver(body("message_updated", s))).rows).toBe(0);
+    const name = async () =>
+      (
+        await suDb.inbox.findFirst({
+          where: { tenantId, chatwootInboxId: 7 },
+          select: { name: true },
+        })
+      )?.name;
+    expect(await name()).toBe("Vendas");
+    await deliver(body("message_created", { ...s, msg: 91217 }));
+    expect(await name()).toBe("WhatsApp");
+  });
+
   test("each bot route answers for its own deliveries", async () => {
     const s = { conv: 1010, msg: 91010 };
     await deliver(body("message_created", s));

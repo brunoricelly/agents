@@ -172,6 +172,12 @@ describe("repeated-update records", () => {
     ],
     ["the inbox name", { inboxName: "Vendas" }],
     ["the kanban card", { kanbanAttributes: { etapa: "proposta" } }],
+    ["the labels", { labels: ["vendas"] }],
+    [
+      "the conversation's custom attributes",
+      { customAttributes: { pedido: "1" } },
+    ],
+    ["the status", { status: "open" }],
   ];
   for (const [label, change] of meaningful) {
     test(`a change in ${label} keeps the update from being dropped`, () => {
