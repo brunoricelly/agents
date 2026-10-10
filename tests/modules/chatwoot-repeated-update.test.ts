@@ -414,28 +414,6 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     expect((await deliver(body("message_updated", stamped))).rows).toBe(0);
   });
 
-  // A rename that goes A, B, A while the conversation's clock stands still: another message's receipt
-  // writes B at the same position, so the repeat carrying A is the only word that writes A back.
-  test("a repeat after another message's payload wrote the inbox name at the same position is processed", async () => {
-    const s = { conv: 1017, msg: 91017 };
-    await deliver(body("message_created", s));
-    const other = { ...s, msg: 91117 };
-    await deliver(body("message_created", other));
-    expect(
-      (
-        await deliver(
-          body("message_updated", { ...other, inboxName: "Vendas" }),
-        )
-      ).rows,
-    ).toBe(1);
-    expect((await deliver(body("message_updated", s))).rows).toBe(1);
-    const inbox = await suDb.inbox.findFirst({
-      where: { tenantId, chatwootInboxId: 7 },
-      select: { name: true },
-    });
-    expect(inbox?.name).toBe("WhatsApp");
-  });
-
   test("each bot route answers for its own deliveries", async () => {
     const s = { conv: 1010, msg: 91010 };
     await deliver(body("message_created", s));

@@ -222,11 +222,7 @@ import {
 import { reconcileMirrorFromLive } from "./reconcile";
 import { armDeliveryRecoveryOn, isRecoverableStrand } from "./recover-delivery";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
-import {
-  isRepeatedMessageUpdate,
-  noteMirrored,
-  recordOnSuccess,
-} from "./repeated-update";
+import { isRepeatedMessageUpdate, recordOnSuccess } from "./repeated-update";
 import { responderCoversMessage } from "./responder-coverage";
 import {
   awaitRouteTokenRefresh,
@@ -4542,7 +4538,6 @@ export async function processChatwootDelivery(
         : {}),
     },
   );
-  noteMirrored(params.tenantId, params.instanceId, n);
   params.onMirrored?.(mirror.heldBack !== true);
 
   // A reply the channel refused, reported on a `message_updated` for the route's own outgoing

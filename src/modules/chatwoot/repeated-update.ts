@@ -8,47 +8,20 @@ import type { NormalizedChatwootEvent } from "./types";
 // Nothing here reads the mirror: a payload that differs in anything meaningful is processed, and one
 // that does not has nothing to write that was not written. docs/chatwoot.md, "Webhook receiver", 3a.
 
-// How many messages, and separately conversations, are remembered: one key and one digest each
-// (about 150 bytes), oldest out first.
+// How many messages are remembered: one key and one digest each (about 150 bytes), oldest out first.
 export const REPEATED_UPDATE_MESSAGES_MAX = 20_000;
 
-// Per message and route, the last payload processed; per conversation, the last payload mirrored.
-interface Store {
-  messages: Map<string, string>;
-  conversations: Map<string, string>;
-}
+const KEY = Symbol.for("fazerai.chatwoot.repeatedUpdates.v1");
 
-const KEY = Symbol.for("fazerai.chatwoot.repeatedUpdates.v2");
-
-function store(): Store {
-  const g = globalThis as unknown as Record<symbol, Store | undefined>;
+function store(): Map<string, string> {
+  const g = globalThis as unknown as Record<
+    symbol,
+    Map<string, string> | undefined
+  >;
   const held = g[KEY];
-  if (
-    !held ||
-    !(held.messages instanceof Map) ||
-    !(held.conversations instanceof Map)
-  ) {
-    g[KEY] = { messages: new Map(), conversations: new Map() };
-  }
-  return g[KEY] as Store;
+  if (!(held instanceof Map)) g[KEY] = new Map();
+  return g[KEY] as Map<string, string>;
 }
-
-// Re-inserted so the most recently written key is the last evicted.
-function setBounded(map: Map<string, string>, key: string, value: string) {
-  map.delete(key);
-  map.set(key, value);
-  while (map.size > REPEATED_UPDATE_MESSAGES_MAX) {
-    const oldest = map.keys().next().value;
-    if (oldest === undefined) break;
-    map.delete(oldest);
-  }
-}
-
-const conversationKey = (
-  tenantId: bigint,
-  instanceId: bigint,
-  conversationId: number,
-) => `${tenantId}:${instanceId}:${conversationId}`;
 
 // Left out: only what carries nothing the mirror or the agent reads. The conversation's version and
 // activity stay in: they are the positions the mirror orders by, so a dropped update is an exact repeat
@@ -100,36 +73,9 @@ export function isRepeatedMessageUpdate(
   if (id === null || n.message?.externalError) return false;
   // A Chatwoot before 4.0.2 sends no version: equal payloads can be two transitions (open, resolved,
   // open again), and each is mirrored, as `mirrorOncePerEvent` does.
-  if (n.conversationUpdatedAt == null || n.conversationId === null) {
-    return false;
-  }
-  const s = store();
-  const seen = s.messages.get(recordKey(tenantId, instanceId, agentBotId, id));
-  if (seen === undefined) return false;
-  const digest = payloadDigest(n);
-  // The last payload mirrored for the conversation must be this same one: a payload of another
-  // message in between can have written a shared row (inbox name, contact, card) at the same
-  // positions, which this repeat would write back.
-  return (
-    seen === digest &&
-    s.conversations.get(
-      conversationKey(tenantId, instanceId, n.conversationId),
-    ) === digest
-  );
-}
-
-// Every mirror run of a conversation, whatever the event, route or path (live, drained, recovered).
-export function noteMirrored(
-  tenantId: bigint,
-  instanceId: bigint,
-  n: NormalizedChatwootEvent,
-): void {
-  if (n.conversationId === null) return;
-  setBounded(
-    store().conversations,
-    conversationKey(tenantId, instanceId, n.conversationId),
-    payloadDigest(n),
-  );
+  if (n.conversationUpdatedAt == null) return false;
+  const seen = store().get(recordKey(tenantId, instanceId, agentBotId, id));
+  return seen !== undefined && seen === payloadDigest(n);
 }
 
 // Taken when the delivery starts processing; the returned function records it, and is called only
@@ -144,14 +90,23 @@ export function recordOnSuccess(
   if (agentBotId === null || id === null) return () => {};
   const key = recordKey(tenantId, instanceId, agentBotId, id);
   const digest = payloadDigest(n);
-  return () => setBounded(store().messages, key, digest);
+  return () => {
+    const s = store();
+    // Re-inserted so the most recently processed message is the last evicted.
+    s.delete(key);
+    s.set(key, digest);
+    while (s.size > REPEATED_UPDATE_MESSAGES_MAX) {
+      const oldest = s.keys().next().value;
+      if (oldest === undefined) break;
+      s.delete(oldest);
+    }
+  };
 }
 
 export function repeatedUpdateRecordCount(): number {
-  return store().messages.size;
+  return store().size;
 }
 
 export function resetRepeatedUpdateRecords(): void {
-  store().messages.clear();
-  store().conversations.clear();
+  store().clear();
 }
