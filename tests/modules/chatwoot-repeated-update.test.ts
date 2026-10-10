@@ -18,9 +18,9 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A delivery-status change (source_id, delivered, read) re-sends the whole message as
-// `message_updated`, and the payload says nothing about what moved. One whose payload repeats, but for
-// the volatile stamps, the last payload of the same message processed on the same route is acked with
-// no ledger row and no transaction; anything else is recorded and processed as before.
+// `message_updated`, and the payload says nothing about what moved. One whose payload repeats exactly
+// (the conversation's version and activity included) the last payload of the same message processed on
+// the same route is acked with no ledger row and no transaction; anything else is processed as before.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -285,15 +285,13 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     }
   });
 
-  // What moves on every receipt without carrying anything the receiver acts on.
-  test("the volatile stamps do not keep a receipt from being dropped", async () => {
+  // What the receiver does not read: the message's delivery status, its source_id, changed_attributes.
+  test("the delivery status, the source_id and changed_attributes do not keep a receipt from being dropped", async () => {
     const s = { conv: 1002, msg: 91002 };
     await deliver(body("message_created", s));
     const receipt = await deliver(
       body("message_updated", {
         ...s,
-        updatedAt: 1_791_000_400.75,
-        lastActivityAt: 1_791_000_390,
         sourceId: "wamid.LANDED",
         messageStatus: "delivered",
         changedAttributes: [{ status: { previous_value: "sent" } }],
@@ -303,6 +301,24 @@ describe.skipIf(!dbUp)("repeated message updates", () => {
     expect(receipt.rows).toBe(0);
     expect(receipt.ackTx).toBe(0);
   });
+
+  // The version and the activity are the positions the mirror orders by: a receipt that moves either
+  // can fence an older delivery still on its way, so it is processed, and then its own repeat drops.
+  for (const [label, moved] of [
+    ["version", { updatedAt: 1_791_000_400.75 }],
+    ["activity", { lastActivityAt: 1_791_000_390 }],
+  ] as const) {
+    test(`a receipt that moves the conversation's ${label} is processed, and its repeat is then dropped`, async () => {
+      const s = {
+        conv: label === "version" ? 1015 : 1016,
+        msg: label === "version" ? 91015 : 91016,
+      };
+      await deliver(body("message_created", s));
+      const receipt = { ...s, ...moved, messageStatus: "delivered" };
+      expect((await deliver(body("message_updated", receipt))).rows).toBe(1);
+      expect((await deliver(body("message_updated", receipt))).rows).toBe(0);
+    });
+  }
 
   test("a template's receipt is dropped like a reply's", async () => {
     const s = { conv: 1003, msg: 91003, type: "template" as const };

@@ -23,13 +23,12 @@ function store(): Map<string, string> {
   return g[KEY] as Map<string, string>;
 }
 
-// Left out: only what moves without carrying anything the receiver acts on. The delivery status and
-// `source_id` are not normalized at all, so they are not here to drop.
+// Left out: only what carries nothing the mirror or the agent reads. The conversation's version and
+// activity stay in: they are the positions the mirror orders by, so a dropped update is an exact repeat
+// of a payload already applied, at the same positions. Delivery status and `source_id` are not normalized.
 function payloadDigest(n: NormalizedChatwootEvent): string {
   const {
     event: _event, // names the dispatch (created or updated), not the state
-    conversationUpdatedAt: _version, // advances on any touch; what it versions is compared field by field
-    lastActivityAt: _activity, // advances with any message of the conversation
     changedAttributes: _changed, // never sent with `message_updated`
     factsOnCreateOnly: _createOnly, // set only on a recovery's rebuilt body, never on the wire
     createActivityAt: _createAt, // same

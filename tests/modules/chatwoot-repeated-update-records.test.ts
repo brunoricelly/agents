@@ -104,9 +104,8 @@ describe("repeated-update records", () => {
     expect(repeatedUpdateRecordCount()).toBe(0);
   });
 
-  // Left out of the comparison: the event's name, the version and activity stamps, changed
-  // attributes, and the recovery-only markers.
-  test("the volatile stamps are left out of the comparison", () => {
+  // Left out of the comparison: the event's name, changed attributes, and the recovery-only markers.
+  test("the event name, changed attributes and recovery markers are left out of the comparison", () => {
     processed(
       event("message_created", 1, {
         factsOnCreateOnly: true,
@@ -116,12 +115,25 @@ describe("repeated-update records", () => {
     expect(
       dropped(
         event("message_updated", 1, {
-          conversationUpdatedAt: 1_791_000_900.25,
-          lastActivityAt: 1_791_000_800,
           changedAttributes: [{ status: { previous_value: "sent" } }],
         }),
       ),
     ).toBe(true);
+  });
+
+  // The positions the mirror orders by are compared: a repeat at a newer position is not exact.
+  test("a newer version or activity keeps the update from being dropped", () => {
+    processed(event("message_created", 1));
+    expect(
+      dropped(
+        event("message_updated", 1, {
+          conversationUpdatedAt: 1_791_000_900.25,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      dropped(event("message_updated", 1, { lastActivityAt: 1_791_000_800 })),
+    ).toBe(false);
   });
 
   // Everything else is compared, including fields that only ride on other events.
