@@ -4,7 +4,6 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import { ingestDedupeKey } from "@/graph/ingest-job";
-import { awaitOpenMediaPasses } from "@/modules/chatwoot/annotations";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   processChatwootDelivery,
@@ -860,24 +859,13 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     return { key, sttOn, provider, makeClient, writtenBack, audio };
   }
 
-  test("beside other watchers, a voice note is transcribed by the owner's provider alone, whichever route arrives first", async () => {
-    const { key, sttOn, provider, makeClient, writtenBack, audio } =
-      await sttHarness();
+  test("beside other watchers, a voice note the other watcher reads first is read once, and only the owner's route appends it", async () => {
+    const { key, sttOn, provider, makeClient, audio } = await sttHarness();
     try {
       await withSecondWatcher(
         HOUR_AGO(),
         async ({ secondBot }) => {
-          // While the owner's provider runs, the pass is announced for this message, which is what an
-          // observation tick armed beside it waits on.
-          let openDuringPass: boolean | null = null;
-          const ownerStt = provider("palavras do dono", async () => {
-            openDuringPass = await awaitOpenMediaPasses(
-              tenantId,
-              instanceId,
-              [messageSeq],
-              { timeoutMs: 0 },
-            );
-          });
+          const ownerStt = provider("palavras do dono");
           const otherStt = provider("palavras da outra");
           const { messageId } = await deliver(
             secondBot,
@@ -897,7 +885,9 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
               },
             },
           );
-          expect(otherStt.calls.n).toBe(0);
+          // Its own pass runs, for its own observation; the append is left to the owner.
+          expect(otherStt.calls.n).toBe(1);
+          expect(await ingestRowFor(messageId)).toBeNull();
           await deliver(
             OBSERVER_BOT,
             504,
@@ -917,16 +907,8 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
               },
             },
           );
-          expect(ownerStt.calls.n).toBe(1);
-          expect(otherStt.calls.n).toBe(0);
-          expect(openDuringPass as boolean | null).toBe(true);
-          expect(
-            await awaitOpenMediaPasses(tenantId, instanceId, [messageId], {
-              timeoutMs: 0,
-            }),
-          ).toBe(false);
-          expect(writtenBack.join("\n")).toContain("palavras do dono");
-          expect(writtenBack.join("\n")).not.toContain("palavras da outra");
+          // The owner's pass reuses the words this process already read: one provider call in all.
+          expect(ownerStt.calls.n + otherStt.calls.n).toBe(1);
           expect(agentOf(await ingestRowFor(messageId))).toBe(
             String(observerId),
           );
@@ -1193,6 +1175,93 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         expect(await ingestRowFor(second.messageId)).not.toBeNull();
       } finally {
         await suDb.inboxObserver.create({ data: ownerRow });
+      }
+    });
+  });
+
+  test("beside three watchers, a watcher that left the append to the owner is never taken for one that wrote it", async () => {
+    await withSecondWatcher(HOUR_AGO(), async ({ secondBot, secondId }) => {
+      const THIRD_BOT = 964;
+      const third = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Terceira observadora",
+          systemPrompt: "…",
+          modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+          enabled: true,
+          mode: "monitoring",
+        },
+      });
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: third.id,
+          chatwootAgentBotId: THIRD_BOT,
+          accessToken: encryptJson("BOT"),
+          webhookSecret: encryptJson("S"),
+          webhookRouteTokenHash: `obr-route-${THIRD_BOT}-${process.pid}`,
+          name: "Terceira observadora",
+        },
+      });
+      const inbox = await suDb.inbox.findFirstOrThrow({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        select: { id: true },
+      });
+      await suDb.inboxObserver.create({
+        data: { tenantId, inboxId: inbox.id, agentId: third.id },
+      });
+      try {
+        expect(third.id > secondId).toBe(true);
+        // The second watcher leaves the append to the first, and says it wrote nothing.
+        const second = await deliver(secondBot, 511, SHARED_INBOX, OPEN_HUMAN);
+        await suDb.chatwootWebhookDelivery.update({
+          where: { id: second.deliveryRowId },
+          data: {
+            conversationId: 511,
+            inboundMessageId: second.messageId,
+            routeAgentBotId: secondBot,
+          },
+        });
+        expect(
+          (
+            await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+              where: { id: second.deliveryRowId },
+              select: { routeRemembers: true },
+            })
+          ).routeRemembers,
+        ).toBe(false);
+        // The first is switched off before the third's delivery: the third elects the second, whose
+        // row says it remembered nothing, so the third keeps the message.
+        await suDb.agent.update({
+          where: { id: observerId },
+          data: { enabled: false },
+        });
+        const seen: string[] = [];
+        await deliver(
+          THIRD_BOT,
+          511,
+          SHARED_INBOX,
+          OPEN_HUMAN,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          { messageId: second.messageId, onIngest: (o) => seen.push(o) },
+        );
+        expect(seen).not.toContain("covered");
+        expect(await ingestRowFor(second.messageId)).not.toBeNull();
+      } finally {
+        await suDb.agent.update({
+          where: { id: observerId },
+          data: { enabled: true },
+        });
+        await suDb.inboxObserver.deleteMany({
+          where: { tenantId, inboxId: inbox.id, agentId: third.id },
+        });
+        await suDb.chatwootAgentBot.deleteMany({
+          where: { tenantId, agentId: third.id },
+        });
       }
     });
   });

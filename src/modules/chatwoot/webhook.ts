@@ -68,7 +68,6 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
-  openMediaPass,
   openTranscription,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -1926,32 +1925,6 @@ async function mediaAdmitted(
 // so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
 // to run it (production+enabled always, test only on the answer path, disabled never).
 export async function runEagerMedia(
-  tenantId: bigint,
-  instanceId: bigint,
-  n: NormalizedChatwootEvent,
-  base: PrismaClient,
-  // Where this media belongs, in LOCAL ids, for the `stt`/`vision` flow lines. Required, because an
-  // omitted field writes a NULL that reads as "no conversation" and hides the failed voice note from
-  // /logs?conversationId=. The caller already holds all three; null only where no agent is bound,
-  // which is also where no config resolves and no line is written.
-  owner: EagerMediaOwner,
-): Promise<void> {
-  // Announced for the whole pass, so an observation tick that arms beside it (a watcher that left the
-  // pass to this route) waits for what it reads instead of rendering it unread (`awaitOpenMediaPasses`).
-  const messageId = n.message?.id;
-  const close =
-    messageId != null &&
-    (firstAudioAttachment(n) !== null || visualAttachments(n).length > 0)
-      ? openMediaPass({ tenantId, instanceId, messageId })
-      : () => {};
-  try {
-    await eagerMediaPass(tenantId, instanceId, n, base, owner);
-  } finally {
-    close();
-  }
-}
-
-async function eagerMediaPass(
   tenantId: bigint,
   instanceId: bigint,
   n: NormalizedChatwootEvent,
@@ -4694,14 +4667,11 @@ export async function processChatwootDelivery(
     responderCovers &&
     (siblingRemembers ??
       (responderRt?.enabled === true && ingestsContinuously(responderRt.mode)));
-  // Beside other watchers and a responder that does not remember, one writer: the memory owner's
-  // route (`watcherMemoryOwner`) runs the media pass with its own settings and appends the customer's
-  // message; another watcher's route stands down from both, as it does beside a remembering
-  // responder. Only where the owner ACTUALLY HAS this message, by the rule that decides it for the
-  // responder (`responderCoversMessage`, against the owner's attach and its bot's sibling delivery):
-  // an owner attached after the emission never got it, and standing down would lose it from memory.
-  // A colleague's reply keeps its path (no media to decide, and the dedup window takes the second).
-  // An unreadable list, or an owner whose bot row is gone, leaves every route writing as before.
+  // Beside other watchers and a responder that does not remember, one writer: only the memory owner's
+  // route (`watcherMemoryOwner`) appends the customer's message; another watcher's route still runs
+  // its media pass, for its own observation. Only where the owner ACTUALLY HAS this message, by the
+  // responder's rule (`responderCoversMessage`, against the owner's attach and its bot's sibling):
+  // an owner attached after the emission never got it. See docs/chatwoot.md, "Observer binding".
   const coveringOwner: { agentId: bigint; settings: unknown } | null =
     observer !== null &&
     responderRt !== null &&
@@ -4977,44 +4947,6 @@ export async function processChatwootDelivery(
       rt.mode,
       base,
     )) !== null;
-  // Whether a watcher's own contact gate may keep its media pass from running for this conversation:
-  // an audio it already refused, an endpoint that follows its conditions, or conditions that do not
-  // allow the conversation. Asked without a line: that watcher's own route leaves it.
-  const watcherMayRefuseMedia = async (w: {
-    agentId: bigint;
-    settings: unknown;
-  }): Promise<boolean> => {
-    // NOTE: An audio the watcher already refused is one it will not analyze, whatever its gate says
-    // now, turned off included.
-    if (
-      refusedCovers(
-        watcherMediaRefusedThrough(
-          params.tenantId,
-          mirror.conversationRowId,
-          w.agentId,
-        ),
-        n.message?.id,
-      )
-    )
-      return true;
-    const cfg = readContactAuthConfig(w.settings);
-    if (!cfg.enabled) return false;
-    if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
-      return true;
-    return (
-      (await observerRuleVerdict(
-        {
-          tenantId: params.tenantId,
-          instanceId: params.instanceId,
-          conversationId: n.conversationId as number,
-          agentId: w.agentId,
-          settings: w.settings,
-          base,
-        },
-        { emit: false },
-      )) !== "allowed"
-    );
-  };
   // A WATCHER bound as the inbox's agent remembers, but analyses media only for a conversation
   // its own contact gate lets it observe. Another watcher of the inbox stands down on its pass
   // only when that is known to happen: the bound watcher's conditions allow the conversation and no
@@ -5026,17 +4958,41 @@ export async function processChatwootDelivery(
     responderRt !== null &&
     isMonitoring(responderRt.mode) &&
     n.conversationId !== null &&
-    (await watcherMayRefuseMedia(responderRt));
-  // The same for the memory owner beside other watchers: the append stays the owner's, but where its
-  // gate may refuse the media this route analyses for its own observation, under its own gate.
-  const ownerMayRefuseMedia =
-    coveringOwner !== null &&
-    n.conversationId !== null &&
-    (await watcherMayRefuseMedia(coveringOwner));
+    (await (async () => {
+      // NOTE: An audio the bound watcher already refused is one it will not analyze, whatever its
+      // gate says now, turned off included.
+      if (
+        refusedCovers(
+          watcherMediaRefusedThrough(
+            params.tenantId,
+            mirror.conversationRowId,
+            responderRt.agentId,
+          ),
+          n.message?.id,
+        )
+      )
+        return true;
+      const cfg = readContactAuthConfig(responderRt.settings);
+      if (!cfg.enabled) return false;
+      if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
+        return true;
+      return (
+        (await observerRuleVerdict(
+          {
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId: n.conversationId as number,
+            agentId: responderRt.agentId,
+            settings: responderRt.settings,
+            base,
+          },
+          { emit: false },
+        )) !== "allowed"
+      );
+    })());
   // A TEST responder analyses media too, on the answer path of an activated conversation, so the
   // observer stands down there as well. Asked only on an observer route beside a test responder.
   const responderAnalysesMedia =
-    (ownerCovers && !ownerMayRefuseMedia) ||
     (responderRemembers && !boundWatcherMayRefuseMedia) ||
     (responderCovers &&
       responderRt?.enabled === true &&
@@ -6126,6 +6082,23 @@ export async function processChatwootDelivery(
     // message, or the responder will consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
     // look at this message", and silence would requeue a handled row until its attempts ran out.
     params.onIngest?.("covered");
+    // NOTE: ...and a watcher that left the append to the owner says it remembered nothing: its claim
+    // wrote `true` as an intent, and a later route electing THIS watcher as owner (the first one
+    // switched off meanwhile) would read that intent as the append and stand down with nothing written.
+    if (ownerCovers) {
+      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: { id: params.deliveryRowId, routeRemembers: true },
+          data: { routeRemembers: false },
+        }),
+      ).catch((err) => {
+        logger.warn(
+          "chatwoot: could not record that this delivery left the append to the memory owner (conv=%s): %s",
+          n.conversationId === null ? "?" : String(n.conversationId),
+          errMsg(err),
+        );
+      });
+    }
   } else if (observer?.enabled === true && responderRt === null) {
     // NOTE: A switched-on observer with no responder to remember for: a decision, reported for the same
     // reason, or every replay would read "no route asked" and return to DEAD. A switched-off observer
