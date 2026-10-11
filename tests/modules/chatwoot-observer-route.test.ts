@@ -866,7 +866,18 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         HOUR_AGO(),
         async ({ secondBot }) => {
           const ownerStt = provider("palavras do dono");
-          const otherStt = provider("palavras da outra");
+          // While its own pass runs, the other watcher's row already says it remembers nothing, so no
+          // route electing it as owner meanwhile reads its claim's intent as the append.
+          let rememberedDuringPass: boolean | null | undefined;
+          const otherStt = provider("palavras da outra", async () => {
+            rememberedDuringPass = (
+              await suDb.chatwootWebhookDelivery.findFirst({
+                where: { tenantId, status: "PROCESSING" },
+                orderBy: { id: "desc" },
+                select: { routeRemembers: true },
+              })
+            )?.routeRemembers;
+          });
           const { messageId } = await deliver(
             secondBot,
             504,
@@ -888,6 +899,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
           // Its own pass runs, for its own observation; the append is left to the owner.
           expect(otherStt.calls.n).toBe(1);
           expect(await ingestRowFor(messageId)).toBeNull();
+          expect(rememberedDuringPass).toBe(false);
           await deliver(
             OBSERVER_BOT,
             504,

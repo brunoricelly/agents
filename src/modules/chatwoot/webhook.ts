@@ -4748,6 +4748,23 @@ export async function processChatwootDelivery(
         })()
       : null;
   const ownerCovers = coveringOwner !== null;
+  // A watcher that leaves the append to the owner says so at once, before its media pass: its claim
+  // wrote `true` as an intent, and a later route electing THIS watcher as owner (the first one
+  // switched off meanwhile) would read that intent as the append and stand down with nothing written.
+  if (ownerCovers) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId, routeRemembers: true },
+        data: { routeRemembers: false },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that this delivery left the append to the memory owner (conv=%s): %s",
+        n.conversationId === null ? "?" : String(n.conversationId),
+        errMsg(err),
+      );
+    });
+  }
   // The mark stays the responder's whenever there is one, deliberately NOT asked of
   // `responderCovers`: an absent sibling may be in transit (the emission clock is second-granular),
   // and moving the mark would suppress its reply. Coverage may cost a duplicate memory line, never an
@@ -6082,23 +6099,6 @@ export async function processChatwootDelivery(
     // message, or the responder will consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
     // look at this message", and silence would requeue a handled row until its attempts ran out.
     params.onIngest?.("covered");
-    // NOTE: ...and a watcher that left the append to the owner says it remembered nothing: its claim
-    // wrote `true` as an intent, and a later route electing THIS watcher as owner (the first one
-    // switched off meanwhile) would read that intent as the append and stand down with nothing written.
-    if (ownerCovers) {
-      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-        db.chatwootWebhookDelivery.updateMany({
-          where: { id: params.deliveryRowId, routeRemembers: true },
-          data: { routeRemembers: false },
-        }),
-      ).catch((err) => {
-        logger.warn(
-          "chatwoot: could not record that this delivery left the append to the memory owner (conv=%s): %s",
-          n.conversationId === null ? "?" : String(n.conversationId),
-          errMsg(err),
-        );
-      });
-    }
   } else if (observer?.enabled === true && responderRt === null) {
     // NOTE: A switched-on observer with no responder to remember for: a decision, reported for the same
     // reason, or every replay would read "no route asked" and return to DEAD. A switched-off observer
