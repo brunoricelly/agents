@@ -4709,19 +4709,37 @@ export async function processChatwootDelivery(
             heldBy(effectiveAssigneeType, effectiveAssigneeId)
           )
             return null;
-          return (await responderCoversMessage(
+          if (
+            !(await responderCoversMessage(
+              params.tenantId,
+              params.instanceId,
+              params.deliveryRowId,
+              owner.attachedAt,
+              ownerBotId,
+              n.conversationId,
+              coveredMessage,
+              n.lastActivityAt == null
+                ? null
+                : new Date(n.lastActivityAt * 1000),
+              base,
+            ))
+          )
+            return null;
+          // ...and what the owner's own delivery of this event decided, read from its claim: an owner
+          // switched off when its delivery ran remembered nothing, whatever the list says now. No claim
+          // yet is the list's answer, the same fallback the responder's sibling read makes.
+          return (await responderSiblingRemembers(
             params.tenantId,
             params.instanceId,
             params.deliveryRowId,
-            owner.attachedAt,
             ownerBotId,
             n.conversationId,
             coveredMessage,
-            n.lastActivityAt == null ? null : new Date(n.lastActivityAt * 1000),
+            n.event,
             base,
-          ))
-            ? owner
-            : null;
+          )) === false
+            ? null
+            : owner;
         })()
       : null;
   const ownerCovers = coveringOwner !== null;

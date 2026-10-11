@@ -1072,6 +1072,60 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     }
   });
 
+  test("beside other watchers, an owner switched off when its own delivery ran and back on since: the other watcher's route keeps the message", async () => {
+    await withSecondWatcher(HOUR_AGO(), async ({ secondBot }) => {
+      await suDb.agent.update({
+        where: { id: observerId },
+        data: { enabled: false },
+      });
+      let messageId = 0;
+      try {
+        const owned = await deliver(
+          OBSERVER_BOT,
+          509,
+          SHARED_INBOX,
+          OPEN_HUMAN,
+        );
+        messageId = owned.messageId;
+        await suDb.chatwootWebhookDelivery.update({
+          where: { id: owned.deliveryRowId },
+          data: {
+            conversationId: 509,
+            inboundMessageId: messageId,
+            routeAgentBotId: OBSERVER_BOT,
+          },
+        });
+        expect(
+          (
+            await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+              where: { id: owned.deliveryRowId },
+              select: { routeRemembers: true },
+            })
+          ).routeRemembers,
+        ).toBe(false);
+      } finally {
+        await suDb.agent.update({
+          where: { id: observerId },
+          data: { enabled: true },
+        });
+      }
+      const seen: string[] = [];
+      await deliver(
+        secondBot,
+        509,
+        SHARED_INBOX,
+        OPEN_HUMAN,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        { messageId, onIngest: (o) => seen.push(o) },
+      );
+      expect(seen).not.toContain("covered");
+      expect(await ingestRowFor(messageId)).not.toBeNull();
+    });
+  });
+
   // The persona bot deleted out-of-band on Chatwoot leaves the binding standing and the responder's
   // route dead — the state the console shows as "missing", with a Reconnect beside it. Standing
   // down for a delivery that never comes would lose the message from memory entirely.
