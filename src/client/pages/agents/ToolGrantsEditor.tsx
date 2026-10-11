@@ -58,10 +58,12 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import {
   CrossInboxCaseFields,
   type CrossInboxCaseState,
 } from "./CrossInboxCaseFields";
+import { nativeToolAnchor } from "./editorTabs";
 import {
   ResolveConversationFields,
   type ResolveConversationState,
@@ -135,6 +137,10 @@ interface Props {
   // would be a control that cannot fire. Grants already saved are left ALONE, so flipping the mode
   // back returns the agent as it was.
   observing?: boolean;
+  // An agent on questions and rules: its rules fire fixed actions and no model reads a tool's
+  // description, so the fields written for that reader are not drawn. What a tool enforces on its
+  // own (grants, transfer destination, label lists, preconditions) stays.
+  decides?: boolean;
   catalog: ToolCatalog;
   grants: GrantState[];
   onChange: (grants: GrantState[]) => void;
@@ -390,7 +396,10 @@ function ConfigurableToolCard({
   configured,
   warning,
   children,
+  id,
 }: {
+  // An anchor a link can land on (scrolled to, its toggle focused).
+  id?: string;
   selected: boolean;
   onToggle: () => void;
   title: React.ReactNode;
@@ -416,8 +425,10 @@ function ConfigurableToolCard({
   };
   return (
     <div
+      id={id}
+      data-focus-control={id ? "" : undefined}
       className={cn(
-        "overflow-hidden rounded-lg border transition-colors",
+        "scroll-mt-4 overflow-hidden rounded-lg border transition-colors",
         selected ? "border-accent" : "border-border",
       )}
     >
@@ -530,6 +541,7 @@ export function offeredPackTools<T extends { deliversToCustomer?: boolean }>(
 export function ToolGrantsEditor({
   agentId,
   observing,
+  decides,
   catalog,
   grants,
   onChange,
@@ -650,22 +662,34 @@ export function ToolGrantsEditor({
   // (toggle + inline config) outside the simple-toggle grid below.
   const handoffEntry = catalog.native.find((n) => n.name === HANDOFF_TOOL);
   const kanbanEnabled = selectedNative.has(KANBAN_TOOL);
-  const kanbanEntry = catalog.native.find((n) => n.name === KANBAN_TOOL);
+  // On questions and rules only what a rule can fire is drawn (`DECISION_ACTION_TOOLS`); the other
+  // natives belong to an agent that answers. Their saved grants are left as they are.
+  const offeredToRules = (name: string): boolean =>
+    !decides || (DECISION_ACTION_TOOLS as readonly string[]).includes(name);
+  const kanbanEntry = offeredToRules(KANBAN_TOOL)
+    ? catalog.native.find((n) => n.name === KANBAN_TOOL)
+    : undefined;
   const attrEnabled = selectedNative.has(ATTR_TOOL);
   const attrEntry = catalog.native.find((n) => n.name === ATTR_TOOL);
   const labelEnabled = selectedNative.has(LABEL_TOOL);
   const labelEntry = catalog.native.find((n) => n.name === LABEL_TOOL);
   const updateKanbanEnabled = selectedNative.has(UPDATE_KANBAN_TOOL);
-  const updateKanbanEntry = catalog.native.find(
-    (n) => n.name === UPDATE_KANBAN_TOOL,
-  );
+  const updateKanbanEntry = offeredToRules(UPDATE_KANBAN_TOOL)
+    ? catalog.native.find((n) => n.name === UPDATE_KANBAN_TOOL)
+    : undefined;
   const openCaseEnabled = selectedNative.has(OPEN_CASE_TOOL);
-  const openCaseEntry = catalog.native.find((n) => n.name === OPEN_CASE_TOOL);
+  const openCaseEntry = offeredToRules(OPEN_CASE_TOOL)
+    ? catalog.native.find((n) => n.name === OPEN_CASE_TOOL)
+    : undefined;
   const sendImageEnabled = selectedNative.has(SEND_IMAGE_TOOL);
-  const sendImageEntry = catalog.native.find((n) => n.name === SEND_IMAGE_TOOL);
+  const sendImageEntry = offeredToRules(SEND_IMAGE_TOOL)
+    ? catalog.native.find((n) => n.name === SEND_IMAGE_TOOL)
+    : undefined;
   const sendImageNoHost = sendImageHasNoHost(sendImage);
   const resolveEnabled = selectedNative.has(RESOLVE_TOOL);
-  const resolveEntry = catalog.native.find((n) => n.name === RESOLVE_TOOL);
+  const resolveEntry = offeredToRules(RESOLVE_TOOL)
+    ? catalog.native.find((n) => n.name === RESOLVE_TOOL)
+    : undefined;
 
   // True when any ENABLED configurable native tool holds non-default config: surfaces a dot on the
   // collapsed section header so the operator knows hidden settings are in play. Mirrors each card's
@@ -747,13 +771,18 @@ export function ToolGrantsEditor({
     : handoffAccounts.length === 0
       ? t(
           "editor.handoffPinnedNoInbox",
-          "Bind at least one inbox in the Channels tab first.",
+          "Attach this agent to at least one inbox in the Channels tab first, to answer or to observe it.",
         )
       : handoffAccounts.length > 1
-        ? t(
-            "editor.handoffPinnedMultiAccount",
-            "This agent serves inboxes in different Chatwoot accounts; use “Let the AI choose”.",
-          )
+        ? decides
+          ? t(
+              "editor.handoffPinnedMultiAccountDecisions",
+              "This agent serves inboxes in different Chatwoot accounts; use Chatwoot routing.",
+            )
+          : t(
+              "editor.handoffPinnedMultiAccount",
+              "This agent serves inboxes in different Chatwoot accounts; use “Let the AI choose”.",
+            )
         : undefined;
   // NOTE: auto-switch a "pinned" target to "agent_choice" once the fetched data shows it can no
   // longer be used ANYWHERE (its account is not among the agent's, or it has no account recorded and
@@ -768,9 +797,10 @@ export function ToolGrantsEditor({
       !pinnedStoredUsable &&
       handoff.mode === "pinned"
     ) {
+      // Questions and rules have no model to choose: Chatwoot routing is their fallback.
       setHandoff((h) => ({
         ...h,
-        mode: "agent_choice",
+        mode: decides ? "route" : "agent_choice",
         target: "",
         targetInstanceId: null,
       }));
@@ -781,6 +811,7 @@ export function ToolGrantsEditor({
     pinnedStoredUsable,
     handoff.mode,
     setHandoff,
+    decides,
   ]);
 
   // Apply the deferred auto-grant for a just-created integration once it appears in the refreshed
@@ -1126,179 +1157,372 @@ export function ToolGrantsEditor({
 
   return (
     <div className="flex flex-col gap-4">
-      <Section
-        id="tools-http"
-        icon={Webhook}
-        title={t("editor.tools.http", "HTTP tools")}
-        description={t(
-          "editor.tools.httpDesc",
-          "Declarative tools you defined.",
-        )}
-        action={
-          <CreateButton
-            label={t("editor.tools.createNew", "New")}
-            onClick={() => toolModal.open({})}
-          />
-        }
-      >
-        {catalog.toolDefinitions.length === 0 ? (
-          <p className="text-text-muted text-xs">
-            {t(
-              "editor.tools.noHttp",
-              "No HTTP tools yet. Create some in Components.",
+      {/* Nothing here is a rule's action: questions and rules fire native tools only. */}
+      {!decides && (
+        <>
+          <Section
+            id="tools-http"
+            icon={Webhook}
+            title={t("editor.tools.http", "HTTP tools")}
+            description={t(
+              "editor.tools.httpDesc",
+              "Declarative tools you defined.",
             )}
-          </p>
-        ) : (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {catalog.toolDefinitions.map((td) => (
-              <EditableCard
-                key={td.id}
-                editLabel={t("common.edit", "Edit")}
-                onEdit={() => toolModal.open({ id: td.id })}
-              >
-                <SelectableCard
-                  selected={nonRag.some(
-                    (g) => g.source === "HTTP" && g.toolDefinitionId === td.id,
-                  )}
-                  onToggle={() => toggleHttp(td.id)}
-                  icon={Webhook}
-                  title={td.label}
-                  badge={
-                    !td.enabled ? (
-                      <Badge variant="secondary">
-                        {t("common.disabled", "Disabled")}
-                      </Badge>
-                    ) : undefined
-                  }
-                />
-              </EditableCard>
-            ))}
-          </div>
-        )}
-      </Section>
-
-      <Section
-        id="tools-code"
-        icon={Code2}
-        title={t("editor.tools.code", "Code tools")}
-        description={t(
-          "editor.tools.codeDesc",
-          "Small functions you wrote, called with typed arguments.",
-        )}
-        action={
-          <CreateButton
-            label={t("editor.tools.createNew", "New")}
-            onClick={() => codeToolModal.open({})}
-          />
-        }
-      >
-        {catalog.codeTools.length === 0 ? (
-          <p className="text-text-muted text-xs">
-            {t(
-              "editor.tools.noCode",
-              "No code tools yet. Create some in Components.",
+            action={
+              <CreateButton
+                label={t("editor.tools.createNew", "New")}
+                onClick={() => toolModal.open({})}
+              />
+            }
+          >
+            {catalog.toolDefinitions.length === 0 ? (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "editor.tools.noHttp",
+                  "No HTTP tools yet. Create some in Components.",
+                )}
+              </p>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {catalog.toolDefinitions.map((td) => (
+                  <EditableCard
+                    key={td.id}
+                    editLabel={t("common.edit", "Edit")}
+                    onEdit={() => toolModal.open({ id: td.id })}
+                  >
+                    <SelectableCard
+                      selected={nonRag.some(
+                        (g) =>
+                          g.source === "HTTP" && g.toolDefinitionId === td.id,
+                      )}
+                      onToggle={() => toggleHttp(td.id)}
+                      icon={Webhook}
+                      title={td.label}
+                      badge={
+                        !td.enabled ? (
+                          <Badge variant="secondary">
+                            {t("common.disabled", "Disabled")}
+                          </Badge>
+                        ) : undefined
+                      }
+                    />
+                  </EditableCard>
+                ))}
+              </div>
             )}
-          </p>
-        ) : (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {catalog.codeTools.map((ct) => (
-              <EditableCard
-                key={ct.id}
-                editLabel={t("common.edit", "Edit")}
-                onEdit={() => codeToolModal.open({ id: ct.id })}
-              >
-                <SelectableCard
-                  selected={nonRag.some(
-                    (g) =>
-                      g.source === "CODE" && g.codeToolDefinitionId === ct.id,
-                  )}
-                  onToggle={() => toggleCode(ct.id)}
-                  icon={Code2}
-                  title={ct.label}
-                  badge={
-                    !ct.enabled ? (
-                      <Badge variant="secondary">
-                        {t("common.disabled", "Disabled")}
-                      </Badge>
-                    ) : undefined
-                  }
-                />
-              </EditableCard>
-            ))}
-          </div>
-        )}
-      </Section>
+          </Section>
 
-      <Section
-        id="tools-mcp"
-        icon={Plug}
-        title={t("editor.tools.mcp", "MCP servers")}
-        description={t(
-          "editor.tools.mcpDesc",
-          "Expose a chosen subset of an MCP server's tools.",
-        )}
-        action={
-          <CreateButton
-            label={t("editor.tools.createNew", "New")}
-            onClick={() => mcpModal.open({})}
-          />
-        }
-      >
-        {catalog.mcpConnections.length === 0 ? (
-          <p className="text-text-muted text-xs">
-            {t("editor.tools.noMcp", "No MCP servers connected yet.")}
-          </p>
-        ) : (
-          catalog.mcpConnections.map((m) => {
-            const grant = nonRag.find(
-              (g) => g.source === "MCP" && g.mcpServerConnectionId === m.id,
-            );
-            const tools = mcpTools[m.id];
-            const hasTools = !!tools && tools.length > 0;
-            const collapsed = mcpCollapsed[m.id] ?? true;
-            return (
-              <div key={m.id} className="flex flex-col gap-2">
-                <EditableCard
-                  editLabel={t("common.edit", "Edit")}
-                  onEdit={() => mcpModal.open({ id: m.id })}
-                >
-                  <SelectableCard
-                    selected={!!grant}
-                    onToggle={() => toggleMcp(m.id)}
-                    icon={Plug}
-                    title={m.name}
-                    badge={
-                      !m.enabled ? (
-                        <Badge variant="secondary">
-                          {t("common.disabled", "Disabled")}
-                        </Badge>
-                      ) : undefined
-                    }
-                  />
-                </EditableCard>
-                {grant && (
-                  <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        loading={discovering === m.id}
-                        onClick={() => discoverMcp(m.id)}
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                        {t("editor.tools.discover", "Discover tools")}
-                      </Button>
-                      {hasTools ? (
+          <Section
+            id="tools-code"
+            icon={Code2}
+            title={t("editor.tools.code", "Code tools")}
+            description={t(
+              "editor.tools.codeDesc",
+              "Small functions you wrote, called with typed arguments.",
+            )}
+            action={
+              <CreateButton
+                label={t("editor.tools.createNew", "New")}
+                onClick={() => codeToolModal.open({})}
+              />
+            }
+          >
+            {catalog.codeTools.length === 0 ? (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "editor.tools.noCode",
+                  "No code tools yet. Create some in Components.",
+                )}
+              </p>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {catalog.codeTools.map((ct) => (
+                  <EditableCard
+                    key={ct.id}
+                    editLabel={t("common.edit", "Edit")}
+                    onEdit={() => codeToolModal.open({ id: ct.id })}
+                  >
+                    <SelectableCard
+                      selected={nonRag.some(
+                        (g) =>
+                          g.source === "CODE" &&
+                          g.codeToolDefinitionId === ct.id,
+                      )}
+                      onToggle={() => toggleCode(ct.id)}
+                      icon={Code2}
+                      title={ct.label}
+                      badge={
+                        !ct.enabled ? (
+                          <Badge variant="secondary">
+                            {t("common.disabled", "Disabled")}
+                          </Badge>
+                        ) : undefined
+                      }
+                    />
+                  </EditableCard>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          <Section
+            id="tools-mcp"
+            icon={Plug}
+            title={t("editor.tools.mcp", "MCP servers")}
+            description={t(
+              "editor.tools.mcpDesc",
+              "Expose a chosen subset of an MCP server's tools.",
+            )}
+            action={
+              <CreateButton
+                label={t("editor.tools.createNew", "New")}
+                onClick={() => mcpModal.open({})}
+              />
+            }
+          >
+            {catalog.mcpConnections.length === 0 ? (
+              <p className="text-text-muted text-xs">
+                {t("editor.tools.noMcp", "No MCP servers connected yet.")}
+              </p>
+            ) : (
+              catalog.mcpConnections.map((m) => {
+                const grant = nonRag.find(
+                  (g) => g.source === "MCP" && g.mcpServerConnectionId === m.id,
+                );
+                const tools = mcpTools[m.id];
+                const hasTools = !!tools && tools.length > 0;
+                const collapsed = mcpCollapsed[m.id] ?? true;
+                return (
+                  <div key={m.id} className="flex flex-col gap-2">
+                    <EditableCard
+                      editLabel={t("common.edit", "Edit")}
+                      onEdit={() => mcpModal.open({ id: m.id })}
+                    >
+                      <SelectableCard
+                        selected={!!grant}
+                        onToggle={() => toggleMcp(m.id)}
+                        icon={Plug}
+                        title={m.name}
+                        badge={
+                          !m.enabled ? (
+                            <Badge variant="secondary">
+                              {t("common.disabled", "Disabled")}
+                            </Badge>
+                          ) : undefined
+                        }
+                      />
+                    </EditableCard>
+                    {grant && (
+                      <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            loading={discovering === m.id}
+                            onClick={() => discoverMcp(m.id)}
+                          >
+                            <RefreshCw
+                              className="h-3.5 w-3.5"
+                              aria-hidden="true"
+                            />
+                            {t("editor.tools.discover", "Discover tools")}
+                          </Button>
+                          {hasTools ? (
+                            <button
+                              type="button"
+                              aria-expanded={!collapsed}
+                              onClick={() =>
+                                setMcpCollapsed((prev) => ({
+                                  ...prev,
+                                  [m.id]: !collapsed,
+                                }))
+                              }
+                              className="flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
+                            >
+                              <ChevronDown
+                                className={cn(
+                                  "h-4 w-4 shrink-0 text-text-muted transition-transform",
+                                  { "rotate-180": !collapsed },
+                                )}
+                                aria-hidden="true"
+                              />
+                              <span className="font-medium text-text-secondary text-xs">
+                                {collapsed
+                                  ? t(
+                                      "editor.tools.mcpExpandList",
+                                      "Show tools",
+                                    )
+                                  : t(
+                                      "editor.tools.mcpCollapseList",
+                                      "Hide tools",
+                                    )}
+                              </span>
+                              <span className="text-text-muted text-xs">
+                                {t(
+                                  "editor.tools.mcpSelected",
+                                  "{{count}} selected",
+                                  {
+                                    count: grant.enabledTools?.length ?? 0,
+                                  },
+                                )}
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="text-text-muted text-xs">
+                              {t(
+                                "editor.tools.mcpSelected",
+                                "{{count}} selected",
+                                {
+                                  count: grant.enabledTools?.length ?? 0,
+                                },
+                              )}
+                            </span>
+                          )}
+                          {hasTools && (
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
+                                disabled={
+                                  (grant.enabledTools?.length ?? 0) ===
+                                  tools.length
+                                }
+                                onClick={() =>
+                                  setMcpEnabledTools(
+                                    m.id,
+                                    tools.map((tool) => tool.name),
+                                  )
+                                }
+                              >
+                                {t("editor.tools.selectAll", "Select all")}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
+                                disabled={
+                                  (grant.enabledTools?.length ?? 0) === 0
+                                }
+                                onClick={() => setMcpEnabledTools(m.id, [])}
+                              >
+                                {t("editor.tools.clear", "Clear")}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        <McpServerInstructions
+                          instructions={mcpInstructions[m.id]}
+                        />
+                        {hasTools && !collapsed && (
+                          <div className="flex flex-col gap-2">
+                            {tools.map((tool) => (
+                              <SelectableCard
+                                key={tool.name}
+                                selected={(grant.enabledTools ?? []).includes(
+                                  tool.name,
+                                )}
+                                onToggle={() => {
+                                  const cur = new Set(grant.enabledTools ?? []);
+                                  if (cur.has(tool.name)) cur.delete(tool.name);
+                                  else cur.add(tool.name);
+                                  setMcpEnabledTools(m.id, [...cur]);
+                                }}
+                                title={
+                                  <span className="font-mono text-xs">
+                                    {tool.name}
+                                  </span>
+                                }
+                                description={
+                                  <span className="flex flex-col gap-1.5">
+                                    {tool.description && (
+                                      <span>{tool.description}</span>
+                                    )}
+                                    <McpToolArgs args={tool.args} />
+                                  </span>
+                                }
+                              />
+                            ))}
+                          </div>
+                        )}
+                        {(grant.enabledTools?.length ?? 0) === 0 && (
+                          <p className="text-warning text-xs">
+                            {t(
+                              "editor.tools.mcpNoTools",
+                              "Select at least one tool, or this server does nothing.",
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </Section>
+
+          <Section
+            id="tools-integrations"
+            icon={Puzzle}
+            title={t("editor.tools.integrations", "Integrations")}
+            description={t(
+              "editor.tools.integrationsDesc",
+              "Toolpacks from activated catalog integrations.",
+            )}
+            action={
+              <CreateButton
+                label={t("editor.tools.createNew", "New")}
+                onClick={() => integrationModal.open({})}
+              />
+            }
+          >
+            {catalog.integrationInstances.length === 0 ? (
+              <p className="text-text-muted text-xs">
+                {t(
+                  "editor.tools.noIntegrations",
+                  "No integrations activated yet.",
+                )}
+              </p>
+            ) : (
+              catalog.integrationInstances.map((inst) => {
+                const grant = nonRag.find(
+                  (g) =>
+                    g.source === "INTEGRATION" &&
+                    g.integrationInstanceId === inst.id,
+                );
+                // What this agent can actually be offered from the pack. A watcher does not get the
+                // delivery tools, so granting the integration must not enable one either.
+                const offered = offeredPackTools(inst.tools, observing);
+                const allTools = offered.map((tool) => tool.name);
+                const collapsed = integrationCollapsed[inst.id] ?? true;
+                return (
+                  <div key={inst.id} className="flex flex-col gap-2">
+                    <EditableCard
+                      editLabel={t("common.edit", "Edit")}
+                      onEdit={() => integrationModal.open({ id: inst.id })}
+                    >
+                      <SelectableCard
+                        selected={!!grant}
+                        onToggle={() => toggleIntegration(inst.id, allTools)}
+                        icon={integrationIcon(inst.catalogType)}
+                        title={inst.name}
+                        badge={
+                          <Badge variant="info">
+                            {kindLabel(inst.kind ?? inst.catalogType)}
+                          </Badge>
+                        }
+                      />
+                    </EditableCard>
+                    {grant && offered.length > 0 && (
+                      <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
                         <button
                           type="button"
                           aria-expanded={!collapsed}
                           onClick={() =>
-                            setMcpCollapsed((prev) => ({
+                            setIntegrationCollapsed((prev) => ({
                               ...prev,
-                              [m.id]: !collapsed,
+                              [inst.id]: !collapsed,
                             }))
                           }
-                          className="flex flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
+                          className="flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
                         >
                           <ChevronDown
                             className={cn(
@@ -1309,8 +1533,14 @@ export function ToolGrantsEditor({
                           />
                           <span className="font-medium text-text-secondary text-xs">
                             {collapsed
-                              ? t("editor.tools.mcpExpandList", "Show tools")
-                              : t("editor.tools.mcpCollapseList", "Hide tools")}
+                              ? t(
+                                  "editor.tools.integrationExpandList",
+                                  "Show tools",
+                                )
+                              : t(
+                                  "editor.tools.integrationCollapseList",
+                                  "Hide tools",
+                                )}
                           </span>
                           <span className="text-text-muted text-xs">
                             {t(
@@ -1322,221 +1552,52 @@ export function ToolGrantsEditor({
                             )}
                           </span>
                         </button>
-                      ) : (
-                        <span className="text-text-muted text-xs">
-                          {t("editor.tools.mcpSelected", "{{count}} selected", {
-                            count: grant.enabledTools?.length ?? 0,
-                          })}
-                        </span>
-                      )}
-                      {hasTools && (
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
-                            disabled={
-                              (grant.enabledTools?.length ?? 0) === tools.length
-                            }
-                            onClick={() =>
-                              setMcpEnabledTools(
-                                m.id,
-                                tools.map((tool) => tool.name),
-                              )
-                            }
-                          >
-                            {t("editor.tools.selectAll", "Select all")}
-                          </button>
-                          <button
-                            type="button"
-                            className="text-accent text-xs hover:underline disabled:no-underline disabled:opacity-50"
-                            disabled={(grant.enabledTools?.length ?? 0) === 0}
-                            onClick={() => setMcpEnabledTools(m.id, [])}
-                          >
-                            {t("editor.tools.clear", "Clear")}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <McpServerInstructions
-                      instructions={mcpInstructions[m.id]}
-                    />
-                    {hasTools && !collapsed && (
-                      <div className="flex flex-col gap-2">
-                        {tools.map((tool) => (
-                          <SelectableCard
-                            key={tool.name}
-                            selected={(grant.enabledTools ?? []).includes(
-                              tool.name,
-                            )}
-                            onToggle={() => {
-                              const cur = new Set(grant.enabledTools ?? []);
-                              if (cur.has(tool.name)) cur.delete(tool.name);
-                              else cur.add(tool.name);
-                              setMcpEnabledTools(m.id, [...cur]);
-                            }}
-                            title={
-                              <span className="font-mono text-xs">
-                                {tool.name}
-                              </span>
-                            }
-                            description={
-                              <span className="flex flex-col gap-1.5">
-                                {tool.description && (
-                                  <span>{tool.description}</span>
+                        {!collapsed &&
+                          offered.map((tool) => {
+                            const meta = toolpackToolMeta(tool.name, t);
+                            return (
+                              <SelectableCard
+                                key={tool.name}
+                                selected={(grant.enabledTools ?? []).includes(
+                                  tool.name,
                                 )}
-                                <McpToolArgs args={tool.args} />
-                              </span>
-                            }
-                          />
-                        ))}
+                                onToggle={() =>
+                                  toggleIntegrationTool(inst.id, tool.name)
+                                }
+                                icon={meta.icon}
+                                title={meta.label}
+                                description={
+                                  <span className="flex flex-col gap-1.5">
+                                    {meta.description && (
+                                      <span>{meta.description}</span>
+                                    )}
+                                    {tool.args.length > 0 && (
+                                      <ToolArgPills
+                                        args={withToolpackArgNotes(
+                                          tool.name,
+                                          tool.args,
+                                          t,
+                                        )}
+                                      />
+                                    )}
+                                  </span>
+                                }
+                              />
+                            );
+                          })}
                       </div>
                     )}
-                    {(grant.enabledTools?.length ?? 0) === 0 && (
-                      <p className="text-warning text-xs">
-                        {t(
-                          "editor.tools.mcpNoTools",
-                          "Select at least one tool, or this server does nothing.",
-                        )}
-                      </p>
-                    )}
                   </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </Section>
-
-      <Section
-        id="tools-integrations"
-        icon={Puzzle}
-        title={t("editor.tools.integrations", "Integrations")}
-        description={t(
-          "editor.tools.integrationsDesc",
-          "Toolpacks from activated catalog integrations.",
-        )}
-        action={
-          <CreateButton
-            label={t("editor.tools.createNew", "New")}
-            onClick={() => integrationModal.open({})}
-          />
-        }
-      >
-        {catalog.integrationInstances.length === 0 ? (
-          <p className="text-text-muted text-xs">
-            {t("editor.tools.noIntegrations", "No integrations activated yet.")}
-          </p>
-        ) : (
-          catalog.integrationInstances.map((inst) => {
-            const grant = nonRag.find(
-              (g) =>
-                g.source === "INTEGRATION" &&
-                g.integrationInstanceId === inst.id,
-            );
-            // What this agent can actually be offered from the pack. A watcher does not get the
-            // delivery tools, so granting the integration must not enable one either.
-            const offered = offeredPackTools(inst.tools, observing);
-            const allTools = offered.map((tool) => tool.name);
-            const collapsed = integrationCollapsed[inst.id] ?? true;
-            return (
-              <div key={inst.id} className="flex flex-col gap-2">
-                <EditableCard
-                  editLabel={t("common.edit", "Edit")}
-                  onEdit={() => integrationModal.open({ id: inst.id })}
-                >
-                  <SelectableCard
-                    selected={!!grant}
-                    onToggle={() => toggleIntegration(inst.id, allTools)}
-                    icon={integrationIcon(inst.catalogType)}
-                    title={inst.name}
-                    badge={
-                      <Badge variant="info">
-                        {kindLabel(inst.kind ?? inst.catalogType)}
-                      </Badge>
-                    }
-                  />
-                </EditableCard>
-                {grant && offered.length > 0 && (
-                  <div className="ml-6 flex flex-col gap-2 border-border border-l pl-3">
-                    <button
-                      type="button"
-                      aria-expanded={!collapsed}
-                      onClick={() =>
-                        setIntegrationCollapsed((prev) => ({
-                          ...prev,
-                          [inst.id]: !collapsed,
-                        }))
-                      }
-                      className="flex items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-bg-hover"
-                    >
-                      <ChevronDown
-                        className={cn(
-                          "h-4 w-4 shrink-0 text-text-muted transition-transform",
-                          { "rotate-180": !collapsed },
-                        )}
-                        aria-hidden="true"
-                      />
-                      <span className="font-medium text-text-secondary text-xs">
-                        {collapsed
-                          ? t(
-                              "editor.tools.integrationExpandList",
-                              "Show tools",
-                            )
-                          : t(
-                              "editor.tools.integrationCollapseList",
-                              "Hide tools",
-                            )}
-                      </span>
-                      <span className="text-text-muted text-xs">
-                        {t("editor.tools.mcpSelected", "{{count}} selected", {
-                          count: grant.enabledTools?.length ?? 0,
-                        })}
-                      </span>
-                    </button>
-                    {!collapsed &&
-                      offered.map((tool) => {
-                        const meta = toolpackToolMeta(tool.name, t);
-                        return (
-                          <SelectableCard
-                            key={tool.name}
-                            selected={(grant.enabledTools ?? []).includes(
-                              tool.name,
-                            )}
-                            onToggle={() =>
-                              toggleIntegrationTool(inst.id, tool.name)
-                            }
-                            icon={meta.icon}
-                            title={meta.label}
-                            description={
-                              <span className="flex flex-col gap-1.5">
-                                {meta.description && (
-                                  <span>{meta.description}</span>
-                                )}
-                                {tool.args.length > 0 && (
-                                  <ToolArgPills
-                                    args={withToolpackArgNotes(
-                                      tool.name,
-                                      tool.args,
-                                      t,
-                                    )}
-                                  />
-                                )}
-                              </span>
-                            }
-                          />
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </Section>
+                );
+              })
+            )}
+          </Section>
+        </>
+      )}
 
       {/* A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so the muted assembly does not build one: the
           tools this section grants would exist in the console and never in the turn. */}
-      {!observing && (
+      {!observing && !decides && (
         <Section
           id="tools-documents"
           icon={FileText}
@@ -1622,7 +1683,7 @@ export function ToolGrantsEditor({
         badge={
           <span className="flex items-center gap-1.5 font-normal text-text-muted text-xs">
             {t("editor.tools.nativeActiveCount", "{{count}} active", {
-              count: selectedNative.size,
+              count: [...selectedNative].filter(offeredToRules).length,
             })}
             {nativeConfigured && (
               <span
@@ -1633,7 +1694,7 @@ export function ToolGrantsEditor({
           </span>
         }
       >
-        {observing && (
+        {observing && !decides && (
           <p className="text-text-muted text-xs">
             {t(
               "editor.tools.observingDelivery",
@@ -1641,9 +1702,12 @@ export function ToolGrantsEditor({
             )}
           </p>
         )}
-        <div className="grid gap-2 sm:grid-cols-2">
+        {/* One column on questions and rules, where the cards below it are full width too: a
+            single card in a two-column grid would sit at half their width. */}
+        <div className={decides ? "grid gap-2" : "grid gap-2 sm:grid-cols-2"}>
           {catalog.native
             .filter((n) => !(observing && n.deliversToCustomer))
+            .filter((n) => offeredToRules(n.name))
             .filter(
               (n) =>
                 n.name !== HANDOFF_TOOL &&
@@ -1660,6 +1724,7 @@ export function ToolGrantsEditor({
               return (
                 <SelectableCard
                   key={n.name}
+                  id={nativeToolAnchor(n.name)}
                   selected={selectedNative.has(n.name)}
                   onToggle={() => toggleNative(n.name)}
                   icon={meta.icon}
@@ -1672,24 +1737,45 @@ export function ToolGrantsEditor({
         {handoffEntry && (
           <ConfigurableToolCard
             selected={handoffEnabled}
+            id={nativeToolAnchor(HANDOFF_TOOL)}
             onToggle={() => toggleNative(HANDOFF_TOOL)}
             icon={nativeToolMeta(HANDOFF_TOOL, t).icon}
             title={nativeToolMeta(HANDOFF_TOOL, t).label}
-            description={nativeToolMeta(HANDOFF_TOOL, t).description}
+            description={
+              decides
+                ? t(
+                    "editor.handoffDescDecisions",
+                    "Escalate the conversation to a human agent.",
+                  )
+                : nativeToolMeta(HANDOFF_TOOL, t).description
+            }
             configured={
               handoff.mode !== "route" ||
-              handoff.instructions.trim() !== "" ||
-              !transferWithSummary
+              (!decides &&
+                (handoff.instructions.trim() !== "" || !transferWithSummary))
+            }
+            warning={
+              decides && handoff.mode === "agent_choice" ? (
+                <p className="text-warning text-xs" role="alert">
+                  {t(
+                    "editor.handoffAgentChoiceDecisions",
+                    "This handoff is set to let the AI choose, and questions and rules have no model to choose: pick Chatwoot routing or a specific agent or team.",
+                  )}
+                </p>
+              ) : undefined
             }
           >
-            <SwitchField
-              checked={transferWithSummary}
-              onCheckedChange={setTransferWithSummary}
-              label={t(
-                "editor.transferWithSummary",
-                "Post a private summary before handing off to a human",
-              )}
-            />
+            {/* The summary is written by a model: questions and rules have none. */}
+            {!decides && (
+              <SwitchField
+                checked={transferWithSummary}
+                onCheckedChange={setTransferWithSummary}
+                label={t(
+                  "editor.transferWithSummary",
+                  "Post a private summary before handing off to a human",
+                )}
+              />
+            )}
             <FormField
               label={t("editor.handoffTarget", "Who receives the handoff")}
               group
@@ -1738,10 +1824,20 @@ export function ToolGrantsEditor({
                     disabled: !pinnedOfferable && !pinnedKept,
                     disabledHint: pinnedHint,
                   },
-                  {
-                    value: "agent_choice",
-                    label: t("editor.handoffAgentChoice", "Let the AI choose"),
-                  },
+                  // Not offered where no model chooses. A stored one stays visible, disabled, so the
+                  // select names it while the warning above says what to pick instead.
+                  ...(decides && handoff.mode !== "agent_choice"
+                    ? []
+                    : [
+                        {
+                          value: "agent_choice",
+                          label: t(
+                            "editor.handoffAgentChoice",
+                            "Let the AI choose",
+                          ),
+                          disabled: decides,
+                        },
+                      ]),
                 ]}
               />
             </FormField>
@@ -1806,7 +1902,7 @@ export function ToolGrantsEditor({
                   )}
               </FormField>
             )}
-            {handoff.mode === "agent_choice" && (
+            {handoff.mode === "agent_choice" && !decides && (
               <p className="text-text-muted text-xs">
                 {t(
                   "editor.handoffAgentChoiceHint",
@@ -1814,97 +1910,106 @@ export function ToolGrantsEditor({
                 )}
               </p>
             )}
-            <FormField
-              label={t("editor.handoffInstructions", "Transfer instructions")}
-              error={refusals.handoffInstructions}
-              group
-              description={t(
-                "editor.handoffInstructionsHint",
-                "Optional. Centralizes the transfer logic (when and to whom to escalate). Appended to the handoff tool description the AI reads.",
-              )}
-            >
-              <Textarea
-                value={handoff.instructions}
-                onChange={(e) =>
-                  setHandoff({ ...handoff, instructions: e.target.value })
-                }
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.handoffInstructionsPlaceholder",
-                  "e.g. Only escalate after two failed attempts. Send billing issues to the Finance team.",
+            {!decides && (
+              <FormField
+                label={t("editor.handoffInstructions", "Transfer instructions")}
+                error={refusals.handoffInstructions}
+                group
+                description={t(
+                  "editor.handoffInstructionsHint",
+                  "Optional. Centralizes the transfer logic (when and to whom to escalate). Appended to the handoff tool description the AI reads.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={handoff.instructions}
+                  onChange={(e) =>
+                    setHandoff({ ...handoff, instructions: e.target.value })
+                  }
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.handoffInstructionsPlaceholder",
+                    "e.g. Only escalate after two failed attempts. Send billing issues to the Finance team.",
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {kanbanEntry && (
           <ConfigurableToolCard
             selected={kanbanEnabled}
+            id={nativeToolAnchor(KANBAN_TOOL)}
             onToggle={() => toggleNative(KANBAN_TOOL)}
             icon={nativeToolMeta(KANBAN_TOOL, t).icon}
             title={nativeToolMeta(KANBAN_TOOL, t).label}
             description={nativeToolMeta(KANBAN_TOOL, t).description}
-            configured={kanbanInstructions.trim() !== ""}
+            configured={!decides && kanbanInstructions.trim() !== ""}
           >
-            <FormField
-              label={t("editor.kanbanInstructions", "Funnel guidance")}
-              error={refusals.kanbanInstructions}
-              group
-              description={t(
-                "editor.kanbanInstructionsHint",
-                "Optional: describe your funnel and rules for moving the card; the AI already receives its steps and card data.",
-              )}
-            >
-              <Textarea
-                value={kanbanInstructions}
-                onChange={(e) => setKanbanInstructions(e.target.value)}
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.kanbanInstructionsPlaceholder",
-                  'e.g. Move to "Proposal sent" only after pricing was shared. Never skip steps.',
+            {!decides && (
+              <FormField
+                label={t("editor.kanbanInstructions", "Funnel guidance")}
+                error={refusals.kanbanInstructions}
+                group
+                description={t(
+                  "editor.kanbanInstructionsHint",
+                  "Optional: describe your funnel and rules for moving the card; the AI already receives its steps and card data.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={kanbanInstructions}
+                  onChange={(e) => setKanbanInstructions(e.target.value)}
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.kanbanInstructionsPlaceholder",
+                    'e.g. Move to "Proposal sent" only after pricing was shared. Never skip steps.',
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {updateKanbanEntry && (
           <ConfigurableToolCard
             selected={updateKanbanEnabled}
+            id={nativeToolAnchor(UPDATE_KANBAN_TOOL)}
             onToggle={() => toggleNative(UPDATE_KANBAN_TOOL)}
             icon={nativeToolMeta(UPDATE_KANBAN_TOOL, t).icon}
             title={nativeToolMeta(UPDATE_KANBAN_TOOL, t).label}
             description={nativeToolMeta(UPDATE_KANBAN_TOOL, t).description}
-            configured={updateKanbanTaskInstructions.trim() !== ""}
+            configured={!decides && updateKanbanTaskInstructions.trim() !== ""}
           >
-            <FormField
-              label={t("editor.updateKanbanInstructions", "Usage guidance")}
-              error={refusals.updateKanbanInstructions}
-              group
-              description={t(
-                "editor.updateKanbanInstructionsHint",
-                "Optional. Say when and how the agent should change the card's title, description, priority, or dates.",
-              )}
-            >
-              <Textarea
-                value={updateKanbanTaskInstructions}
-                onChange={(e) =>
-                  setUpdateKanbanTaskInstructions(e.target.value)
-                }
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.updateKanbanInstructionsPlaceholder",
-                  "e.g. When the customer confirms a meeting, set the due date; keep the title as the customer's full name.",
+            {!decides && (
+              <FormField
+                label={t("editor.updateKanbanInstructions", "Usage guidance")}
+                error={refusals.updateKanbanInstructions}
+                group
+                description={t(
+                  "editor.updateKanbanInstructionsHint",
+                  "Optional. Say when and how the agent should change the card's title, description, priority, or dates.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={updateKanbanTaskInstructions}
+                  onChange={(e) =>
+                    setUpdateKanbanTaskInstructions(e.target.value)
+                  }
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.updateKanbanInstructionsPlaceholder",
+                    "e.g. When the customer confirms a meeting, set the due date; keep the title as the customer's full name.",
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {openCaseEntry && !(observing && openCaseEntry.deliversToCustomer) && (
           <ConfigurableToolCard
             selected={openCaseEnabled}
+            id={nativeToolAnchor(OPEN_CASE_TOOL)}
             onToggle={() => toggleNative(OPEN_CASE_TOOL)}
             icon={nativeToolMeta(OPEN_CASE_TOOL, t).icon}
             title={nativeToolMeta(OPEN_CASE_TOOL, t).label}
@@ -1930,6 +2035,7 @@ export function ToolGrantsEditor({
           !(observing && sendImageEntry.deliversToCustomer) && (
             <ConfigurableToolCard
               selected={sendImageEnabled}
+              id={nativeToolAnchor(SEND_IMAGE_TOOL)}
               onToggle={() => toggleNative(SEND_IMAGE_TOOL)}
               icon={nativeToolMeta(SEND_IMAGE_TOOL, t).icon}
               title={nativeToolMeta(SEND_IMAGE_TOOL, t).label}
@@ -1953,6 +2059,7 @@ export function ToolGrantsEditor({
         {resolveEntry && (
           <ConfigurableToolCard
             selected={resolveEnabled}
+            id={nativeToolAnchor(RESOLVE_TOOL)}
             onToggle={() => toggleNative(RESOLVE_TOOL)}
             icon={nativeToolMeta(RESOLVE_TOOL, t).icon}
             title={nativeToolMeta(RESOLVE_TOOL, t).label}
@@ -1969,67 +2076,75 @@ export function ToolGrantsEditor({
         {attrEntry && (
           <ConfigurableToolCard
             selected={attrEnabled}
+            id={nativeToolAnchor(ATTR_TOOL)}
             onToggle={() => toggleNative(ATTR_TOOL)}
             icon={nativeToolMeta(ATTR_TOOL, t).icon}
             title={nativeToolMeta(ATTR_TOOL, t).label}
             description={nativeToolMeta(ATTR_TOOL, t).description}
-            configured={customAttributeInstructions.trim() !== ""}
+            configured={!decides && customAttributeInstructions.trim() !== ""}
           >
-            <FormField
-              label={t("editor.attrInstructions", "Usage guidance")}
-              error={refusals.attributeInstructions}
-              group
-              description={t(
-                "editor.attrInstructionsHint",
-                "Optional. Say which conversation, contact, or kanban card attribute the agent should set, and when.",
-              )}
-            >
-              <Textarea
-                value={customAttributeInstructions}
-                onChange={(e) => setCustomAttributeInstructions(e.target.value)}
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.attrInstructionsPlaceholder",
-                  'e.g. Save the qualified budget on the contact as "orcamento"; set "lead_stage" on the card.',
+            {!decides && (
+              <FormField
+                label={t("editor.attrInstructions", "Usage guidance")}
+                error={refusals.attributeInstructions}
+                group
+                description={t(
+                  "editor.attrInstructionsHint",
+                  "Optional. Say which conversation, contact, or kanban card attribute the agent should set, and when.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={customAttributeInstructions}
+                  onChange={(e) =>
+                    setCustomAttributeInstructions(e.target.value)
+                  }
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.attrInstructionsPlaceholder",
+                    'e.g. Save the qualified budget on the contact as "orcamento"; set "lead_stage" on the card.',
+                  )}
+                />
+              </FormField>
+            )}
           </ConfigurableToolCard>
         )}
         {labelEntry && (
           <ConfigurableToolCard
             selected={labelEnabled}
+            id={nativeToolAnchor(LABEL_TOOL)}
             onToggle={() => toggleNative(LABEL_TOOL)}
             icon={nativeToolMeta(LABEL_TOOL, t).icon}
             title={nativeToolMeta(LABEL_TOOL, t).label}
             description={nativeToolMeta(LABEL_TOOL, t).description}
             configured={
-              labelInstructions.trim() !== "" ||
+              (!decides && labelInstructions.trim() !== "") ||
               protectedLabels.trim() !== "" ||
               allowedLabels.trim() !== ""
             }
           >
-            <FormField
-              label={t("editor.labelInstructions", "Usage guidance")}
-              error={refusals.labelInstructions}
-              group
-              description={t(
-                "editor.labelInstructionsHint",
-                "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
-              )}
-            >
-              <Textarea
-                value={labelInstructions}
-                onChange={(e) => setLabelInstructions(e.target.value)}
-                rows={3}
-                maxLength={TOOL_INSTRUCTIONS_MAX}
-                placeholder={t(
-                  "editor.labelInstructionsPlaceholder",
-                  'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
+            {!decides && (
+              <FormField
+                label={t("editor.labelInstructions", "Usage guidance")}
+                error={refusals.labelInstructions}
+                group
+                description={t(
+                  "editor.labelInstructionsHint",
+                  "Optional. Which labels the conversation, the contact or the card should carry, and when. The AI sees the ones standing now; write your rules here, including which of them are mutually exclusive.",
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={labelInstructions}
+                  onChange={(e) => setLabelInstructions(e.target.value)}
+                  rows={3}
+                  maxLength={TOOL_INSTRUCTIONS_MAX}
+                  placeholder={t(
+                    "editor.labelInstructionsPlaceholder",
+                    'e.g. The conversation carries exactly one of "cancelamento", "compra-de-ingresso" or "outros": to swap it, name the old one in remove and the new one in add, in the same call. Do not name a label you are not changing.',
+                  )}
+                />
+              </FormField>
+            )}
             <FormField
               label={t("editor.protectedLabels", "Labels off limits")}
               description={t(
@@ -2098,17 +2213,19 @@ export function ToolGrantsEditor({
             )}
           </ConfigurableToolCard>
         )}
-        <p className="text-text-muted text-xs">
-          {t(
-            "editor.tools.nativeContextNote",
-            "The conversation and contact are provided automatically — the AI only decides to use a tool and fills its specific arguments.",
-          )}
-        </p>
-        {selectedNative.size === 0 && (
+        {!decides && (
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.tools.nativeContextNote",
+              "The conversation and contact are provided automatically. The AI only decides to use a tool and fills its specific arguments.",
+            )}
+          </p>
+        )}
+        {!decides && selectedNative.size === 0 && (
           <p className="text-text-muted text-xs">
             {t(
               "editor.tools.noNativeSelected",
-              "No native tools selected — the agent can only chat.",
+              "No native tools selected. The agent can only chat.",
             )}
           </p>
         )}
