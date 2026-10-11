@@ -4698,7 +4698,7 @@ export async function processChatwootDelivery(
               )
             )?.chatwootAgentBotId ?? null;
           if (ownerBotId === null) return null;
-          // NOTE: A conversation the owner's bot HOLDS sends its delivery down the responder's path
+          // A conversation the owner's bot HOLDS sends its delivery down the responder's path
           // (`observerRuntimeForRoute`), which beside a responder that does not remember folds nothing
           // in. Any witness saying so is enough: standing down on the other reading loses the message.
           const heldBy = (type: string | null | undefined, id: unknown) =>
