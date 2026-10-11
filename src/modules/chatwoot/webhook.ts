@@ -4667,6 +4667,49 @@ export async function processChatwootDelivery(
     responderCovers &&
     (siblingRemembers ??
       (responderRt?.enabled === true && ingestsContinuously(responderRt.mode)));
+  // Beside other watchers and a responder that does not remember, one writer: the memory owner's
+  // route (`watcherMemoryOwner`) runs the media pass with its own settings and appends the customer's
+  // message; another watcher's route stands down from both, as it does beside a remembering
+  // responder. Only where the owner ACTUALLY HAS this message, by the rule that decides it for the
+  // responder (`responderCoversMessage`, against the owner's attach and its bot's sibling delivery):
+  // an owner attached after the emission never got it, and standing down would lose it from memory.
+  // A colleague's reply keeps its path (no media to decide, and the dedup window takes the second).
+  // An unreadable list, or an owner whose bot row is gone, leaves every route writing as before.
+  const ownerCovers =
+    observer !== null &&
+    responderRt !== null &&
+    !responderRemembers &&
+    coveredMessage?.column === "inbound" &&
+    (await (async () => {
+      const owner = (await watchers())?.[0];
+      if (owner === undefined || owner.agentId === observer.agentId)
+        return false;
+      const ownerBotId =
+        (
+          await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+            db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId: params.tenantId,
+                chatwootInstanceId: params.instanceId,
+                agentId: owner.agentId,
+              },
+              select: { chatwootAgentBotId: true },
+            }),
+          )
+        )?.chatwootAgentBotId ?? null;
+      if (ownerBotId === null) return false;
+      return responderCoversMessage(
+        params.tenantId,
+        params.instanceId,
+        params.deliveryRowId,
+        owner.attachedAt,
+        ownerBotId,
+        n.conversationId,
+        coveredMessage,
+        n.lastActivityAt == null ? null : new Date(n.lastActivityAt * 1000),
+        base,
+      );
+    })());
   // The mark stays the responder's whenever there is one, deliberately NOT asked of
   // `responderCovers`: an absent sibling may be in transit (the emission clock is second-granular),
   // and moving the mark would suppress its reply. Coverage may cost a duplicate memory line, never an
@@ -4913,6 +4956,7 @@ export async function processChatwootDelivery(
   // A TEST responder analyses media too, on the answer path of an activated conversation, so the
   // observer stands down there as well. Asked only on an observer route beside a test responder.
   const responderAnalysesMedia =
+    ownerCovers ||
     (responderRemembers && !boundWatcherMayRefuseMedia) ||
     (responderCovers &&
       responderRt?.enabled === true &&
@@ -5915,7 +5959,13 @@ export async function processChatwootDelivery(
     });
   }
   // NOTE: For the type checker: the narrowing from `routeIngests` does not survive the const.
-  if (rt !== null && routeIngests && !responderRemembers && !responderCommand) {
+  if (
+    rt !== null &&
+    routeIngests &&
+    !responderRemembers &&
+    !responderCommand &&
+    !ownerCovers
+  ) {
     // Whose memory the append is filed under, which decides whose compaction settings summarise
     // the attendance. Both routes can arm the same job (the observer appends a colleague's reply until
     // the responder's delivery finishes) and the later arm wins, so it is the responder whenever it
@@ -5992,8 +6042,8 @@ export async function processChatwootDelivery(
       });
     }
   } else if (routeIngests) {
-    // NOTE: A route that INGESTS, standing down on purpose (the responder has the message or will
-    // consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
+    // NOTE: A route that INGESTS, standing down on purpose (the responder or the memory owner has the
+    // message, or the responder will consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
     // look at this message", and silence would requeue a handled row until its attempts ran out.
     params.onIngest?.("covered");
   } else if (observer?.enabled === true && responderRt === null) {
