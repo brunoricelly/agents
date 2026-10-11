@@ -786,7 +786,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     await withSecondWatcher(new Date(), async ({ secondBot }) => {
       const seen: string[] = [];
       // Emitted an hour before the owner was attached: Chatwoot never fanned it to the owner.
-      const { messageId } = await deliver(
+      const { messageId, deliveryRowId } = await deliver(
         secondBot,
         503,
         SHARED_INBOX,
@@ -799,6 +799,15 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       );
       expect(seen).not.toContain("covered");
       expect(await ingestRowFor(messageId)).not.toBeNull();
+      // It stated `false` at the claim, as a watcher that may delegate, and writing says `true`.
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: deliveryRowId },
+            select: { routeRemembers: true },
+          })
+        ).routeRemembers,
+      ).toBe(true);
     });
   });
 
