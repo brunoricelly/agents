@@ -4338,20 +4338,11 @@ export async function processChatwootDelivery(
         (observer !== null
           ? responderRt !== null
           : ingestsContinuously(rt.mode));
-  // What the claim STATES, which another watcher's route reads as this one's append: a watcher that
-  // is not the inbox's memory owner may leave the append to it (`ownerCovers`, decided only after the
-  // claim), so it states `false` until it decides to write, and a route electing it as owner meanwhile
-  // never reads an intent it may not keep. Moved to `true` below, before the append, when it writes.
-  const claimedRemembers =
-    routeRemembers &&
-    !(
-      observer !== null &&
-      responderRt !== null &&
-      (await (async () => {
-        const first = (await watchers())?.[0];
-        return first !== undefined && first.agentId !== observer.agentId;
-      })())
-    );
+  // What the claim STATES, which other routes read as this one's append (a watcher beside it, the
+  // strand recoveries): an observer's route may still leave the append to the responder or to the
+  // memory owner, decided only after the claim, so it states `false` until it decides to write and
+  // never exposes an intent it may not keep. Moved to `true` below, just before the append.
+  const claimedRemembers = routeRemembers && observer === null;
   // Window 1: the binding moved between receipt and this resolution, and the new reading
   // resolves NO runtime, so claiming would settle PROCESSED having looked at nothing. The row's receipt
   // generation makes this exact. Refuse instead of re-resolving (both readings are about now): the row
@@ -5984,11 +5975,17 @@ export async function processChatwootDelivery(
       (rt.enabled && params.owesMemoryOnly === true));
   // NOTE: The record follows the hand-over: a claim that recorded `false` and then handed the message
   // to a watcher must say `true`, or the observer beside it, trusting the record, appends a duplicate.
-  // A watcher that is not the memory owner states `false` at the claim, and says `true` here when it
-  // writes after all; one that leaves the append to the owner keeps it.
+  // An observer's route states `false` at the claim and says `true` here only when it is about to
+  // append; one that leaves the append to the responder or to the owner keeps `false`.
   // Guarded on the value it corrects (only `false` to `true`); best-effort, since failing the delivery
   // would trade a duplicate line for a missing one.
-  if (routeIngests && !claimedRemembers && !ownerCovers) {
+  if (
+    routeIngests &&
+    !claimedRemembers &&
+    !responderRemembers &&
+    !responderCommand &&
+    !ownerCovers
+  ) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: { id: params.deliveryRowId, routeRemembers: false },
