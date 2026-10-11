@@ -4681,8 +4681,16 @@ export async function processChatwootDelivery(
     !responderRemembers &&
     coveredMessage?.column === "inbound"
       ? await (async () => {
-          const owner = (await watchers())?.[0];
-          if (owner === undefined || owner.agentId === observer.agentId)
+          const list = await watchers();
+          const owner = list?.[0];
+          // NOTE: Only for a route the list names, as `watcherMemoryOwner` asks: a watcher taken off the
+          // inbox still receives (its route resolves without the row), and delegating there can hand the
+          // message to a route that stood down for it.
+          if (
+            owner === undefined ||
+            owner.agentId === observer.agentId ||
+            !list?.some((w) => w.agentId === observer.agentId)
+          )
             return null;
           const ownerBotId =
             (

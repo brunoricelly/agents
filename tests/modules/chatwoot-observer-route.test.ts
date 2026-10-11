@@ -1126,6 +1126,59 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
   });
 
+  test("beside other watchers, a route the list no longer names does not stand down for the watcher left first", async () => {
+    await withSecondWatcher(HOUR_AGO(), async ({ secondBot }) => {
+      const inbox = await suDb.inbox.findFirstOrThrow({
+        where: { tenantId, chatwootInboxId: SHARED_INBOX },
+        select: { id: true },
+      });
+      const ownerRow = await suDb.inboxObserver.findFirstOrThrow({
+        where: { tenantId, inboxId: inbox.id, agentId: observerId },
+      });
+      // The second watcher stands down for the owner, and its claim says it remembers.
+      const seen: string[] = [];
+      const second = await deliver(
+        secondBot,
+        510,
+        SHARED_INBOX,
+        OPEN_HUMAN,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        { onIngest: (o) => seen.push(o) },
+      );
+      expect(seen).toEqual(["covered"]);
+      await suDb.chatwootWebhookDelivery.update({
+        where: { id: second.deliveryRowId },
+        data: {
+          conversationId: 510,
+          inboundMessageId: second.messageId,
+          routeAgentBotId: secondBot,
+        },
+      });
+      // The owner is taken off the inbox before its own delivery runs: it still arrives on its route.
+      await suDb.inboxObserver.delete({ where: { id: ownerRow.id } });
+      try {
+        await deliver(
+          OBSERVER_BOT,
+          510,
+          SHARED_INBOX,
+          OPEN_HUMAN,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          { messageId: second.messageId, onIngest: (o) => seen.push(o) },
+        );
+        expect(seen[1]).not.toBe("covered");
+        expect(await ingestRowFor(second.messageId)).not.toBeNull();
+      } finally {
+        await suDb.inboxObserver.create({ data: ownerRow });
+      }
+    });
+  });
+
   // The persona bot deleted out-of-band on Chatwoot leaves the binding standing and the responder's
   // route dead — the state the console shows as "missing", with a Reconnect beside it. Standing
   // down for a delivery that never comes would lose the message from memory entirely.
