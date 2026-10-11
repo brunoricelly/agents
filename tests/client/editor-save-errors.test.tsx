@@ -10,6 +10,8 @@ import { firstRefusalAt, settlesRefusal } from "@/client/lib/fieldRefusal";
 import { PROTECTED_LABELS_MAX } from "@/modules/agents/tool-guidance";
 import {
   type EditorStub,
+  editTab,
+  NATIVE_CATALOG,
   renderEditor,
   stubEditorApi,
 } from "../utils/agent-editor";
@@ -75,6 +77,7 @@ describe("agent editor save errors", () => {
       field: "guardrails.customPolicy",
     });
     await renderEditor(stub, "behavior");
+    editTab("behavior");
     save();
     await waitFor(() =>
       expect(bannerRows()).toEqual(["The policy is too long.Fix"]),
@@ -97,6 +100,10 @@ describe("agent editor save errors", () => {
     expect(bannerRows()).toEqual(["The policy is too long."]);
     expect(onScreen("The policy is too long.")).toBe(2);
 
+    // The fix the row asks for, and its save (Save waits for an edit there: agents#1206).
+    fireEvent.change(screen.getByRole("textbox", { name: "Custom policy" }), {
+      target: { value: "Seja breve." },
+    });
     const saves = stub.writes.length;
     save();
     await waitFor(() => expect(stub.writes.length).toBe(saves + 1));
@@ -113,6 +120,7 @@ describe("agent editor save errors", () => {
       field: "guardrails.customPolicy",
     });
     await renderEditor(stub, "behavior");
+    editTab("behavior");
     save();
     await waitFor(() => expect(bannerRows().length).toBe(1));
     await goTo("Guardrails");
@@ -140,6 +148,7 @@ describe("agent editor save errors", () => {
       field: "name",
     });
     await renderEditor(stub, "general");
+    editTab("general");
     save();
     await waitFor(() => expect(bannerRows()).toEqual(["That name is taken."]));
 
@@ -148,6 +157,7 @@ describe("agent editor save errors", () => {
       error: "The policy is too long.",
       field: "guardrails.customPolicy",
     });
+    editTab("behavior");
     save();
     await waitFor(() =>
       expect(bannerRows()).toEqual([
@@ -174,6 +184,7 @@ describe("agent editor save errors", () => {
   test("a refusal no control can carry is kept on the banner, and says so only when it is proved", async () => {
     const stub = stubEditorApi({});
     await renderEditor(stub, "behavior");
+    editTab("behavior");
 
     // A native-tool note the console draws no field for.
     refuseNextPatch(stub, {
@@ -243,14 +254,15 @@ describe("agent editor save errors", () => {
       const stub = stubEditorApi({ name: "Atendente" });
       refuseNextPatch(stub, { error: "That name is taken.", field: "name" });
       await renderEditor(stub, "general");
+      const name = screen.getByRole("textbox", { name: /^Name/ });
+      fireEvent.change(name, { target: { value: "Atendente B" } });
       save();
       await waitFor(() => expect(scrolled.length).toBe(1));
 
       // The row leaves with an edit and comes back with the value: nothing was answered, no scroll.
-      const name = screen.getByRole("textbox", { name: /^Name/ });
       fireEvent.change(name, { target: { value: "Atendente 2" } });
       await waitFor(() => expect(bannerRows()).toEqual([]));
-      fireEvent.change(name, { target: { value: "Atendente" } });
+      fireEvent.change(name, { target: { value: "Atendente B" } });
       await waitFor(() => expect(bannerRows().length).toBe(1));
       expect(scrolled.length).toBe(1);
 
@@ -303,7 +315,7 @@ describe("agent editor save errors", () => {
 });
 
 describe("the Tools save checks before it writes anything", () => {
-  const LABELS = { native: [{ name: "set_labels" }] };
+  const LABELS = { native: [{ name: "set_labels" }, { name: "private_note" }] };
   const GRANTED = [
     {
       source: "NATIVE",
@@ -337,6 +349,7 @@ describe("the Tools save checks before it writes anything", () => {
         return json({ error: "conflict" }, 409);
       }
     };
+    editTab("tools");
     save("Save tools");
     fireEvent.click(
       (
@@ -359,6 +372,7 @@ describe("the Tools save checks before it writes anything", () => {
     await renderEditor(stub, "tools");
 
     // Saved as stored, the legacy list is not this save's to refuse.
+    editTab("tools");
     save("Save tools");
     await screen.findByText("Tools updated.");
     expect(stub.writes.map((w) => w.method)).toEqual(["PUT", "PATCH"]);
@@ -388,8 +402,9 @@ describe("every save that writes the agent shows what the server said", () => {
     ["channelRedirect", "Save", "agent"],
   ] as const) {
     test(`${tab}: the server's sentence, and the fallback when nothing answered`, async () => {
-      const stub = stubEditorApi({});
+      const stub = stubEditorApi({}, { catalog: NATIVE_CATALOG });
       await renderEditor(stub, tab);
+      editTab(tab);
       const writes = (p: string) =>
         path === "agent" ? isAgent(stub, p) : isGrants(stub, p);
       stub.override = (method, p) => {
@@ -438,6 +453,7 @@ describe("every save that writes the agent shows what the server said", () => {
       },
     });
     await renderEditor(stub, "decisions");
+    editTab("decisions");
     stub.override = (method, p) => {
       if (method !== "GET" && isAgent(stub, p)) {
         return json({ error: "Refused by the server." }, 422);
@@ -462,6 +478,7 @@ describe("every save that writes the agent shows what the server said", () => {
     const stub = stubEditorApi({});
     refuseNextPatch(stub, { error: "Refused by the server." });
     await renderEditor(stub, "channelRedirect");
+    editTab("channelRedirect");
     save();
     await waitFor(() =>
       expect(bannerRows()).toEqual(["Refused by the server."]),
