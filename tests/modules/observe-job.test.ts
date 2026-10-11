@@ -7,6 +7,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import {
   clearMediaAnnotations,
+  openTranscription,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -1272,6 +1273,78 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       );
       expect(seen).toContain("transferir o ingresso");
     } finally {
+      clearMediaAnnotations();
+    }
+  });
+
+  // A watcher that stood down from its own media pass arms this tick while another route of this
+  // process is still transcribing the voice note: the tick waits for those words, bounded.
+  test("a transcription still in flight is waited for before the transcript is read", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    let seen = "";
+    const MSG = 702;
+    const close = openTranscription({ tenantId, instanceId, messageId: MSG });
+    // The words land only AFTER the tick has read the window, so nothing but the wait can see them.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const settleLater = () => {
+      settle ??= setTimeout(() => {
+        stashMediaAnnotation(
+          { tenantId, instanceId, messageId: MSG },
+          { transcribedText: "quero trocar a data do show" },
+        );
+        close();
+      }, 300);
+    };
+    try {
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: MSG,
+        },
+        appDb,
+        {
+          transcriptionWaitMs: 5_000,
+          makeClient: async () => {
+            const row = message(MSG, "");
+            (row as { attachments?: unknown }).attachments = [
+              { id: 2, file_type: "audio", data_url: "https://x/b.ogg" },
+            ];
+            const c = stubClient([row], [], log) as {
+              getMessages: (...a: unknown[]) => Promise<unknown>;
+            };
+            const read = c.getMessages.bind(c);
+            c.getMessages = async (...a: unknown[]) => {
+              settleLater();
+              return read(...a);
+            };
+            return c as never;
+          },
+          makeModel: () => {
+            const m = verdictModel(
+              { assunto: "outros", confidence: 0.9, reason: "r" },
+              calls,
+            );
+            const inner = m.invoke.bind(m);
+            (m as { invoke: unknown }).invoke = async (
+              msgs: Parameters<typeof inner>[0],
+              opts: Parameters<typeof inner>[1],
+            ) => {
+              seen = JSON.stringify(msgs);
+              return inner(msgs, opts);
+            };
+            return m;
+          },
+        },
+      );
+      expect(seen).toContain("trocar a data do show");
+    } finally {
+      if (settle) clearTimeout(settle);
+      close();
       clearMediaAnnotations();
     }
   });
