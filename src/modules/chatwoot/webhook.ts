@@ -68,6 +68,7 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
+  openMediaPass,
   openTranscription,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -1925,6 +1926,32 @@ async function mediaAdmitted(
 // so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
 // to run it (production+enabled always, test only on the answer path, disabled never).
 export async function runEagerMedia(
+  tenantId: bigint,
+  instanceId: bigint,
+  n: NormalizedChatwootEvent,
+  base: PrismaClient,
+  // Where this media belongs, in LOCAL ids, for the `stt`/`vision` flow lines. Required, because an
+  // omitted field writes a NULL that reads as "no conversation" and hides the failed voice note from
+  // /logs?conversationId=. The caller already holds all three; null only where no agent is bound,
+  // which is also where no config resolves and no line is written.
+  owner: EagerMediaOwner,
+): Promise<void> {
+  // Announced for the whole pass, so an observation tick that arms beside it (a watcher that left the
+  // pass to this route) waits for what it reads instead of rendering it unread (`awaitOpenMediaPasses`).
+  const messageId = n.message?.id;
+  const close =
+    messageId != null &&
+    (firstAudioAttachment(n) !== null || visualAttachments(n).length > 0)
+      ? openMediaPass({ tenantId, instanceId, messageId })
+      : () => {};
+  try {
+    await eagerMediaPass(tenantId, instanceId, n, base, owner);
+  } finally {
+    close();
+  }
+}
+
+async function eagerMediaPass(
   tenantId: bigint,
   instanceId: bigint,
   n: NormalizedChatwootEvent,

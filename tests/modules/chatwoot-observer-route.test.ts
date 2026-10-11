@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import { ingestDedupeKey } from "@/graph/ingest-job";
+import { awaitOpenMediaPasses } from "@/modules/chatwoot/annotations";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   processChatwootDelivery,
@@ -816,10 +817,11 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         credentialRef: `vault:${key.id}`,
       },
     };
-    const provider = (text: string) => {
+    const provider = (text: string, during?: () => Promise<void>) => {
       const calls = { n: 0 };
       const fetchImpl = (async () => {
         calls.n++;
+        await during?.();
         return new Response(JSON.stringify({ text }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -865,7 +867,17 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       await withSecondWatcher(
         HOUR_AGO(),
         async ({ secondBot }) => {
-          const ownerStt = provider("palavras do dono");
+          // While the owner's provider runs, the pass is announced for this message, which is what an
+          // observation tick armed beside it waits on.
+          let openDuringPass: boolean | null = null;
+          const ownerStt = provider("palavras do dono", async () => {
+            openDuringPass = await awaitOpenMediaPasses(
+              tenantId,
+              instanceId,
+              [messageSeq],
+              { timeoutMs: 0 },
+            );
+          });
           const otherStt = provider("palavras da outra");
           const { messageId } = await deliver(
             secondBot,
@@ -907,6 +919,12 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
           );
           expect(ownerStt.calls.n).toBe(1);
           expect(otherStt.calls.n).toBe(0);
+          expect(openDuringPass as boolean | null).toBe(true);
+          expect(
+            await awaitOpenMediaPasses(tenantId, instanceId, [messageId], {
+              timeoutMs: 0,
+            }),
+          ).toBe(false);
           expect(writtenBack.join("\n")).toContain("palavras do dono");
           expect(writtenBack.join("\n")).not.toContain("palavras da outra");
           expect(agentOf(await ingestRowFor(messageId))).toBe(

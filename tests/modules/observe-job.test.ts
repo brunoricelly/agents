@@ -7,7 +7,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import {
   clearMediaAnnotations,
-  openTranscription,
+  openMediaPass,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -1278,13 +1278,13 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   // A watcher that stood down from its own media pass arms this tick while another route of this
-  // process is still transcribing the voice note: the tick waits for those words, bounded.
-  test("a transcription still in flight is waited for before the transcript is read", async () => {
+  // process is still reading the attachment: the tick waits for that pass, bounded.
+  test("a voice note still being read is waited for before the transcript is read", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
     let seen = "";
     const MSG = 702;
-    const close = openTranscription({ tenantId, instanceId, messageId: MSG });
+    const close = openMediaPass({ tenantId, instanceId, messageId: MSG });
     // The words land only AFTER the tick has read the window, so nothing but the wait can see them.
     let settle: ReturnType<typeof setTimeout> | undefined;
     const settleLater = () => {
@@ -1308,7 +1308,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         },
         appDb,
         {
-          transcriptionWaitMs: 5_000,
+          mediaWaitMs: 5_000,
           makeClient: async () => {
             const row = message(MSG, "");
             (row as { attachments?: unknown }).attachments = [
@@ -1342,6 +1342,76 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         },
       );
       expect(seen).toContain("trocar a data do show");
+    } finally {
+      if (settle) clearTimeout(settle);
+      close();
+      clearMediaAnnotations();
+    }
+  });
+
+  test("an image still being read is waited for before the transcript is read", async () => {
+    const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
+    const calls = { n: 0 };
+    let seen = "";
+    const MSG = 703;
+    const close = openMediaPass({ tenantId, instanceId, messageId: MSG });
+    // The words land only AFTER the tick has read the window, so nothing but the wait can see them.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const settleLater = () => {
+      settle ??= setTimeout(() => {
+        stashMediaAnnotation(
+          { tenantId, instanceId, messageId: MSG },
+          { imageDescription: "comprovante de pagamento do ingresso" },
+        );
+        close();
+      }, 300);
+    };
+    try {
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: MSG,
+        },
+        appDb,
+        {
+          mediaWaitMs: 5_000,
+          makeClient: async () => {
+            const row = message(MSG, "");
+            (row as { attachments?: unknown }).attachments = [
+              { id: 3, file_type: "image", data_url: "https://x/c.jpg" },
+            ];
+            const c = stubClient([row], [], log) as {
+              getMessages: (...a: unknown[]) => Promise<unknown>;
+            };
+            const read = c.getMessages.bind(c);
+            c.getMessages = async (...a: unknown[]) => {
+              settleLater();
+              return read(...a);
+            };
+            return c as never;
+          },
+          makeModel: () => {
+            const m = verdictModel(
+              { assunto: "outros", confidence: 0.9, reason: "r" },
+              calls,
+            );
+            const inner = m.invoke.bind(m);
+            (m as { invoke: unknown }).invoke = async (
+              msgs: Parameters<typeof inner>[0],
+              opts: Parameters<typeof inner>[1],
+            ) => {
+              seen = JSON.stringify(msgs);
+              return inner(msgs, opts);
+            };
+            return m;
+          },
+        },
+      );
+      expect(seen).toContain("comprovante de pagamento do ingresso");
     } finally {
       if (settle) clearTimeout(settle);
       close();

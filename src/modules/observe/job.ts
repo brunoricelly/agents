@@ -35,7 +35,7 @@ import { clipText, clipTextEnd } from "@/lib/text";
 import { isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow } from "@/modules/agents/speaks";
 import {
-  awaitOpenTranscriptions,
+  awaitOpenMediaPasses,
   overlayMediaAnnotations,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -94,6 +94,7 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { hasUnextractedVisual } from "@/modules/vision/extract-message";
 import { type MonitoringConfig, readMonitoringConfig } from "./settings";
 
 // The OBSERVE job: a monitoring agent's turn on a conversation it does not answer
@@ -136,9 +137,9 @@ const REFUSAL_ENDING = {
 } as const satisfies Record<string, "retry" | "info" | "warn">;
 type Refusal = keyof typeof REFUSAL_ENDING;
 
-// How long a tick waits for a voice note this process is still transcribing, once for the whole
-// window: the flush's bound (FLUSH_TRANSCRIPTION_WAIT_MS). Past it the audio renders as unheard.
-const OBSERVE_TRANSCRIPTION_WAIT_MS = 8000;
+// How long a tick waits for media this process is still reading, once for the whole window: the
+// flush's bound (FLUSH_TRANSCRIPTION_WAIT_MS). Past it the attachment renders as unread.
+const OBSERVE_MEDIA_WAIT_MS = 8000;
 
 const TRANSCRIPT_MAX_CHARS = 40_000;
 // What stands in for the start of a message the window had no room for.
@@ -474,8 +475,8 @@ export interface ObserveDeps {
   // The turn's deadline, injectable so a test can assert the tick gives up without waiting a
   // minute for it. Production never passes it.
   timeoutMs?: number;
-  // How long the tick waits for a transcription in flight, injectable like the deadline.
-  transcriptionWaitMs?: number;
+  // How long the tick waits for a media pass in flight, injectable like the deadline.
+  mediaWaitMs?: number;
   // The fetch the outbound tools use, injectable like makeClient and makeModel, since the observer
   // runs the ordinary toolset. Production never passes it.
   outboundFetch?: typeof fetch;
@@ -1395,21 +1396,22 @@ export async function runObserve(
   // description may exist only in the in-process annotation store (docs/stt.md). Overlaid as the
   // direct turn and the flush do, never over a value the fork did write.
   overlayMediaAnnotations(tenantId, instanceId, fetched);
-  // A voice note another route of this process is still transcribing: a watcher that stood down from
-  // its own media pass (beside a responder or the memory owner that has the message) arms this tick
-  // without waiting for those words. Waited for once, bounded like the flush, then overlaid again.
-  const unheard = fetched
+  // Media another route of this process is still reading (a voice note, an image, a document): a
+  // watcher that stood down from its own pass (beside a responder or the memory owner that has the
+  // message) arms this tick without waiting for it. Waited for once, bounded like the flush, then
+  // overlaid again.
+  const unread = fetched
     .filter(
       (m) =>
         m.messageType === "incoming" &&
-        m.attachmentTypes.includes("audio") &&
-        !m.transcribedText,
+        ((m.attachmentTypes.includes("audio") && !m.transcribedText) ||
+          hasUnextractedVisual(m.visuals)),
     )
     .map((m) => m.id);
   if (
-    unheard.length > 0 &&
-    (await awaitOpenTranscriptions(tenantId, instanceId, unheard, {
-      timeoutMs: deps.transcriptionWaitMs ?? OBSERVE_TRANSCRIPTION_WAIT_MS,
+    unread.length > 0 &&
+    (await awaitOpenMediaPasses(tenantId, instanceId, unread, {
+      timeoutMs: deps.mediaWaitMs ?? OBSERVE_MEDIA_WAIT_MS,
       signal: deadline,
     }))
   )

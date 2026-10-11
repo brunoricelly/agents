@@ -226,7 +226,18 @@ export async function awaitOpenTranscriptions(
       return !note?.transcribedText && !note?.transcriptionEmpty;
     })
     .map((id) => openTranscriptions.get(keyOf(tenantId, instanceId, id)))
-    .filter((e): e is { count: number; waiters: Set<() => void> } => !!e);
+    .filter((e): e is OpenEntry => !!e);
+  return waitForOpen(open, opts);
+}
+
+type OpenEntry = { count: number; waiters: Set<() => void> };
+
+// One deadline for every entry: resolves when each has closed (or woken), the time runs out, or the
+// signal aborts. Resolves to whether anything was open to wait for.
+async function waitForOpen(
+  open: OpenEntry[],
+  opts: { timeoutMs: number; signal?: AbortSignal },
+): Promise<boolean> {
   if (open.length === 0 || opts.signal?.aborted) return open.length > 0;
   await new Promise<void>((resolve) => {
     let pending = open.length;
@@ -254,11 +265,51 @@ export async function awaitOpenTranscriptions(
   return true;
 }
 
+// Media passes this process is running right now, per message, audio or visual: an observation that
+// arms beside a route doing the pass for it (the responder's, or the memory owner's) waits for the
+// pass to settle instead of reading its attachments as unread. Opened by the eager pass when it has
+// anything to read and closed when it settles; a count, like the transcriptions above.
+const openMediaPasses = new Map<string, OpenEntry>();
+
+export function openMediaPass(target: {
+  tenantId: bigint;
+  instanceId: bigint;
+  messageId: number;
+}): () => void {
+  const k = keyOf(target.tenantId, target.instanceId, target.messageId);
+  const entry = openMediaPasses.get(k) ?? { count: 0, waiters: new Set() };
+  entry.count += 1;
+  openMediaPasses.set(k, entry);
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    entry.count -= 1;
+    if (entry.count > 0) return;
+    openMediaPasses.delete(k);
+    for (const wake of entry.waiters) wake();
+  };
+}
+
+// Waits until no media pass is open for these messages, bounded like `awaitOpenTranscriptions`.
+export async function awaitOpenMediaPasses(
+  tenantId: bigint,
+  instanceId: bigint,
+  messageIds: number[],
+  opts: { timeoutMs: number; signal?: AbortSignal },
+): Promise<boolean> {
+  const open = messageIds
+    .map((id) => openMediaPasses.get(keyOf(tenantId, instanceId, id)))
+    .filter((e): e is OpenEntry => !!e);
+  return waitForOpen(open, opts);
+}
+
 // Test isolation only — production never clears the store wholesale (the TTL sweep does).
 export function clearMediaAnnotations(): void {
   store.clear();
   fileReads.clear();
   openTranscriptions.clear();
+  openMediaPasses.clear();
   if (sweepTimer) {
     clearTimeout(sweepTimer);
     sweepTimer = undefined;
