@@ -243,6 +243,7 @@
     "mcpStdioDisabled": "The stdio transport is disabled on this server.",
     "mcpTokenNotFound": "MCP token not found",
     "mcpUrlRequired": "The http/sse transport requires a URL.",
+    "metricsTooSlow": "The metrics for this period took longer than {{seconds}}s to compute. Try a shorter period, or try again in a moment.",
     "modelConfigConversationTtlAfterPrefix": "promptCacheConversationTtl \"{{conversationTtl}}\" needs promptCacheTtl \"{{prefixTtl}}\": a longer cache TTL cannot follow a shorter one",
     "modelConfigModelRequired": "model is required for this provider",
     "modelConfigPromptCache1hAnthropicOnly": "{{field}} \"1h\" is only supported on the \"anthropic\" provider, not \"{{provider}}\": its usage does not say which writes were 1h, so they could not be priced",
