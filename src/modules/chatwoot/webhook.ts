@@ -4339,10 +4339,11 @@ export async function processChatwootDelivery(
           ? responderRt !== null
           : ingestsContinuously(rt.mode));
   // What the claim STATES, which other routes read as this one's append (a watcher beside it, the
-  // strand recoveries): an observer's route may still leave the append to the responder or to the
-  // memory owner, decided only after the claim, so it states `false` until it decides to write and
-  // never exposes an intent it may not keep. Moved to `true` below, just before the append.
-  const claimedRemembers = routeRemembers && observer === null;
+  // strand recoveries). An observer's route may still leave the append to the responder or to the
+  // memory owner, decided only after the claim, so it states null ("not decided"), then `false` the
+  // moment it leaves the message to another route and `true` just before it appends.
+  const claimedRemembers: boolean | null =
+    observer !== null && routeRemembers ? null : routeRemembers;
   // Window 1: the binding moved between receipt and this resolution, and the new reading
   // resolves NO runtime, so claiming would settle PROCESSED having looked at nothing. The row's receipt
   // generation makes this exact. Refuse instead of re-resolving (both readings are about now): the row
@@ -4728,7 +4729,8 @@ export async function processChatwootDelivery(
           )
             return null;
           // ...and what the owner's own delivery of this event decided, read from its claim: an owner
-          // switched off when its delivery ran remembered nothing, whatever the list says now. No claim
+          // switched off when its delivery ran, or one that left the message to the responder, states
+          // `false`. Undecided (null, its route still between the claim and the decision) or no claim
           // yet is the list's answer, the same fallback the responder's sibling read makes.
           return (await responderSiblingRemembers(
             params.tenantId,
@@ -4745,6 +4747,26 @@ export async function processChatwootDelivery(
         })()
       : null;
   const ownerCovers = coveringOwner !== null;
+  // An observer's route that leaves the message to another route says so at once, so a watcher
+  // electing it as owner meanwhile does not read its undecided claim as an append.
+  if (
+    observer !== null &&
+    claimedRemembers === null &&
+    (ownerCovers || responderRemembers)
+  ) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: params.deliveryRowId, routeRemembers: null },
+        data: { routeRemembers: false },
+      }),
+    ).catch((err) => {
+      logger.warn(
+        "chatwoot: could not record that this delivery left the message to another route (conv=%s): %s",
+        n.conversationId === null ? "?" : String(n.conversationId),
+        errMsg(err),
+      );
+    });
+  }
   // The mark stays the responder's whenever there is one, deliberately NOT asked of
   // `responderCovers`: an absent sibling may be in transit (the emission clock is second-granular),
   // and moving the mark would suppress its reply. Coverage may cost a duplicate memory line, never an
@@ -5975,20 +5997,23 @@ export async function processChatwootDelivery(
       (rt.enabled && params.owesMemoryOnly === true));
   // NOTE: The record follows the hand-over: a claim that recorded `false` and then handed the message
   // to a watcher must say `true`, or the observer beside it, trusting the record, appends a duplicate.
-  // An observer's route states `false` at the claim and says `true` here only when it is about to
-  // append; one that leaves the append to the responder or to the owner keeps `false`.
+  // An observer's route states null at the claim and says `true` here only when it is about to
+  // append; one that leaves the message to the responder or to the owner said `false` above.
   // Guarded on the value it corrects (only `false` to `true`); best-effort, since failing the delivery
   // would trade a duplicate line for a missing one.
   if (
     routeIngests &&
-    !claimedRemembers &&
+    claimedRemembers !== true &&
     !responderRemembers &&
     !responderCommand &&
     !ownerCovers
   ) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
-        where: { id: params.deliveryRowId, routeRemembers: false },
+        where: {
+          id: params.deliveryRowId,
+          OR: [{ routeRemembers: false }, { routeRemembers: null }],
+        },
         data: { routeRemembers: true },
       }),
     ).catch((err) => {

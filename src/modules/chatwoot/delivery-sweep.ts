@@ -723,7 +723,7 @@ async function record(
         String(row.humanReplyShape),
         String(row.conversationId),
         row.routeRemembers === false
-          ? "its claim recorded no append of its own (it left the reply to a sibling route, there is no responder of ours on the inbox, the watcher is switched off, or it stranded before deciding), so this line asserts no loss"
+          ? "its claim recorded that the route remembers nothing (no responder of ours on the inbox, or the watcher switched off), so nothing was owed unless an arm failed after the claim"
           : memoryArmed === true
             ? "the watcher never folded it into its memory, and the recovery of that append is armed"
             : "the watcher never folded it into its memory, and this row names no reply to go back for",

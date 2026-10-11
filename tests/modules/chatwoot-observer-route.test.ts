@@ -1345,6 +1345,48 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
   });
 
+  test("beside other watchers, an owner whose delivery is still deciding covers the message: the other watcher's route does not append", async () => {
+    await withSecondWatcher(
+      new Date(Date.now() - 60_000),
+      async ({ secondBot }) => {
+        messageSeq += 1;
+        const messageId = messageSeq;
+        convOfMessage.set(messageId, 513);
+        // The owner's delivery of the same message, claimed and still between its claim and its
+        // decision: its claim states nothing yet.
+        await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `obr-${process.pid}-owner-deciding`,
+            event: "message_created",
+            status: "PROCESSING",
+            conversationId: 513,
+            inboundMessageId: messageId,
+            routeAgentBotId: OBSERVER_BOT,
+            routeObserved: true,
+            routeRemembers: null,
+            claimedAt: new Date(),
+          },
+        });
+        const seen: string[] = [];
+        await deliver(
+          secondBot,
+          513,
+          SHARED_INBOX,
+          OPEN_HUMAN,
+          false,
+          undefined,
+          undefined,
+          undefined,
+          { messageId, onIngest: (o) => seen.push(o) },
+        );
+        expect(seen).toEqual(["covered"]);
+        expect(await ingestRowFor(messageId)).toBeNull();
+      },
+    );
+  });
+
   // The persona bot deleted out-of-band on Chatwoot leaves the binding standing and the responder's
   // route dead — the state the console shows as "missing", with a Reconnect beside it. Standing
   // down for a delivery that never comes would lose the message from memory entirely.

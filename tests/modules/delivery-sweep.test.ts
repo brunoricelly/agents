@@ -2980,7 +2980,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         c.includes(`"${replyConv}"`),
     );
     expect(replyLines).toHaveLength(1);
-    expect(replyLines[0]).toContain("no append of its own");
+    expect(replyLines[0]).toContain("the route remembers nothing");
     expect(replyLines[0]).not.toContain("never folded it into its memory");
     expect(
       await suDb.schedulerJob.count({
