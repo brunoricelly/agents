@@ -802,7 +802,9 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
     });
   });
 
-  test("beside other watchers, a voice note is transcribed by the owner's provider alone, whichever route arrives first", async () => {
+  // A provider that counts its calls, a Chatwoot client that records what the pass writes back on
+  // the attachment (where the words live), and an STT config naming a real vault key.
+  async function sttHarness() {
     const key = await suDb.vaultEntry.create({
       data: { tenantId, name: "stt-key-1129", secret: encryptJson("sk-test") },
       select: { id: true },
@@ -853,6 +855,12 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         data_url: `https://chat.observer-route.example/a/${id}.ogg`,
       },
     ];
+    return { key, sttOn, provider, makeClient, writtenBack, audio };
+  }
+
+  test("beside other watchers, a voice note is transcribed by the owner's provider alone, whichever route arrives first", async () => {
+    const { key, sttOn, provider, makeClient, writtenBack, audio } =
+      await sttHarness();
     try {
       await withSecondWatcher(
         HOUR_AGO(),
@@ -975,6 +983,93 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
         await suDb.chatwootAgentBot.create({ data: ownerBot });
       }
     });
+  });
+
+  test("beside other watchers, a conversation the owner's bot holds: its delivery folds nothing in, so the other watcher's route keeps the message", async () => {
+    await withSecondWatcher(HOUR_AGO(), async ({ secondBot }) => {
+      const seen: string[] = [];
+      const { messageId } = await deliver(
+        secondBot,
+        507,
+        SHARED_INBOX,
+        {
+          assigneeType: "AgentBot",
+          assigneeId: OBSERVER_BOT,
+          status: "pending",
+        },
+        false,
+        undefined,
+        undefined,
+        undefined,
+        { onIngest: (o) => seen.push(o) },
+      );
+      expect(seen).not.toContain("covered");
+      expect(await ingestRowFor(messageId)).not.toBeNull();
+    });
+  });
+
+  test("beside other watchers, an owner whose own gate refuses the conversation: the other watcher still transcribes for its observation, and the append stays the owner's", async () => {
+    const { key, sttOn, provider, makeClient, writtenBack, audio } =
+      await sttHarness();
+    try {
+      await withSecondWatcher(
+        HOUR_AGO(),
+        async ({ secondBot }) => {
+          const ownerStt = provider("palavras do dono");
+          const otherStt = provider("palavras da outra");
+          const seen: string[] = [];
+          const { messageId } = await deliver(
+            secondBot,
+            508,
+            SHARED_INBOX,
+            OPEN_HUMAN,
+            false,
+            "",
+            undefined,
+            undefined,
+            {
+              attachments: audio(11_292),
+              deps: {
+                makeClient,
+                sttFetch: otherStt.fetchImpl,
+                sleep: async () => {},
+              },
+              onIngest: (o) => seen.push(o),
+            },
+          );
+          expect(otherStt.calls.n).toBe(1);
+          expect(writtenBack.join("\n")).toContain("palavras da outra");
+          expect(seen).toEqual(["covered"]);
+          expect(await ingestRowFor(messageId)).toBeNull();
+          await deliver(
+            OBSERVER_BOT,
+            508,
+            SHARED_INBOX,
+            OPEN_HUMAN,
+            false,
+            "",
+            undefined,
+            undefined,
+            {
+              messageId,
+              attachments: audio(11_292),
+              deps: {
+                makeClient,
+                sttFetch: ownerStt.fetchImpl,
+                sleep: async () => {},
+              },
+            },
+          );
+          expect(ownerStt.calls.n).toBe(0);
+          expect(agentOf(await ingestRowFor(messageId))).toBe(
+            String(observerId),
+          );
+        },
+        { owner: { ...sttOn, ...REFUSING_GATE }, second: sttOn },
+      );
+    } finally {
+      await suDb.vaultEntry.deleteMany({ where: { id: key.id } });
+    }
   });
 
   // The persona bot deleted out-of-band on Chatwoot leaves the binding standing and the responder's

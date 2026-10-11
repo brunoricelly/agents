@@ -4675,41 +4675,56 @@ export async function processChatwootDelivery(
   // an owner attached after the emission never got it, and standing down would lose it from memory.
   // A colleague's reply keeps its path (no media to decide, and the dedup window takes the second).
   // An unreadable list, or an owner whose bot row is gone, leaves every route writing as before.
-  const ownerCovers =
+  const coveringOwner: { agentId: bigint; settings: unknown } | null =
     observer !== null &&
     responderRt !== null &&
     !responderRemembers &&
-    coveredMessage?.column === "inbound" &&
-    (await (async () => {
-      const owner = (await watchers())?.[0];
-      if (owner === undefined || owner.agentId === observer.agentId)
-        return false;
-      const ownerBotId =
-        (
-          await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-            db.chatwootAgentBot.findFirst({
-              where: {
-                tenantId: params.tenantId,
-                chatwootInstanceId: params.instanceId,
-                agentId: owner.agentId,
-              },
-              select: { chatwootAgentBotId: true },
-            }),
+    coveredMessage?.column === "inbound"
+      ? await (async () => {
+          const owner = (await watchers())?.[0];
+          if (owner === undefined || owner.agentId === observer.agentId)
+            return null;
+          const ownerBotId =
+            (
+              await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+                db.chatwootAgentBot.findFirst({
+                  where: {
+                    tenantId: params.tenantId,
+                    chatwootInstanceId: params.instanceId,
+                    agentId: owner.agentId,
+                  },
+                  select: { chatwootAgentBotId: true },
+                }),
+              )
+            )?.chatwootAgentBotId ?? null;
+          if (ownerBotId === null) return null;
+          // NOTE: A conversation the owner's bot HOLDS sends its delivery down the responder's path
+          // (`observerRuntimeForRoute`), which beside a responder that does not remember folds nothing
+          // in. Any witness saying so is enough: standing down on the other reading loses the message.
+          const heldBy = (type: string | null | undefined, id: unknown) =>
+            type === "AgentBot" && id === ownerBotId;
+          if (
+            heldBy(n.assigneeType, n.assigneeId) ||
+            heldBy(mirror.assigneeType, mirror.assigneeId) ||
+            heldBy(effectiveAssigneeType, effectiveAssigneeId)
           )
-        )?.chatwootAgentBotId ?? null;
-      if (ownerBotId === null) return false;
-      return responderCoversMessage(
-        params.tenantId,
-        params.instanceId,
-        params.deliveryRowId,
-        owner.attachedAt,
-        ownerBotId,
-        n.conversationId,
-        coveredMessage,
-        n.lastActivityAt == null ? null : new Date(n.lastActivityAt * 1000),
-        base,
-      );
-    })());
+            return null;
+          return (await responderCoversMessage(
+            params.tenantId,
+            params.instanceId,
+            params.deliveryRowId,
+            owner.attachedAt,
+            ownerBotId,
+            n.conversationId,
+            coveredMessage,
+            n.lastActivityAt == null ? null : new Date(n.lastActivityAt * 1000),
+            base,
+          ))
+            ? owner
+            : null;
+        })()
+      : null;
+  const ownerCovers = coveringOwner !== null;
   // The mark stays the responder's whenever there is one, deliberately NOT asked of
   // `responderCovers`: an absent sibling may be in transit (the emission clock is second-granular),
   // and moving the mark would suppress its reply. Coverage may cost a duplicate memory line, never an
@@ -4909,54 +4924,66 @@ export async function processChatwootDelivery(
       rt.mode,
       base,
     )) !== null;
+  // Whether a watcher's own contact gate may keep its media pass from running for this conversation:
+  // an audio it already refused, an endpoint that follows its conditions, or conditions that do not
+  // allow the conversation. Asked without a line: that watcher's own route leaves it.
+  const watcherMayRefuseMedia = async (w: {
+    agentId: bigint;
+    settings: unknown;
+  }): Promise<boolean> => {
+    // NOTE: An audio the watcher already refused is one it will not analyze, whatever its gate says
+    // now, turned off included.
+    if (
+      refusedCovers(
+        watcherMediaRefusedThrough(
+          params.tenantId,
+          mirror.conversationRowId,
+          w.agentId,
+        ),
+        n.message?.id,
+      )
+    )
+      return true;
+    const cfg = readContactAuthConfig(w.settings);
+    if (!cfg.enabled) return false;
+    if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
+      return true;
+    return (
+      (await observerRuleVerdict(
+        {
+          tenantId: params.tenantId,
+          instanceId: params.instanceId,
+          conversationId: n.conversationId as number,
+          agentId: w.agentId,
+          settings: w.settings,
+          base,
+        },
+        { emit: false },
+      )) !== "allowed"
+    );
+  };
   // A WATCHER bound as the inbox's agent remembers, but analyses media only for a conversation
   // its own contact gate lets it observe. Another watcher of the inbox stands down on its pass
   // only when that is known to happen: the bound watcher's conditions allow the conversation and no
   // endpoint follows them. Otherwise this route analyses for itself, under its own gate, since one
-  // watcher's refusal decides only what that watcher observes. The conditions are asked without a
-  // line: the bound watcher's own route leaves it.
+  // watcher's refusal decides only what that watcher observes.
   const boundWatcherMayRefuseMedia =
     responderRemembers &&
     observer !== null &&
     responderRt !== null &&
     isMonitoring(responderRt.mode) &&
     n.conversationId !== null &&
-    (await (async () => {
-      // NOTE: An audio the bound watcher already refused is one it will not analyze, whatever its
-      // gate says now, turned off included.
-      if (
-        refusedCovers(
-          watcherMediaRefusedThrough(
-            params.tenantId,
-            mirror.conversationRowId,
-            responderRt.agentId,
-          ),
-          n.message?.id,
-        )
-      )
-        return true;
-      const cfg = readContactAuthConfig(responderRt.settings);
-      if (!cfg.enabled) return false;
-      if (cfg.url !== null && (cfg.rule === null || cfg.askEndpointAfterRule))
-        return true;
-      return (
-        (await observerRuleVerdict(
-          {
-            tenantId: params.tenantId,
-            instanceId: params.instanceId,
-            conversationId: n.conversationId as number,
-            agentId: responderRt.agentId,
-            settings: responderRt.settings,
-            base,
-          },
-          { emit: false },
-        )) !== "allowed"
-      );
-    })());
+    (await watcherMayRefuseMedia(responderRt));
+  // The same for the memory owner beside other watchers: the append stays the owner's, but where its
+  // gate may refuse the media this route analyses for its own observation, under its own gate.
+  const ownerMayRefuseMedia =
+    coveringOwner !== null &&
+    n.conversationId !== null &&
+    (await watcherMayRefuseMedia(coveringOwner));
   // A TEST responder analyses media too, on the answer path of an activated conversation, so the
   // observer stands down there as well. Asked only on an observer route beside a test responder.
   const responderAnalysesMedia =
-    ownerCovers ||
+    (ownerCovers && !ownerMayRefuseMedia) ||
     (responderRemembers && !boundWatcherMayRefuseMedia) ||
     (responderCovers &&
       responderRt?.enabled === true &&
