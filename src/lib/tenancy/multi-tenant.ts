@@ -29,6 +29,8 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "Conversation",
   "MessageReplyClaim",
   "AgentTurnDelivery",
+  "DecisionRuleState",
+  "DecisionRuleClaim",
   "ReplyDispensal",
   "Agent",
   "BusinessHours",

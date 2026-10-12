@@ -4,6 +4,7 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
@@ -17,7 +18,11 @@ import {
   listInboxLabels,
 } from "@/modules/chatwoot/management";
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
-import { decisionsBlockFingerprint } from "@/modules/decisions/config";
+import {
+  decisionsBlockFingerprint,
+  ruleStateKey,
+} from "@/modules/decisions/config";
+import * as triggerState from "@/modules/decisions/trigger-state";
 import { runObserve } from "@/modules/observe/job";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -358,8 +363,14 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     convRowId = conv.id;
   });
 
-  beforeEach(() => {
+  // Every test shares one conversation, so no rule's latch may carry from one test to the next (a
+  // note cut off by its deadline stays latched, docs/decisions.md).
+  beforeEach(async () => {
     __resetChatwootVocabCache();
+    if (dbUp) {
+      await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
+      await suDb.decisionRuleClaim.deleteMany({ where: { tenantId } });
+    }
   });
 
   afterAll(async () => {
@@ -368,6 +379,8 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
       "execution_logs",
       "llm_usage",
       "scheduler_jobs",
+      "decision_rule_states",
+      "decision_rule_claims",
       "conversations",
       "inbox_observers",
       "inboxes",
@@ -805,8 +818,9 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     );
     const { log } = await tick(p.fetchImpl);
     expect(log.notes).toEqual(["Pedido de reembolso"]);
+    // The second rule's identical action is the first one's: the line names it beside the outcome.
     expect((await detail()).actions).toEqual([
-      { rule: 0, tool: "private_note", outcome: "ran" },
+      { rule: 0, tool: "private_note", outcome: "ran", merged: [1] },
     ]);
   });
 
@@ -1912,6 +1926,559 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
         },
         { rule: 2, tool: "set_labels", outcome: "ran" },
       ]);
+    });
+
+    // WHEN A RULE ACTS (docs/decisions.md): every tick below is a separate observation
+    // of the same conversation, so the state between them is the table's, never the process's.
+    async function observeWith(
+      chatwoot: ReturnType<typeof fakeChatwoot>,
+      rules: unknown[],
+      holds: boolean,
+      extra: Record<string, unknown> = {},
+    ) {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            monitoring: decisionsBlock({ rules }),
+            ...extra,
+          } as never,
+        },
+      });
+      const p = providerDouble(() =>
+        typesafeAnswer({
+          pede_reembolso: { type: "noul", noul: holds ? 0.95 : 0.1 },
+        }),
+      );
+      await runObserve(
+        tenantId,
+        {
+          instanceId,
+          conversationId: CONV,
+          agentId,
+          reason: "burst",
+          atMessageId: null,
+        },
+        appDb,
+        {
+          makeClient: async (cfg) =>
+            new ChatwootClient(cfg, chatwoot.fetchImpl),
+          makeModel: () => new CountingModel() as never,
+          decisionFetch: p.fetchImpl,
+        },
+      );
+      return detail();
+    }
+    const note = (content: string, trigger?: string) => ({
+      when: yes,
+      action: { tool: "private_note", args: { content } },
+      ...(trigger ? { trigger } : {}),
+    });
+    const notesOf = (chatwoot: ReturnType<typeof fakeChatwoot>, text: string) =>
+      chatwoot.state.notes.filter((n) => n === text).length;
+    // Awaited inside: a Prisma query is lazy, and a hook handed the bare query never runs it.
+    const clearState = async () => {
+      await suDb.decisionRuleState.deleteMany({ where: { tenantId } });
+    };
+
+    describe("when a rule acts", () => {
+      beforeEach(clearState);
+
+      test("a note rule with the default trigger posts once while its conditions keep holding", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [note("Supervisor")];
+        const first = await observeWith(chatwoot, rules, true);
+        expect(first.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(first.held).toBeUndefined();
+        for (let i = 0; i < 4; i++) {
+          const d = await observeWith(chatwoot, rules, true);
+          expect(d.actions).toEqual([]);
+          expect(d.held).toEqual([{ rule: 0, trigger: "on_start" }]);
+          expect(d.notFired).toBeUndefined();
+        }
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+      });
+
+      test("an observation in which it does not hold releases it, and the next hold posts again", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [note("Supervisor")];
+        await observeWith(chatwoot, rules, true);
+        await observeWith(chatwoot, rules, true);
+        const off = await observeWith(chatwoot, rules, false);
+        expect(off.held).toBeUndefined();
+        expect(off.notFired).toEqual([
+          {
+            rule: 0,
+            miss: {
+              question: "pede_reembolso",
+              why: "below_threshold",
+              got: 0.1,
+              threshold: 0.7,
+              measure: "probability",
+            },
+          },
+        ]);
+        const again = await observeWith(chatwoot, rules, true);
+        expect(again.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(2);
+      });
+
+      test("once per conversation posts one note across holding, releasing and holding again", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [note("Supervisor", "once")];
+        for (const holds of [true, true, false, true, false, true]) {
+          const d = await observeWith(chatwoot, rules, holds);
+          if (holds && notesOf(chatwoot, "Supervisor") === 1 && d.held) {
+            expect(d.held).toEqual([{ rule: 0, trigger: "once" }]);
+          }
+        }
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+        expect((await detail()).held).toEqual([{ rule: 0, trigger: "once" }]);
+      });
+
+      test("a label rule keeps acting every time by default, and puts back a label a person took off", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [
+          {
+            when: yes,
+            action: { tool: "set_labels", args: { add: ["furioso"] } },
+          },
+        ];
+        for (let i = 0; i < 3; i++) {
+          if (i === 2) chatwoot.state.labels = [];
+          const d = await observeWith(chatwoot, rules, true);
+          expect(d.actions).toEqual([
+            { rule: 0, tool: "set_labels", outcome: "ran" },
+          ]);
+          expect(d.held).toBeUndefined();
+        }
+        expect(chatwoot.state.labels).toEqual(["furioso"]);
+      });
+
+      test("a label rule set to once does not put back a label a person took off", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [
+          {
+            when: yes,
+            action: { tool: "set_labels", args: { add: ["furioso"] } },
+            trigger: "once",
+          },
+        ];
+        await observeWith(chatwoot, rules, true);
+        chatwoot.state.labels = [];
+        const d = await observeWith(chatwoot, rules, true);
+        expect(d.held).toEqual([{ rule: 0, trigger: "once" }]);
+        expect(chatwoot.state.labels).toEqual([]);
+      });
+
+      test("editing a rule starts it over, and leaves the other rule's state alone", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const before = [note("Supervisor"), note("Segunda")];
+        await observeWith(chatwoot, before, true);
+        await observeWith(chatwoot, before, true);
+        const edited = [
+          {
+            ...note("Supervisor"),
+            when: [{ question: "pede_reembolso", minProbability: 0.6 }],
+          },
+          note("Segunda"),
+        ];
+        const d = await observeWith(chatwoot, edited, true);
+        expect(d.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(d.held).toEqual([{ rule: 1, trigger: "on_start" }]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(2);
+        expect(notesOf(chatwoot, "Segunda")).toBe(1);
+        // The edited rule's old key is dropped by the tick that ran the new block.
+        expect(
+          await suDb.decisionRuleState.count({ where: { tenantId } }),
+        ).toBe(2);
+      });
+
+      test("a changed note text is a new rule, so the new text posts and the old one does not", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        await observeWith(chatwoot, [note("Supervisor")], true);
+        await observeWith(chatwoot, [note("Supervisor v2")], true);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+        expect(notesOf(chatwoot, "Supervisor v2")).toBe(1);
+      });
+
+      test("an action a fence refused does not count as acted: the rule tries again on the next hold", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [note("Precisa de pedido")];
+        const pre = {
+          toolPreconditions: {
+            private_note: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "pedido_id",
+            },
+          },
+        };
+        await suDb.conversation.update({
+          where: { id: convRowId },
+          data: { customAttributes: {} },
+        });
+        const refused = await observeWith(chatwoot, rules, true, pre);
+        expect(refused.actions).toEqual([
+          {
+            rule: 0,
+            tool: "private_note",
+            outcome: "refused",
+            fence: "precondition",
+          },
+        ]);
+        expect(notesOf(chatwoot, "Precisa de pedido")).toBe(0);
+        chatwoot.state.attributes = { pedido_id: "4471" };
+        await suDb.conversation.update({
+          where: { id: convRowId },
+          data: { customAttributes: { pedido_id: "4471" } },
+        });
+        const ran = await observeWith(chatwoot, rules, true, pre);
+        expect(ran.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(notesOf(chatwoot, "Precisa de pedido")).toBe(1);
+        await suDb.conversation.update({
+          where: { id: convRowId },
+          data: { customAttributes: {} },
+        });
+      });
+
+      // Different conditions, so two rules with two states: the merged one latches with the one it rode on.
+      test("two rules with the same note post it once, and both are held after", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [
+          note("Supervisor"),
+          {
+            ...note("Supervisor"),
+            when: [{ question: "pede_reembolso", minProbability: 0.5 }],
+          },
+        ];
+        const first = await observeWith(chatwoot, rules, true);
+        expect(first.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran", merged: [1] },
+        ]);
+        const next = await observeWith(chatwoot, rules, true);
+        expect(next.actions).toEqual([]);
+        expect(next.held).toEqual([
+          { rule: 0, trigger: "on_start" },
+          { rule: 1, trigger: "on_start" },
+        ]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+      });
+
+      test("a rule that acts every time keeps no state", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rules = [
+          {
+            when: yes,
+            action: { tool: "set_labels", args: { add: ["furioso"] } },
+          },
+        ];
+        await observeWith(chatwoot, rules, true);
+        expect(await suDb.decisionRuleState.count({ where: { agentId } })).toBe(
+          0,
+        );
+      });
+
+      test("another agent's state on the same conversation does not hold this one back", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const rule = note("Supervisor");
+        const neighbour = await suDb.agent.create({
+          data: {
+            tenantId,
+            name: "Vizinha",
+            systemPrompt: "x",
+            modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+            enabled: true,
+            mode: "monitoring",
+            settings: {},
+          },
+        });
+        await suDb.decisionRuleState.create({
+          data: {
+            tenantId,
+            agentId: neighbour.id,
+            conversationId: convRowId,
+            ruleKey: ruleStateKey(rule as never),
+          },
+        });
+        const d = await observeWith(chatwoot, [rule], true);
+        expect(d.actions).toEqual([
+          { rule: 0, tool: "private_note", outcome: "ran" },
+        ]);
+        expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+        await suDb.agent.delete({ where: { id: neighbour.id } });
+      });
+
+      // THE INVARIANT (trigger-state.ts): an older observation never changes the state a newer one
+      // read. A reads, B reads after it; whatever A then writes is refused, in every shape a tick
+      // writes (latch ahead, release after the deadline, release, undo or drop at the end), whether
+      // B left the rule latched or clear.
+      describe("two observations of the same conversation", () => {
+        const scope = () => ({ tenantId, agentId, conversationId: convRowId });
+        const change = (
+          c: Partial<Record<"release" | "undo" | "keep", string[]>>,
+        ) => ({
+          latch: [],
+          release: c.release ?? [],
+          undo: c.undo ?? [],
+          keep: c.keep ?? ["k"],
+        });
+        const writes: Record<
+          string,
+          (g: triggerState.Generation) => Promise<boolean>
+        > = {
+          latch: (g) => triggerState.latchRules(suDb, scope(), g, ["k"]),
+          "release after the deadline": (g) =>
+            triggerState.writeTriggerState(suDb, scope(), g, {
+              release: ["k"],
+              undo: ["k"],
+            }),
+          release: (g) =>
+            triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              g,
+              change({ release: ["k"] }),
+            ),
+          undo: (g) =>
+            triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              g,
+              change({ undo: ["k"] }),
+            ),
+          drop: (g) =>
+            triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              g,
+              change({ keep: [] }),
+            ),
+        };
+        // In the scheduler's order, as production claims: one observe job row, claim_seq 1, 2, ...
+        let seq = 0;
+        const claim = async () => {
+          seq += 1;
+          const c = await triggerState.claimTriggerState(suDb, scope(), {
+            jobId: 1n,
+            claimSeq: seq,
+          });
+          if (c === null) throw new Error("superseded");
+          return c;
+        };
+        beforeEach(() => {
+          seq = 0;
+        });
+        const state = async () => [...(await claim()).latched];
+        for (const [name, write] of Object.entries(writes)) {
+          for (const newer of ["latched", "clear"] as const) {
+            test(`the older one's ${name} leaves the newer one's state ${newer}`, async () => {
+              const a = await claim();
+              const b = await claim();
+              if (newer === "latched") {
+                expect(
+                  await triggerState.latchRules(suDb, scope(), b.generation, [
+                    "k",
+                  ]),
+                ).toBe(true);
+              }
+              expect(await write(a.generation)).toBe(false);
+              expect(await state()).toEqual(newer === "latched" ? ["k"] : []);
+            });
+          }
+        }
+
+        // The generation follows the scheduler, not the order the reads land: a run the scheduler
+        // already superseded gets none, and a newer job row outranks any claim_seq of an older one.
+        test("a run the scheduler superseded takes no generation", async () => {
+          const run = (jobId: bigint, claimSeq: number) =>
+            triggerState.claimTriggerState(suDb, scope(), { jobId, claimSeq });
+          expect(await run(1n, 2)).not.toBeNull();
+          expect(await run(1n, 1)).toBeNull();
+          expect(await run(2n, 1)).not.toBeNull();
+          expect(await run(1n, 9)).toBeNull();
+        });
+
+        // The one exception: a reservation the older tick wrote itself, for an action it never ran,
+        // is still its to withdraw. The newer one held the rule on it and changes nothing for it.
+        test("the older one withdraws its own reservation, and only that", async () => {
+          const a = await claim();
+          expect(
+            await triggerState.latchRules(suDb, scope(), a.generation, [
+              "mine",
+            ]),
+          ).toBe(true);
+          const b = await claim();
+          expect([...b.latched]).toEqual(["mine"]);
+          expect(
+            await triggerState.latchRules(suDb, scope(), b.generation, [
+              "theirs",
+            ]),
+          ).toBe(true);
+          expect(
+            await triggerState.writeTriggerState(suDb, scope(), a.generation, {
+              release: ["theirs"],
+              undo: ["mine", "theirs"],
+            }),
+          ).toBe(false);
+          expect(await state()).toEqual(["theirs"]);
+        });
+
+        test("the newer one writes after the older one read", async () => {
+          const a = await claim();
+          const b = await claim();
+          expect(
+            await triggerState.latchRules(suDb, scope(), b.generation, ["k"]),
+          ).toBe(true);
+          expect(
+            await triggerState.writeTriggerState(
+              suDb,
+              scope(),
+              b.generation,
+              change({ release: ["k"] }),
+            ),
+          ).toBe(true);
+          expect(await state()).toEqual([]);
+          expect(a.generation.seq < b.generation.seq).toBe(true);
+        });
+      });
+
+      test("a trigger state it cannot read fails the tick before any action", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const read = spyOn(triggerState, "claimTriggerState").mockRejectedValue(
+          new Error("db down"),
+        );
+        try {
+          const d = await observeWith(chatwoot, [note("Supervisor")], true);
+          expect(d.failed).toBe("trigger_state");
+          expect(notesOf(chatwoot, "Supervisor")).toBe(0);
+        } finally {
+          read.mockRestore();
+        }
+      });
+
+      test("a final write a newer observation superseded is said on the line, not as a failure", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const write = spyOn(
+          triggerState,
+          "writeTriggerState",
+        ).mockResolvedValue(false);
+        try {
+          const d = await observeWith(chatwoot, [note("Supervisor")], true);
+          expect(d.triggerStateSuperseded).toBe(true);
+          expect(d.triggerStateWritten).toBeUndefined();
+        } finally {
+          write.mockRestore();
+        }
+      });
+
+      test("a trigger state it cannot write is said on the line, and the action stands", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const write = spyOn(
+          triggerState,
+          "writeTriggerState",
+        ).mockRejectedValue(new Error("db down"));
+        try {
+          const d = await observeWith(chatwoot, [note("Supervisor")], true);
+          expect(d.actions).toEqual([
+            { rule: 0, tool: "private_note", outcome: "ran" },
+          ]);
+          expect(d.triggerStateWritten).toBe(false);
+          expect(notesOf(chatwoot, "Supervisor")).toBe(1);
+        } finally {
+          write.mockRestore();
+        }
+      });
+    });
+
+    // WHAT A FENCE REFUSED: the tool was invoked and a fence inside it said no, so the
+    // line must not say it ran.
+    describe("an action a fence inside the tool refused", () => {
+      beforeEach(clearState);
+      const PROTECTED = { setLabels: { protected: ["vip"] } };
+      const label = (...add: string[]) => ({
+        when: yes,
+        action: { tool: "set_labels", args: { add } },
+      });
+
+      test("a protected label is refused, named, and not written", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const d = await observeWith(chatwoot, [label("vip")], true, PROTECTED);
+        expect(d.actions).toEqual([
+          {
+            rule: 0,
+            tool: "set_labels",
+            outcome: "refused",
+            fence: "protected_label",
+          },
+        ]);
+        expect(d.acted).toBe(false);
+        expect(chatwoot.state.labels).toEqual([]);
+      });
+
+      test("a free label beside a protected one is written, and the line names the fence that held the rest", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const d = await observeWith(
+          chatwoot,
+          [label("reembolso", "vip")],
+          true,
+          PROTECTED,
+        );
+        expect(d.actions).toEqual([
+          {
+            rule: 0,
+            tool: "set_labels",
+            outcome: "ran",
+            fence: "protected_label",
+            partial: true,
+          },
+        ]);
+        expect(chatwoot.state.labels).toEqual(["reembolso"]);
+      });
+
+      test("two label rules sharing one write: only the protected one is refused", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const d = await observeWith(
+          chatwoot,
+          [label("vip"), label("reembolso")],
+          true,
+          PROTECTED,
+        );
+        expect(d.actions).toEqual([
+          {
+            rule: 0,
+            tool: "set_labels",
+            outcome: "refused",
+            fence: "protected_label",
+          },
+          { rule: 1, tool: "set_labels", outcome: "ran" },
+        ]);
+        expect(chatwoot.state.labels).toEqual(["reembolso"]);
+      });
+
+      test("a label outside the allowed list is refused by that fence", async () => {
+        const chatwoot = fakeChatwoot({ labels: [], attributes: {} });
+        const d = await observeWith(chatwoot, [label("solto")], true, {
+          setLabels: { allowed: ["reembolso"], outsideAllowed: "refuse" },
+        });
+        expect(d.actions).toEqual([
+          {
+            rule: 0,
+            tool: "set_labels",
+            outcome: "refused",
+            fence: "allowed_labels",
+          },
+        ]);
+        expect(chatwoot.state.labels).toEqual([]);
+      });
     });
   });
 

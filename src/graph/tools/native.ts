@@ -111,6 +111,7 @@ import {
   RESOLVE_DONE,
 } from "./catalog";
 import type { NoEffectReporter } from "./effect-free";
+import { type FenceReporter, fenceReporterOf } from "./fence-report";
 import { describeLabelWrite, type LabelWriteReporter } from "./label-writes";
 
 export {
@@ -587,17 +588,20 @@ function handoffTool(ctx: ToolCtx) {
       }
     : {};
   return tool(
-    async ({
-      reason,
-      assignTo,
-      customerMessage,
-    }: {
-      reason?: string;
-      assignTo?: string;
-      // Required on a speaking turn and absent from the schema on a muted one, so `undefined` here
-      // means the muted branch and never a model that forgot (see the schema below).
-      customerMessage?: string;
-    }) => {
+    async (
+      {
+        reason,
+        assignTo,
+        customerMessage,
+      }: {
+        reason?: string;
+        assignTo?: string;
+        // Required on a speaking turn and absent from the schema on a muted one, so `undefined` here
+        // means the muted branch and never a model that forgot (see the schema below).
+        customerMessage?: string;
+      },
+      config?: ToolRunnableConfig,
+    ) => {
       // NOTE: Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
@@ -606,6 +610,9 @@ function handoffTool(ctx: ToolCtx) {
           ctx.conversationId,
           literalForChatwoot(reason),
         );
+        // Said the moment it is filed: whatever ends this call afterwards (a throw, the tick's
+        // deadline), the note is in the conversation.
+        fenceReporterOf(config)?.({ committed: true });
         // NOTE: ASKED AGAIN between the note and the status change, only when the note was sent: the
         // graph's ask at the tool boundary came before this wait, and an observation holds no thread
         // claim to keep a `/reset` or a detach out of it. The note stays filed; this stops the pair
@@ -621,6 +628,7 @@ function handoffTool(ctx: ToolCtx) {
       await ownStatusChange(ctx, () =>
         ctx.client.toggleStatus(ctx.conversationId, "open"),
       );
+      fenceReporterOf(config)?.({ committed: true });
       // NOTE: Only here: everything above can throw, and a handoff that did not reach this line has
       // not happened; the assignment below is best-effort, as the conversation is already out of
       // `pending`. The closing line comes from THIS invocation's argument: a model whose first
@@ -737,11 +745,13 @@ function handoffTool(ctx: ToolCtx) {
 
 function privateNoteTool(ctx: ToolCtx) {
   return tool(
-    async ({ content }: { content: string }) => {
+    async ({ content }: { content: string }, config?: ToolRunnableConfig) => {
       await ctx.client.sendPrivateNote(
         ctx.conversationId,
         literalForChatwoot(content),
       );
+      // Said as it lands: a deadline can end the call before it returns, and the note is still filed.
+      fenceReporterOf(config)?.({ committed: true });
       return "Private note posted (visible to agents, not the customer).";
     },
     {
@@ -898,18 +908,25 @@ function setCustomAttributeTool(ctx: ToolCtx) {
     ? knownAttributesXml(convDefs, contactDefs, taskScope ? taskDefs : null)
     : undefined;
   return tool(
-    async ({
-      key,
-      value,
-      scope,
-    }: {
-      key: string;
-      value: string;
-      scope?: "conversation" | "contact" | "task";
-    }) => {
+    async (
+      {
+        key,
+        value,
+        scope,
+      }: {
+        key: string;
+        value: string;
+        scope?: "conversation" | "contact" | "task";
+      },
+      config?: ToolRunnableConfig,
+    ) => {
+      const noEffect = () => {
+        ctx.onNoEffect?.("set_custom_attribute");
+        fenceReporterOf(config)?.({ noEffect: true });
+      };
       if (scope === "task") {
         if (!ctx.kanban) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the task attribute (this conversation has no linked card).";
         }
         try {
@@ -920,29 +937,36 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           );
         } catch (e) {
           if (e instanceof ChatwootCalledOffError) {
-            ctx.onNoEffect?.("set_custom_attribute");
+            noEffect();
             return CALLED_OFF_ATTRIBUTE;
           }
           throw e;
         }
+        // Written: said now, before the mirror, which a deadline can still interrupt.
+        fenceReporterOf(config)?.({ committed: true });
         await mirrorAttributeWrite(ctx, "task", key, value);
         return `Task attribute ${key} set.`;
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the contact attribute (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
-        const contact = await runScopedOn(ctx.base, sysCtx(tenantId), (db) =>
+        const base = ctx.base;
+        // A failed lookup wrote nothing, and the call says so before it propagates.
+        const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.contact.findUnique({
             where: { id: contactDbId },
             select: { chatwootContactId: true },
           }),
-        );
+        ).catch((e: unknown) => {
+          fenceReporterOf(config)?.({ noEffect: true });
+          throw e;
+        });
         if (!contact?.chatwootContactId) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
         }
         // NOTE: ASKED AGAIN, after the lookup and before the write: the graph's ask happens at
@@ -950,7 +974,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         // the conversation it was written from, so a value written after a `/reset` (or after the
         // agent was switched off) is one nothing later corrects.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return "Could not set the contact attribute (the run was called off while this write waited).";
         }
         try {
@@ -964,11 +988,12 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           );
         } catch (e) {
           if (e instanceof ChatwootCalledOffError) {
-            ctx.onNoEffect?.("set_custom_attribute");
+            noEffect();
             return CALLED_OFF_ATTRIBUTE;
           }
           throw e;
         }
+        fenceReporterOf(config)?.({ committed: true });
         await mirrorAttributeWrite(ctx, "contact", key, value);
         return `Contact attribute ${key} set.`;
       }
@@ -986,11 +1011,12 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         );
       } catch (e) {
         if (e instanceof ChatwootCalledOffError) {
-          ctx.onNoEffect?.("set_custom_attribute");
+          noEffect();
           return CALLED_OFF_ATTRIBUTE;
         }
         throw e;
       }
+      fenceReporterOf(config)?.({ committed: true });
       await mirrorAttributeWrite(ctx, "conversation", key, value);
       return `Conversation attribute ${key} set.`;
     },
@@ -1225,6 +1251,30 @@ interface PendingLabelDelta {
   remove: string[];
   resolve: (report: string) => void;
   reject: (reason: unknown) => void;
+  // The call's own fence reporter (fence-report.ts): the batch is written by whichever call opened
+  // it, so each delta carries its caller's.
+  fenced?: FenceReporter;
+}
+
+// Which fence of `applyLabelDelta` held part or all of one call, told to the caller that asked. A
+// protected label is named first: it is the fence the operator set on the labels themselves.
+function reportLabelFence(
+  report: FenceReporter | undefined,
+  o: {
+    added: string[];
+    removed: string[];
+    refusedAdd: string[];
+    refusedRemove: string[];
+    refusedOutside?: string[];
+  },
+): void {
+  if (!report) return;
+  const partial = o.added.length > 0 || o.removed.length > 0;
+  if (o.refusedAdd.length > 0 || o.refusedRemove.length > 0) {
+    report({ fence: "protected_label", partial });
+  } else if ((o.refusedOutside ?? []).length > 0) {
+    report({ fence: "allowed_labels", partial });
+  }
 }
 
 // How long a caller's own read of the conversation's labels stands in for the tool's.
@@ -1351,6 +1401,7 @@ function setLabelsTool(ctx: ToolCtx) {
         recordShown(ctx, "conversation", state);
         for (const o of outcomes) {
           ctx.onNoEffect?.("set_labels");
+          reportLabelFence(o.delta.fenced, o);
           o.delta.resolve(report(o));
         }
         return;
@@ -1364,6 +1415,7 @@ function setLabelsTool(ctx: ToolCtx) {
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
         for (const o of outcomes) {
           ctx.onNoEffect?.("set_labels");
+          o.delta.fenced?.({ noEffect: true });
           o.delta.resolve(
             "Could not set the labels (the run was called off while this write waited its turn).",
           );
@@ -1379,9 +1431,17 @@ function setLabelsTool(ctx: ToolCtx) {
         if (first) state = first.next;
         if (!first || !moved(first)) {
           ctx.onNoEffect?.("set_labels");
-          if (first) first.delta.resolve(report(first));
+          if (first) {
+            reportLabelFence(first.delta.fenced, first);
+            first.delta.resolve(report(first));
+          }
           return;
         }
+      }
+      // A call this write moves nothing for is told its refusal before the write, which can still
+      // fail for the others: what it asked for was refused whatever becomes of theirs.
+      for (const o of outcomes) {
+        if (!moved(o)) reportLabelFence(o.delta.fenced, o);
       }
       // Forgotten before the write: a write that fails leaves nothing known about the set.
       ctx.conversationLabelsRead = undefined;
@@ -1391,12 +1451,15 @@ function setLabelsTool(ctx: ToolCtx) {
       recordShown(ctx, "conversation", state);
       for (const o of outcomes) {
         if (moved(o)) {
+          // Written: said to the call (fence-report.ts), as every write a rule can run says it.
+          o.delta.fenced?.({ committed: true });
           ctx.onLabelsWritten?.(
             describeLabelWrite("conversation", o.added, o.removed, o.next, {
               allowed: allowedList,
               acceptedOutside: o.acceptedOutside,
             }),
           );
+          reportLabelFence(o.delta.fenced, o);
         } else {
           ctx.onNoEffect?.("set_labels");
         }
@@ -1425,25 +1488,32 @@ function setLabelsTool(ctx: ToolCtx) {
         remove?: string[];
         scope?: "conversation" | "contact" | "task";
       },
-      _config?: ToolRunnableConfig,
+      config?: ToolRunnableConfig,
     ) => {
       const { add = [], remove = [], scope } = args;
+      const fenced = fenceReporterOf(config);
+      // A call that could not write (no scope, called off), told to the call as well. A call that
+      // found nothing to change is not one: the labels already are what it asked for.
+      const noEffect = () => {
+        ctx.onNoEffect?.("set_labels");
+        fenced?.({ noEffect: true });
+      };
       // THE RETIRED SHAPE IS REFUSED BY NAME: operator prose written for a complete-list
       // contract makes a model send `{labels: [...]}`, and a strict schema would strip the key and
       // leave an empty delta, so the call would answer "already as requested" for a classification
       // that was never written.
       const legacy = (args as { labels?: unknown }).labels;
       if (Array.isArray(legacy)) {
-        ctx.onNoEffect?.("set_labels");
+        noEffect();
         return "Could not set the labels: this tool no longer takes a complete `labels` list. Name only what changes, with `add` and `remove` — a label you do not name is left as it is.";
       }
       if (add.length === 0 && remove.length === 0) {
-        ctx.onNoEffect?.("set_labels");
+        noEffect();
         return "Could not set the labels (neither `add` nor `remove` named anything).";
       }
       if (scope === "task") {
         if (!ctx.kanban) {
-          ctx.onNoEffect?.("set_labels");
+          noEffect();
           return "Could not set the labels (this conversation has no linked card).";
         }
         // THE CARD IS READ FRESH, like the other two scopes: one GET by id, since the id is in
@@ -1460,7 +1530,7 @@ function setLabelsTool(ctx: ToolCtx) {
             ? fresh.labels.filter((l): l is string => typeof l === "string")
             : [];
         } catch {
-          ctx.onNoEffect?.("set_labels");
+          noEffect();
           return "Could not set the labels (the card could not be read just now). Try again.";
         }
         const {
@@ -1473,6 +1543,13 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
           acceptedOutside,
         } = applyLabelDelta(add, remove, cardLabels, guarded, allowed);
+        reportLabelFence(fenced, {
+          added,
+          removed,
+          refusedAdd,
+          refusedRemove,
+          refusedOutside,
+        });
         if (added.length === 0 && removed.length === 0) {
           // NOTE: NOTHING MOVED, so nothing is written: the POST is skipped entirely.
           // The dispatch was counted as an effect on the way in, and a call that changed no label
@@ -1493,10 +1570,11 @@ function setLabelsTool(ctx: ToolCtx) {
         // NOTE: ASKED AGAIN, after the GET and before the write, for the reason the two sibling
         // scopes state: the read is a WAIT, and `/reset` can retire the run while it is in flight.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.("set_labels");
+          noEffect();
           return "Could not set the card labels (the run was called off while this write waited).";
         }
         await ctx.client.setKanbanTaskLabels(ctx.kanban.taskId, next);
+        fenced?.({ committed: true });
         ctx.onLabelsWritten?.(
           describeLabelWrite("task", added, removed, next, {
             allowed: allowedList,
@@ -1521,24 +1599,35 @@ function setLabelsTool(ctx: ToolCtx) {
       }
       if (scope === "contact") {
         if (!ctx.base || ctx.tenantId == null || ctx.contactDbId == null) {
-          ctx.onNoEffect?.("set_labels");
+          noEffect();
           return "Could not set the contact labels (no contact in scope).";
         }
         const tenantId = ctx.tenantId;
         const contactDbId = ctx.contactDbId;
-        const contact = await runScopedOn(ctx.base, sysCtx(tenantId), (db) =>
-          db.contact.findUnique({
-            where: { id: contactDbId },
-            select: { chatwootContactId: true },
-          }),
+        // A database read: the Chatwoot client's own reads say for themselves that they sent nothing
+        // (sentNothing), this one says it here before it propagates.
+        const readOnly = async <T>(read: () => Promise<T>): Promise<T> => {
+          try {
+            return await read();
+          } catch (e) {
+            fenced?.({ noEffect: true });
+            throw e;
+          }
+        };
+        const contact = await readOnly(() =>
+          runScopedOn(ctx.base as PrismaClient, sysCtx(tenantId), (db) =>
+            db.contact.findUnique({
+              where: { id: contactDbId },
+              select: { chatwootContactId: true },
+            }),
+          ),
         );
         if (!contact?.chatwootContactId) {
-          ctx.onNoEffect?.("set_labels");
+          noEffect();
           return "Could not set the contact labels (contact not linked to Chatwoot).";
         }
-        const current = await ctx.client.getContactLabels(
-          contact.chatwootContactId,
-        );
+        const chatwootContactId = contact.chatwootContactId;
+        const current = await ctx.client.getContactLabels(chatwootContactId);
         const {
           next,
           added,
@@ -1549,6 +1638,13 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
           acceptedOutside,
         } = applyLabelDelta(add, remove, current, guarded, allowed);
+        reportLabelFence(fenced, {
+          added,
+          removed,
+          refusedAdd,
+          refusedRemove,
+          refusedOutside,
+        });
         if (added.length === 0 && removed.length === 0) {
           ctx.onNoEffect?.("set_labels");
           recordShown(ctx, "contact", next);
@@ -1567,10 +1663,11 @@ function setLabelsTool(ctx: ToolCtx) {
         // here that waits before writing. The conversation scope asks inside its queue; this scope
         // has no queue, and the read above is just as much a wait.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
-          ctx.onNoEffect?.("set_labels");
+          noEffect();
           return "Could not set the contact labels (the run was called off while this write waited).";
         }
         await ctx.client.setContactLabels(contact.chatwootContactId, next);
+        fenced?.({ committed: true });
         ctx.onLabelsWritten?.(
           describeLabelWrite("contact", added, removed, next, {
             allowed: allowedList,
@@ -1593,7 +1690,13 @@ function setLabelsTool(ctx: ToolCtx) {
       // the TAIL of the label queue, its read still out, joins that entry. Only the tail can be
       // joined, so a call is never merged ahead of a writer queued in between.
       return new Promise<string>((resolve, reject) => {
-        const mine: PendingLabelDelta = { add, remove, resolve, reject };
+        const mine: PendingLabelDelta = {
+          add,
+          remove,
+          resolve,
+          reject,
+          ...(fenced ? { fenced } : {}),
+        };
         const alone = ctx.writesAlone?.() === true;
         const tail = alone
           ? undefined

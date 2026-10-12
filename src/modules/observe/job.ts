@@ -72,7 +72,15 @@ import {
   answersForLog,
   applyDecisions,
   askProvider,
+  type DecisionProgress,
 } from "@/modules/decisions/run";
+import {
+  claimTriggerState,
+  type Generation,
+  latchRules,
+  type TriggerClaim,
+  writeTriggerState,
+} from "@/modules/decisions/trigger-state";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   type ClaimedJob,
@@ -1824,6 +1832,62 @@ export async function runObserve(
           ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
         },
       });
+    // THE TRIGGER STATE, read before anything is paid for: a rule that already acted and holds is
+    // not run again (docs/decisions.md, "When a rule acts"). Unreadable fails the tick before the
+    // provider call, since acting without it could repeat a note the conversation already has.
+    const triggerScope =
+      conv === null ? null : { tenantId, agentId, conversationId: conv.id };
+    let latched: Set<string> = new Set();
+    // The generation this read took, in the scheduler's order (trigger-state.ts): every write below
+    // carries it, and one a newer observation holds is refused, so an older tick never changes a
+    // newer one's state. A run the scheduler already superseded gets none and ends here.
+    let generation: Generation = { jobId: 0n, seq: 0n };
+    let claimed: TriggerClaim | null = null;
+    if (triggerScope !== null) {
+      try {
+        claimed = await claimTriggerState(base, triggerScope, deps.claim);
+      } catch (err) {
+        const failure = uncommittedFailure();
+        decisionLine(
+          "error",
+          {
+            failed: "trigger_state",
+            ...failureDetail(err),
+            messagesRead: transcript.length,
+            ...failure.detail,
+          },
+          failure.level,
+        );
+        return {
+          outcome: "fail",
+          error: "observe: the rules' trigger state could not be read",
+        };
+      }
+    }
+    if (triggerScope !== null) {
+      if (claimed === null) return endOnRefusal("superseded");
+      ({ generation, latched } = claimed);
+    }
+    // Written for what ran, the withdrawn tick's actions included: a note that left is one the next
+    // observation must not post again. A write that fails is said on the line and does not undo the
+    // tick, which already committed; one a newer observation superseded is not a failure.
+    const persistTriggerState = async (
+      change: Awaited<ReturnType<typeof applyDecisions>>["triggerState"],
+    ): Promise<"written" | "superseded" | "failed"> => {
+      if (triggerScope === null) return "written";
+      try {
+        return (await writeTriggerState(base, triggerScope, generation, change))
+          ? "written"
+          : "superseded";
+      } catch (err) {
+        logger.warn(
+          { err, agentId: String(agentId) },
+          "observe: the rules' trigger state could not be written (conv=%s)",
+          String(conversationId),
+        );
+        return "failed";
+      }
+    };
     let result: DecisionResult;
     try {
       result = await underSignal(
@@ -1882,33 +1946,77 @@ export async function runObserve(
     // signal does not cancel, and a tick that outlives its budget reaches the scheduler's outer
     // deadline and is retried whole, repeating what already committed.
     let report: Awaited<ReturnType<typeof applyDecisions>>;
+    const progress: DecisionProgress = {};
+    // Keys released after the deadline (below), forgotten when the engine latches one again.
+    const released = new Set<string>();
+    let applying: Promise<unknown> = Promise.resolve();
     try {
-      report = await underSignal(
-        applyDecisions(
-          config,
-          result.answers,
-          fencedTools,
-          [toolLogger],
-          deadline,
-          () => fence(),
-          cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
-          // The label write and the attribute write touch different things on the conversation, so
-          // the two go out side by side as well, not one after the other. A tool with a precondition
-          // stays on its own: its condition reads what the rules before it wrote. Under a contact
-          // gate with conditions every action does, since the fence asks them of the same labels
-          // and attributes; the engine asks this again after the fences, which is when a gate
-          // saved during the provider call is first seen.
-          (action) =>
-            gatedByRule ||
-            Object.hasOwn(cfg.toolPreconditions, action.tool) ||
-            sharedWriteKey(action.tool, action.args) === null
-              ? null
-              : "conversation",
-        ),
+      const run = applyDecisions(
+        config,
+        result.answers,
+        fencedTools,
+        [toolLogger],
         deadline,
+        () => fence(),
+        cfg.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
+        // The label write and the attribute write touch different things on the conversation, so
+        // the two go out side by side as well, not one after the other. A tool with a precondition
+        // stays on its own: its condition reads what the rules before it wrote. Under a contact
+        // gate with conditions every action does, since the fence asks them of the same labels
+        // and attributes; the engine asks this again after the fences, which is when a gate
+        // saved during the provider call is first seen.
+        (action) =>
+          gatedByRule ||
+          Object.hasOwn(cfg.toolPreconditions, action.tool) ||
+          sharedWriteKey(action.tool, action.args) === null
+            ? null
+            : "conversation",
+        false,
+        latched,
+        progress,
+        async (keys) => {
+          if (triggerScope === null) return true;
+          const held = await latchRules(base, triggerScope, generation, keys);
+          for (const k of keys) released.delete(k);
+          return held;
+        },
       );
+      applying = run;
+      report = await underSignal(run, deadline);
     } catch (err) {
       toolLogger.settle();
+      // The latches written ahead stay: an action still in flight when the deadline ended the call
+      // may have written, and holding its rule is safer than repeating it. Those whose action
+      // settled without writing, or that were never dispatched, and the `on_start` rules that did
+      // not hold, are released: now, on every later change (a handler that says after the deadline
+      // it wrote nothing) and once the engine has stopped (it may still be between a latch and its
+      // fence).
+      const release = async () => {
+        if (triggerScope === null) return;
+        const fresh = (keys: string[] | undefined) =>
+          (keys ?? []).filter((k) => !released.has(k));
+        const change = {
+          release: fresh(progress.release),
+          undo: fresh(progress.undo),
+        };
+        const due = [...change.release, ...change.undo];
+        if (due.length === 0) return;
+        try {
+          // Superseded, only its own reservations go: the newer observation owns the rest.
+          await writeTriggerState(base, triggerScope, generation, change);
+          // Counted only once done, so a failed release is tried again by the next call.
+          for (const k of due) released.add(k);
+        } catch (err) {
+          logger.warn(
+            { err, agentId: String(agentId) },
+            "observe: the rules' trigger state could not be written (conv=%s)",
+            String(conversationId),
+          );
+        }
+      };
+      progress.onChange = () => void release();
+      await release();
+      void applying.then(release, release);
       if (refusal !== null) return endOnRefusal(refusal);
       // The same rule as the model-failure path: a dispatch that never settled counts as committed,
       // and a committed effect is never retried.
@@ -1931,6 +2039,7 @@ export async function runObserve(
       };
     }
     toolLogger.settle();
+    const stateWritten = await persistTriggerState(report.triggerState);
     if (refusal !== null || report.withdrawn) {
       return endOnRefusal(refusal ?? "superseded");
     }
@@ -1944,6 +2053,13 @@ export async function runObserve(
         answers: answersForLog(result.answers),
         actions: report.actions,
         ...(report.missed.length > 0 ? { notFired: report.missed } : {}),
+        // Rules whose conditions held and that did not act because their trigger holds them back,
+        // so "did not fire" (`notFired`) and "fired and was held" read apart.
+        ...(report.held.length > 0 ? { held: report.held } : {}),
+        ...(stateWritten === "failed" ? { triggerStateWritten: false } : {}),
+        ...(stateWritten === "superseded"
+          ? { triggerStateSuperseded: true }
+          : {}),
         messagesRead: transcript.length,
         labelsBefore: current === null ? null : current.length,
       },
