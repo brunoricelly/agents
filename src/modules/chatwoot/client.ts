@@ -341,6 +341,36 @@ export interface ChatwootConversationRef {
   customAttributes?: Record<string, unknown> | null;
 }
 
+// One conversation of an inbox listing, as the reconciliation sweep reads it: who holds it and when
+// it last moved. `assigneeType` is Chatwoot's `meta.assignee_type` (`User`, `AgentBot`), null when
+// nobody does; `lastActivityAt` is `timestamp` (epoch seconds), null when the payload has none.
+export interface ChatwootInboxConversation {
+  id: number;
+  status: string | null;
+  assigneeType: string | null;
+  lastActivityAt: Date | null;
+}
+
+function parseInboxConversation(
+  raw: unknown,
+): ChatwootInboxConversation | null {
+  const ref = parseConversationRef(raw);
+  if (!ref) return null;
+  const o = raw as Record<string, unknown>;
+  const meta =
+    o.meta && typeof o.meta === "object"
+      ? (o.meta as Record<string, unknown>)
+      : {};
+  const ts = Number(o.timestamp);
+  return {
+    id: ref.id,
+    status: ref.status,
+    assigneeType:
+      typeof meta.assignee_type === "string" ? meta.assignee_type : null,
+    lastActivityAt: Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : null,
+  };
+}
+
 // A search that has not found an exact address in this many pages of 15 is not going to: the query
 // is the full address, and only substrings of it can match.
 const CONTACT_SEARCH_MAX_PAGES = 5;
@@ -1704,6 +1734,74 @@ export class ChatwootClient {
       }
     }
     return null;
+  }
+
+  // One page of an inbox's conversations in one status, newest activity first (the fork's
+  // `last_activity_at_desc`). Pages hold 25; an empty page is the end. Conversations the token's user
+  // pinned come first on page one, so a caller bounding by time reads every row of a page rather than
+  // stopping at the first old one.
+  async listInboxConversations(
+    inboxId: number,
+    status: string,
+    page: number,
+  ): Promise<ChatwootInboxConversation[]> {
+    const qs = new URLSearchParams({
+      inbox_id: String(inboxId),
+      status,
+      assignee_type: "all",
+      sort_by: "last_activity_at_desc",
+      page: String(page),
+    });
+    const res = (await this.request(
+      this.config.adminToken,
+      "GET",
+      `/conversations?${qs.toString()}`,
+    )) as { data?: { payload?: unknown } } | null;
+    // An unreadable listing throws instead of reading as the end: an empty answer lets the
+    // caller advance its cursor past conversations it never saw.
+    const rows = res?.data?.payload;
+    if (!Array.isArray(rows))
+      throw new Error(
+        `GET /conversations: no payload array for inbox ${inboxId}`,
+      );
+    return rows.map((row) => {
+      const c = parseInboxConversation(row);
+      if (!c)
+        throw new Error(
+          `GET /conversations: unreadable row for inbox ${inboxId}`,
+        );
+      return c;
+    });
+  }
+
+  // The display ids of the conversations the admin token's user pinned, which the fork's listing puts
+  // first whatever their activity. A Chatwoot without pins answers 404 and orders by activity alone.
+  async listPinnedConversationIds(): Promise<Set<number>> {
+    let res: unknown;
+    try {
+      res = await this.request(
+        this.config.adminToken,
+        "GET",
+        "/conversations/pins",
+      );
+    } catch (err) {
+      if (err instanceof ChatwootApiError && err.status === 404)
+        return new Set();
+      throw err;
+    }
+    if (!Array.isArray(res))
+      throw new Error("GET /conversations/pins: no array");
+    const ids = new Set<number>();
+    for (const row of res) {
+      const id =
+        typeof row === "object" && row !== null
+          ? (row as { conversation_id?: unknown }).conversation_id
+          : undefined;
+      if (typeof id !== "number")
+        throw new Error("GET /conversations/pins: unreadable row");
+      ids.add(id);
+    }
+    return ids;
   }
 
   // The contact's conversations as `{ id: display_id, inboxId, status }`.
