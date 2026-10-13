@@ -13,6 +13,7 @@ import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import {
   dashboardFilterQuery,
+  KEPT_DAYS_NOTE,
   parseDashboardFilter,
 } from "@/api/v1/dashboard.controller";
 import config from "@/config";
@@ -22,6 +23,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { getDashboardCosts } from "@/modules/analytics/costs";
 import { DRILL_OUTCOMES } from "@/modules/analytics/drilldown";
+import { fromKeptDays } from "@/modules/analytics/rollup/answer";
 import {
   getInstanceMetrics,
   getKpis,
@@ -749,10 +751,17 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   )
   .get(
     "/metrics/kpis",
-    async ({ tenantContext, query }) => {
-      const kpis = await getKpis(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
+    async ({ tenantContext, query, request }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const filter = parseDashboardFilter(query);
+      const kpis = await fromKeptDays(
+        ctx,
+        filter,
+        "kpis",
+        (f) => f.kpis as NonNullable<typeof f.kpis>,
+        () => getKpis(ctx, filter),
+        undefined,
+        request.signal,
       );
       return { instance: instanceIdentity, kpis };
     },
@@ -762,7 +771,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       detail: {
         ...doc(
           "Dashboard KPIs",
-          "Returns the headline dashboard KPIs since an optional start time.",
+          `Returns the headline dashboard KPIs since an optional start time. ${KEPT_DAYS_NOTE}`,
         ),
         tags: ["Dashboard"],
       },
@@ -793,10 +802,17 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   )
   .get(
     "/metrics/costs",
-    async ({ tenantContext, query }) => {
-      const costs = await getDashboardCosts(
-        ctxOrThrow(tenantContext),
-        parseDashboardFilter(query),
+    async ({ tenantContext, query, request }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const filter = parseDashboardFilter(query);
+      const costs = await fromKeptDays(
+        ctx,
+        filter,
+        "costs",
+        (f) => f.costs as NonNullable<typeof f.costs>,
+        () => getDashboardCosts(ctx, filter),
+        undefined,
+        request.signal,
       );
       return { instance: instanceIdentity, costs };
     },
@@ -806,7 +822,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       detail: {
         ...doc(
           "Cost metrics",
-          "Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured.",
+          `Returns the tenant's LLM cost from its own usage ledger since an optional start time: total, per local day, per model, the calls no price covered, and the Langfuse link when configured. ${KEPT_DAYS_NOTE}`,
         ),
         tags: ["Dashboard"],
       },
