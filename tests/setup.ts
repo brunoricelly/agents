@@ -2,18 +2,25 @@ import "@testing-library/jest-dom";
 import { afterEach, beforeEach, jest } from "bun:test";
 import { configure } from "@testing-library/dom";
 import {
+  CLONE_MARKER_ENV,
+  ensureWorkerClone,
+  workerCloneTarget,
+} from "./db-clone";
+import {
   DB_GATE_OPT_OUT,
   localMigrations,
-  type MigrationRow,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
   probePoolConfig,
   probeTargets,
+  readMigrationLedger,
+  retryConnect,
   schemaOutOfStep,
   unreachableDb,
   withDeadline,
 } from "./db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
+import { TEST_TIMEOUT_MS } from "./utils/timeouts";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -28,7 +35,7 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
 // of a real failure gets slower. NOT the answer for a window a test's own SETUP must fit inside,
 // paid on every run: see the overflow-drain test in tests/modules/contact-auth-grant.test.ts, which
 // holds the clock still instead, and the per-test cost note in tests/tooling/stale-base-guard.test.ts.
-jest.setTimeout(30_000);
+jest.setTimeout(TEST_TIMEOUT_MS);
 configure({ asyncUtilTimeout: 5_000 });
 
 // A TIMED-OUT TEST KEEPS RUNNING, and Bun moves on without waiting for its body. A `globalThis.fetch`
@@ -75,7 +82,26 @@ if (testSuUrl) {
   // so a constant name would put them all on one database, where a migration applied from any of them
   // stays applied under all the others (./db-name.ts, tests/lib/test-db-identity.test.ts). The guard
   // above still reads the DECLARED name: it is a statement about what the developer pointed at.
-  const dbName = testDbNameFor(declared, REPO_ROOT);
+  const checkoutDb = testDbNameFor(declared, REPO_ROOT);
+  // Under `bun test --parallel` each worker moves onto its own copy of that database, and every URL
+  // below follows it (./db-clone.ts). The copy is made before anything connects, because Postgres
+  // refuses to copy a database somebody is connected to; the gate further down then checks the copy.
+  const clone = process.env.TEST_APP_DATABASE_URL
+    ? workerCloneTarget(process.env, checkoutDb, REPO_ROOT)
+    : null;
+  if (clone && process.env.TEST_APP_DATABASE_URL) {
+    await ensureWorkerClone({
+      suUrl: withDbName(testSuUrl, checkoutDb),
+      appRole: decodeURIComponent(
+        new URL(process.env.TEST_APP_DATABASE_URL).username,
+      ),
+      root: REPO_ROOT,
+      template: checkoutDb,
+      clone,
+    });
+    process.env[CLONE_MARKER_ENV] = clone;
+  }
+  const dbName = clone ?? checkoutDb;
   const testDbPath = `/${dbName}`;
   process.env.MIGRATION_DATABASE_URL = withDbName(testSuUrl, dbName);
   // NOTE: BOTH spellings, which is what makes the derivation safe: some test files build their
@@ -108,54 +134,55 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
   // not be why a run without a database cannot start.
   const { PrismaPg } = await import("@prisma/adapter-pg");
   const { PrismaClient } = await import("@/../generated/prisma/client");
-  for (const { variable, url } of probeTargets(process.env)) {
-    const probe = new PrismaClient({
+  // One fresh client per attempt: a client whose connect lapsed is abandoned, not reused, and closing
+  // it is not awaited, since the connection it would wait on is the one that stalled.
+  const once = async <T>(
+    url: string,
+    what: string,
+    work: (c: InstanceType<typeof PrismaClient>) => Promise<T>,
+  ): Promise<T> => {
+    const client = new PrismaClient({
       adapter: new PrismaPg(probePoolConfig(url)),
     });
     try {
-      await withDeadline(
-        probe.$queryRaw`SELECT 1`,
-        PROBE_BACKSTOP_MS,
-        variable,
-      );
-      await probe.$disconnect();
+      const out = await withDeadline(work(client), PROBE_BACKSTOP_MS, what);
+      await client.$disconnect();
+      return out;
     } catch (err) {
-      // Not awaited: the connection this is trying to close is the one that just failed to answer,
-      // and waiting on it is the stall the deadline above exists to end.
-      void probe.$disconnect().catch(() => {});
+      void client.$disconnect().catch(() => {});
+      throw err;
+    }
+  };
+  for (const { variable, url } of probeTargets(process.env)) {
+    try {
+      await retryConnect(() =>
+        once(url, variable, (c) => c.$queryRaw`SELECT 1`),
+      );
+    } catch (err) {
       throw new Error(`tests: ${unreachableDb(variable, url, err)}`);
     }
   }
 
   // AND WHETHER IT IS THIS TREE'S DATABASE. The probes above prove a database ANSWERS; this asks
   // whether its schema is the one prisma/migrations describes, in both directions, so a stale schema
-  // is named up front instead of read off dozens of failures in code nobody broke.
+  // is named up front instead of read off dozens of failures in code nobody broke. A read that fails
+  // is the database not answering, and is reported as that (see `readMigrationLedger`).
   const suUrl = process.env.MIGRATION_DATABASE_URL as string;
-  const reader = new PrismaClient({
-    adapter: new PrismaPg(probePoolConfig(suUrl)),
-  });
-  try {
-    // `to_regclass` rather than a bare SELECT: a database that exists and has never been migrated
-    // has no `_prisma_migrations` at all, and that is a real state (a fresh CREATE DATABASE), not an
-    // error. It reports as every local migration being unapplied, which is the truth and names the
-    // same command.
-    const rows = await withDeadline(
-      reader.$queryRaw<MigrationRow[]>`
-        SELECT migration_name, checksum, finished_at, rolled_back_at FROM _prisma_migrations
-        WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
-      PROBE_BACKSTOP_MS,
-      "TEST_MIGRATION_DATABASE_URL",
-    ).catch(() => [] as MigrationRow[]);
-    const local = localMigrations(REPO_ROOT);
-    const drift = schemaOutOfStep(
-      new URL(suUrl).pathname.replace(/^\//, ""),
-      rows,
-      local,
+  const rows = await retryConnect(() =>
+    once(suUrl, "TEST_MIGRATION_DATABASE_URL", (c) =>
+      readMigrationLedger((sql) => c.$queryRawUnsafe<unknown[]>(sql)),
+    ),
+  ).catch((err: unknown) => {
+    throw new Error(
+      `tests: ${unreachableDb("TEST_MIGRATION_DATABASE_URL", suUrl, err)}`,
     );
-    if (drift) throw new Error(`tests: ${drift}`);
-  } finally {
-    await reader.$disconnect().catch(() => {});
-  }
+  });
+  const drift = schemaOutOfStep(
+    new URL(suUrl).pathname.replace(/^\//, ""),
+    rows,
+    localMigrations(REPO_ROOT),
+  );
+  if (drift) throw new Error(`tests: ${drift}`);
 }
 
 process.env.JWT_SECRET = "test-secret-key-for-testing-only";
