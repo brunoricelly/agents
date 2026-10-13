@@ -24,6 +24,10 @@ import {
   resetShutdownForTest,
 } from "@/lib/shutdown";
 import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
+import {
   finish,
   runDeadClaimPass,
   sweepDeadClaims,
@@ -39,6 +43,19 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // process is alive is never touched. The rows are seeded in the state a death leaves (PROCESSING,
 // claimed a few seconds ago), and the leases are written directly, which is what a live or a dead
 // process looks like from another one.
+
+// An account where every conversation is gone: the stranded status change has nothing to give the
+// mirror, and closes. Each read is recorded, so a pass that never asked is told apart.
+const goneReads: number[] = [];
+const goneConversation = {
+  makeClient: async () =>
+    ({
+      getConversation: async (id: number) => {
+        goneReads.push(id);
+        throw new ChatwootApiError(404, `/conversations/${id}`);
+      },
+    }) as unknown as ChatwootClient,
+};
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -264,15 +281,34 @@ describe.skipIf(!dbUp)("deliveries claimed by a dead process", () => {
     expect(await statusOf(row)).toBe("DEAD");
   });
 
-  test("a status change claimed by a dead process is closed PROCESSED with no recovery", async () => {
-    // The stranded sweep's verdict, earlier: no customer message, nothing for the DEAD worklist.
+  test("a status change claimed by a dead process is read back and closed PROCESSED with no recovery", async () => {
+    // The stranded sweep's verdict, earlier: no customer message, nothing for the DEAD worklist. Its
+    // state is read back from Chatwoot first; a conversation gone there closes it all the same.
     const row = await claimed(randomUUID(), {
       event: "conversation_status_changed",
       inboundMessageId: null,
     });
-    await sweepDeadClaims({ base: appDb });
+    goneReads.length = 0;
+    await sweepDeadClaims({ base: appDb, deps: goneConversation });
     expect(await statusOf(row)).toBe("PROCESSED");
+    expect(goneReads.length).toBe(1);
     expect(await recoveryJobs(row)).toBe(0);
+  });
+
+  test("older conversation events do not fill a pass's batch ahead of a customer's message (catches recovery waiting behind read-backs)", async () => {
+    await claimed(randomUUID(), {
+      event: "conversation_status_changed",
+      inboundMessageId: null,
+      claimedAgoMs: 600_000,
+    });
+    await claimed(randomUUID(), {
+      event: "conversation_resolved",
+      inboundMessageId: null,
+      claimedAgoMs: 590_000,
+    });
+    const message = await claimed(randomUUID(), { claimedAgoMs: 1_000 });
+    await sweepDeadClaims({ base: appDb, batch: 1, deps: goneConversation });
+    expect(await statusOf(message)).toBe("DEAD");
   });
 
   test("two passes at once settle a dead claim once", async () => {
