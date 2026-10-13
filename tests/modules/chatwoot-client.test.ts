@@ -72,6 +72,149 @@ describe("ChatwootClient", () => {
     expect(calls[2]?.headers["api-access-token"]).toBe("ADMIN_TOK");
   });
 
+  // The filter compares `last_activity_at` with a whole date, so the bound is the day BEFORE the
+  // instant asked for: a conversation active on that same day past the instant is still returned.
+  test("listContactConversationsByActivity asks the filter for the contact's picked inboxes since the day before", async () => {
+    const { fetchImpl, calls } = stub(200, {
+      payload: [
+        { id: 31, inbox_id: 2, status: "open", last_activity_at: 1791800000 },
+        {
+          id: 7,
+          inbox_id: 3,
+          status: "resolved",
+          last_activity_at: 1791700000,
+        },
+      ],
+    });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const refs = await client.listContactConversationsByActivity({
+      contactId: 77,
+      inboxIds: [2, 3],
+      activeSince: new Date("2026-09-12T00:30:00Z"),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toBe(
+      "https://chat.example.com/api/v1/accounts/5/conversations/filter",
+    );
+    expect(calls[0]?.headers["api-access-token"]).toBe("ADMIN_TOK");
+    expect(calls[0]?.body).toEqual({
+      page: 1,
+      per_page: 25,
+      sort_by: "last_activity_at_desc",
+      payload: [
+        {
+          attribute_key: "contact_id",
+          filter_operator: "equal_to",
+          values: [77],
+          query_operator: "and",
+        },
+        {
+          attribute_key: "inbox_id",
+          filter_operator: "equal_to",
+          values: [2, 3],
+          query_operator: "and",
+        },
+        {
+          attribute_key: "last_activity_at",
+          filter_operator: "is_greater_than",
+          values: ["2026-09-11"],
+          query_operator: null,
+        },
+      ],
+    });
+    expect(refs.map((r) => [r.id, r.inboxId])).toEqual([
+      [31, 2],
+      [7, 3],
+    ]);
+    expect(refs[0]?.lastActivityAt?.getTime()).toBe(1791800000 * 1000);
+  });
+
+  // The filter leads with the admin token's pinned conversations, so a full first page of old pinned
+  // ones does not end the read: the recently active one on the next page is still returned.
+  test("listContactConversationsByActivity reads past a full page until one comes back short", async () => {
+    const pinned = Array.from({ length: 25 }, (_, i) => ({
+      id: 100 + i,
+      inbox_id: 2,
+      last_activity_at: 1791000000,
+    }));
+    const pages: unknown[][] = [
+      pinned,
+      [{ id: 7, inbox_id: 2, last_activity_at: 1791800000 }, pinned[0]],
+    ];
+    const bodies: unknown[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as { page: number };
+      bodies.push(body.page);
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({ payload: pages[body.page - 1] ?? [] }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const refs = await client.listContactConversationsByActivity({
+      contactId: 77,
+      inboxIds: [2],
+      activeSince: new Date("2026-09-12T00:30:00Z"),
+    });
+    expect(bodies).toEqual([1, 2]);
+    expect(refs).toHaveLength(26);
+    expect(refs.some((r) => r.id === 7)).toBe(true);
+  });
+
+  test("listContactConversationsByActivity stops at four full pages", async () => {
+    const bodies: number[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const page = (JSON.parse(init?.body as string) as { page: number }).page;
+      bodies.push(page);
+      const payload = Array.from({ length: 25 }, (_, i) => ({
+        id: page * 100 + i,
+        inbox_id: 2,
+        last_activity_at: 1791000000,
+      }));
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ payload }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const refs = await client.listContactConversationsByActivity({
+      contactId: 77,
+      inboxIds: [2],
+      activeSince: new Date("2026-09-12T00:30:00Z"),
+    });
+    expect(bodies).toEqual([1, 2, 3, 4]);
+    expect(refs).toHaveLength(100);
+  });
+
+  // A filter answer without a list is not "no conversations": the block reports the listing unread.
+  test("listContactConversationsByActivity throws on an answer with no payload array", async () => {
+    const { fetchImpl } = stub(200, { meta: {} });
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await expect(
+      client.listContactConversationsByActivity({
+        contactId: 77,
+        inboxIds: [2],
+        activeSince: new Date("2026-09-12T00:30:00Z"),
+      }),
+    ).rejects.toThrow("no payload array");
+  });
+
   test("sendMessage uses the bot token and the right URL/body", async () => {
     const { fetchImpl, calls } = stub(200, { id: 1 });
     const client = await createChatwootClient(baseConfig, {
