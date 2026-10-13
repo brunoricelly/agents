@@ -57,7 +57,10 @@ import {
   type ScheduleException,
   type WindowSpec,
 } from "@/modules/business-hours/hours";
-import { withoutRemovedDecisionFields } from "@/modules/decisions/config";
+import {
+  isNativeDecisionTool,
+  withoutRemovedDecisionFields,
+} from "@/modules/decisions/config";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
 import { documentToolName } from "@/modules/documents/slug";
 import {
@@ -2946,7 +2949,57 @@ function renameNativeToolKeys(
     }
     if (touched) out = { ...out, [key]: entries };
   }
-  return out;
+  return renameDecisionActionTools(out, stored);
+}
+
+// A decisions rule names a custom tool by the name the model calls it (normalizeToolName): a tool
+// the import stored under another name takes its rules with it, or they report `not_granted`.
+export function renameDecisionActionTools(
+  bag: Record<string, unknown>,
+  stored: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  const mon = bag.monitoring;
+  if (!mon || typeof mon !== "object" || Array.isArray(mon)) return bag;
+  const block = (mon as Record<string, unknown>).decisions;
+  if (!block || typeof block !== "object" || Array.isArray(block)) return bag;
+  const rules = (block as Record<string, unknown>).rules;
+  if (!Array.isArray(rules) || stored.size === 0) return bag;
+  const byModelName = new Map(
+    [...stored].map(([from, to]) => [
+      normalizeToolName(from),
+      normalizeToolName(to),
+    ]),
+  );
+  let touched = false;
+  const next = rules.map((rule) => {
+    const action =
+      rule && typeof rule === "object"
+        ? (rule as Record<string, unknown>).action
+        : undefined;
+    const tool =
+      action && typeof action === "object"
+        ? (action as Record<string, unknown>).tool
+        : undefined;
+    // A native action names the watcher's own write, never a bundled tool that shared its name.
+    const to =
+      typeof tool === "string" && !isNativeDecisionTool(tool)
+        ? byModelName.get(tool)
+        : undefined;
+    if (to === undefined || to === tool) return rule;
+    touched = true;
+    return {
+      ...(rule as Record<string, unknown>),
+      action: { ...(action as Record<string, unknown>), tool: to },
+    };
+  });
+  if (!touched) return bag;
+  return {
+    ...bag,
+    monitoring: {
+      ...(mon as Record<string, unknown>),
+      decisions: { ...(block as Record<string, unknown>), rules: next },
+    },
+  };
 }
 
 async function buildGrantRows(

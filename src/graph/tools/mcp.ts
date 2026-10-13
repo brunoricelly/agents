@@ -1,16 +1,27 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
+} from "@langchain/core/tools";
 import { type Connection, loadMcpTools } from "@langchain/mcp-adapters";
 import {
   Client,
+  fromJsonSchema,
   SSEClientTransport,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
+import { DefaultJsonSchemaValidator } from "@modelcontextprotocol/client/_shims";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import { normalizeTupleItems } from "@/graph/gemini-tools";
+import { fenceReporterOf } from "@/graph/tools/fence-report";
+import {
+  ambiguousMcpNames,
+  MCP_TOOL_NAME_MAX,
+  mcpRuntimeBase,
+} from "@/graph/tools/mcp-names";
 import { declarationSchema } from "@/graph/tools/mcp-schema";
 import {
   hasSafeStdioCommandChars,
@@ -160,8 +171,6 @@ export function filterAllowed(
 // The rename is presentation-only: discovery + the per-agent allowlist still use the bare server-side
 // name (filterAllowed runs first), and the tool's func still calls the original tool on its server.
 // Names are sanitized + capped at the 64-char tool-name limit shared by the providers we support.
-const MCP_NS = "mcp";
-const MAX_TOOL_NAME = 64;
 
 // ASCII-safe server segment, derived from the connection's (unique) display name. (Own normalization
 // rather than normalizeToolName, whose "tool" fallback would mask an empty slug.) A pure function of
@@ -185,26 +194,22 @@ export function mcpServerSlug(name: string): string {
 // `mcp__<slug>__<tool>`, sanitized, unique within `used`, ≤64 chars. To stay under the limit the slug
 // is trimmed first (the bare tool name is the informative part); a numeric suffix breaks any residual
 // collision (deterministic given selection order).
+// Stamped on an exposed tool whose name may be another server's (ambiguousMcpNames).
+export const AMBIGUOUS_MCP_NAME = Symbol("ambiguousMcpName");
+
 export function namespacedToolName(
   slug: string,
   toolName: string,
   used: Set<string>,
 ): string {
-  const sep = "__";
-  let name = `${MCP_NS}${sep}${slug}${sep}${toolName}`;
-  if (name.length > MAX_TOOL_NAME) {
-    const room =
-      MAX_TOOL_NAME - (MCP_NS.length + sep.length * 2 + toolName.length);
-    const trimmed = room > 0 ? slug.slice(0, room) : "";
-    name = `${MCP_NS}${sep}${trimmed}${sep}${toolName}`.slice(0, MAX_TOOL_NAME);
-  }
+  const name = mcpRuntimeBase(slug, toolName);
   if (!used.has(name)) {
     used.add(name);
     return name;
   }
   for (let i = 2; ; i++) {
     const suffix = `_${i}`;
-    const cand = name.slice(0, MAX_TOOL_NAME - suffix.length) + suffix;
+    const cand = name.slice(0, MCP_TOOL_NAME_MAX - suffix.length) + suffix;
     if (!used.has(cand)) {
       used.add(cand);
       return cand;
@@ -432,6 +437,69 @@ function withDraft2020Tuples(client: Client): void {
   }) as Client["listTools"];
 }
 
+// THE ADAPTER'S OWN ARGUMENT CHECK, which runs against the server's full schema before the server is
+// reached: a call it refuses sent nothing, said on the call's reporter (fence-report.ts) so a caller
+// that asks per call (a decisions rule) does not count it as a call that may have written.
+export const SERVER_INPUT_VALIDATOR = "fazeraiServerInput";
+export interface ServerInputValidator {
+  schema: unknown;
+  validate: (args: Record<string, unknown>) => Promise<boolean>;
+}
+
+// Told apart by the adapter's own sentence: a response the SDK cannot parse also throws a wrapped
+// `ZodError`, after the request was sent ("Error calling tool ..."), and may have written.
+const ARGUMENT_REFUSAL = "Invalid arguments for MCP tool ";
+export function isMcpArgumentRefusal(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    err.name === "ToolException" &&
+    err.message.startsWith(ARGUMENT_REFUSAL) &&
+    (err.cause as { name?: unknown } | undefined)?.name === "ZodError"
+  );
+}
+
+function reportArgumentRefusals(tool: StructuredToolInterface): void {
+  const t = tool as unknown as {
+    func?: (args: unknown, runManager: unknown, config: unknown) => unknown;
+  };
+  const call = t.func;
+  if (typeof call !== "function") return;
+  t.func = async (args, runManager, config) => {
+    try {
+      return await call.call(tool, args, runManager, config);
+    } catch (err) {
+      if (isMcpArgumentRefusal(err)) {
+        fenceReporterOf(config as ToolRunnableConfig)?.({ noEffect: true });
+      }
+      throw err;
+    }
+  };
+}
+
+// AN ADAPTER TOOL AS THE AGENT EXPOSES IT: the model reads a simplified declaration of the server's
+// schema (mcp-schema.ts), while the server's own schema stays beside it with the adapter's check, so
+// a caller that fills arguments itself (a decisions rule, decisions/arguments.ts) fits and checks
+// them against what the adapter will check; and an argument refusal is reported as sending nothing.
+export function adoptServerTool(tool: StructuredToolInterface): void {
+  const server = tool.schema;
+  let validator: ReturnType<typeof fromJsonSchema> | undefined;
+  (tool as { [SERVER_INPUT_VALIDATOR]?: ServerInputValidator })[
+    SERVER_INPUT_VALIDATOR
+  ] = {
+    schema: server,
+    // Compiled the same way as the adapter's and, like it, on first use.
+    validate: async (args) => {
+      validator ??= fromJsonSchema(
+        server as never,
+        new DefaultJsonSchemaValidator(),
+      );
+      return !(await validator["~standard"].validate(args)).issues;
+    },
+  };
+  (tool as { schema: unknown }).schema = declarationSchema(server);
+  reportArgumentRefusals(tool);
+}
+
 // One connection on its own SDK client, for every transport. An SDK 2 `Client` negotiates the legacy
 // protocol by default, so no elicitation request can turn into an interrupt no turn resumes. Its HTTP
 // transports get a `fetch` that adds the declared headers of the tool call in flight.
@@ -458,8 +526,7 @@ async function connectClient(
           result: withStructuredContent(result) as typeof result,
         }),
       });
-      for (const tool of tools)
-        (tool as { schema: unknown }).schema = declarationSchema(tool.schema);
+      for (const tool of tools) adoptServerTool(tool);
       return { client, tools };
     } catch (err) {
       void client.close().catch(() => {});
@@ -635,6 +702,16 @@ export async function loadMcpToolsForAgent(
   const out: StructuredToolInterface[] = [];
   // Tracks every exposed name so the namespacing stays unique across all of the agent's MCP servers.
   const usedNames = new Set<string>();
+  // The names whose owner depends on the order the servers are read in: a decisions rule that names
+  // one does not run (decisions/run.ts), since it may reach another server's tool.
+  const ambiguous = ambiguousMcpNames(
+    selections
+      .filter((sel) => sel.enabledTools.length > 0)
+      .map((sel) => ({
+        slug: mcpServerSlug(sel.name),
+        tools: sel.enabledTools,
+      })),
+  );
   for (const sel of selections) {
     if (sel.enabledTools.length === 0) continue; // fail-closed
     try {
@@ -667,14 +744,17 @@ export async function loadMcpToolsForAgent(
       // Expose each allowed tool under its namespaced name (collision-free across servers) carrying
       // the server context for the prompt section. The bare name was already used for the allowlist.
       for (const tl of allowed) {
-        out.push(
-          exposeMcpTool(
-            tl,
-            namespacedToolName(slug, tl.name, usedNames),
-            server,
-            call,
-          ),
+        const exposed = exposeMcpTool(
+          tl,
+          namespacedToolName(slug, tl.name, usedNames),
+          server,
+          call,
         );
+        if (ambiguous.has(exposed.name)) {
+          (exposed as { [AMBIGUOUS_MCP_NAME]?: true })[AMBIGUOUS_MCP_NAME] =
+            true;
+        }
+        out.push(exposed);
       }
     } catch (err) {
       logger.warn({ err, mcp: sel.name }, "mcp tool load failed; skipping");

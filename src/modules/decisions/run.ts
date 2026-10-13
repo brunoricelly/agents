@@ -2,25 +2,27 @@
 // window, the ceiling, the flow line). Two steps, kept apart so the tick can gate between them and
 // log each: ask the provider, then turn the answers into tool calls by rule.
 
+import { isDeepStrictEqual } from "node:util";
 import type { Callbacks } from "@langchain/core/callbacks/manager";
 import {
   type StructuredToolInterface,
   ToolInputParsingException,
 } from "@langchain/core/tools";
-import {
-  interopSafeParseAsync,
-  isInteropZodSchema,
-} from "@langchain/core/utils/types";
+import { isEffectFreeTool } from "@/graph/tools/effect-free";
 import {
   type CallReport,
   type FenceName,
   type FenceReport,
   withFenceReporter,
 } from "@/graph/tools/fence-report";
+import { AMBIGUOUS_MCP_NAME, isMcpArgumentRefusal } from "@/graph/tools/mcp";
 import { sentNothing } from "@/modules/chatwoot/client";
+import { prepareArgs } from "./arguments";
 import {
+  type DecisionQuestion,
   type DecisionsConfig,
   type DecisionTrigger,
+  isNativeDecisionTool,
   ruleStateKey,
   triggerOf,
 } from "./config";
@@ -30,6 +32,7 @@ import {
   type DecisionResult,
 } from "./providers";
 import { type ConditionMiss, evaluateRules, type FiredAction } from "./rules";
+import { argsForLog, type FillContext } from "./tool-args";
 
 export async function askProvider(
   config: DecisionsConfig,
@@ -57,11 +60,11 @@ export interface ActionReport {
   tool: string;
   // `decided`: decided and not run, only under `dryRun`. `ran`: the tool was invoked and returned.
   // `not_granted`: the agent does not have the tool (the operator grants it, as for the LLM path).
-  // `failed`: the tool threw; `failure` says which way, never the tool's text: `invalid_arguments`
-  // (the rule's args do not fit the tool's schema) or `tool_error`. `over_budget`: the rules before
-  // it spent `limits.maxToolCalls`. `refused`: a fence inside the tool refused the whole call
-  // (`fence` names it: a protected label, a label outside the allowed list, the tool's
-  // precondition), so nothing was written. A call refused only in part ran, with `fence` and `partial`.
+  // `failed`: the tool threw or was not called; `failure` says which way, never the tool's text:
+  // `invalid_arguments`, `tool_error`, `missing_value` or `ambiguous_tool` (an MCP name two servers
+  // may answer to). `over_budget`: the rules before it spent `limits.maxToolCalls`. `refused`: a
+  // fence inside the tool refused the whole call (`fence` names it), so nothing was written; a call
+  // refused only in part ran, with `fence` and `partial`.
   // `no_effect`: the tool could not write (the contact or card it targets is not there).
   outcome:
     | "decided"
@@ -79,6 +82,18 @@ export interface ActionReport {
   partial?: true;
   // Later rules whose identical action this one is (rules.ts): the outcome is theirs too.
   merged?: number[];
+  // A custom tool's arguments as resolved for the call, filled values as `argsForLog` gives them.
+  args?: Record<string, unknown>;
+  // `missing_value`: the arguments to be filled from a field the observation had no value for.
+  missing?: string[];
+}
+
+// What the arguments a rule fills come from (./tool-args.ts), and whether the observe line may carry
+// the filled values (`observability.logToolValues`).
+export interface DecisionFill {
+  context: FillContext;
+  questions: readonly DecisionQuestion[];
+  logValues: boolean;
 }
 
 // What the trigger state of this tick changes (decision_rule_states, by `ruleStateKey`): `latch`
@@ -140,6 +155,7 @@ export async function applyDecisions(
   latched: ReadonlySet<string> = new Set(),
   progress: DecisionProgress = {},
   latchAhead: LatchAhead = async () => true,
+  fill: DecisionFill | null = null,
 ): Promise<DecisionTickReport> {
   const keys = config.rules.map(ruleStateKey);
   const triggers = config.rules.map(triggerOf);
@@ -150,6 +166,10 @@ export async function applyDecisions(
   );
   const withMerged = (r: ActionReport, f: FiredAction): ActionReport =>
     f.merged.length > 0 ? { ...r, merged: [...f.merged] } : r;
+  // The arguments each fired action is called with: the fixed ones, and the filled ones resolved
+  // for this observation. And how the line records them, for a custom tool.
+  const callArgs = new Map<number, Record<string, unknown>>();
+  const loggedArgs = new Map<number, Record<string, unknown>>();
   // One slot per fired action, filled in whatever order the actions settle and read in rule order.
   const slots: (ActionReport | undefined)[] = fired.map(() => undefined);
   // The fired actions whose tool said it wrote something that stays (a handoff's note before its
@@ -172,6 +192,8 @@ export async function applyDecisions(
   const leftNothing = (a: ActionReport, at: number) =>
     a.outcome === "failed"
       ? a.failure === "invalid_arguments" ||
+        a.failure === "missing_value" ||
+        a.failure === "ambiguous_tool" ||
         (quiet.has(at) && !committed.has(at))
       : a.outcome !== "ran";
   // Latched ahead for an action that was then not dispatched.
@@ -207,6 +229,9 @@ export async function applyDecisions(
   const toRun: { at: number; tool: StructuredToolInterface }[] = [];
   // Every call the tick dispatches counts, a dry run's included, so it reports what a run would.
   let calls = 0;
+  // The calls this tick makes, by fired action, for the merge below.
+  const sent: { at: number; tool: string; args: Record<string, unknown> }[] =
+    [];
   for (const [at, f] of fired.entries()) {
     // The grant is checked first, so a dry run shows the same missing grant a run would hit.
     const tool = tools.find((t) => t.name === f.tool);
@@ -214,25 +239,64 @@ export async function applyDecisions(
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "not_granted" };
       continue;
     }
+    // An MCP name two servers may answer to, by the order the assembly reads them in: called, it
+    // may reach the other server's tool, so it is not called (ambiguousMcpNames).
+    if ((tool as { [AMBIGUOUS_MCP_NAME]?: true })[AMBIGUOUS_MCP_NAME]) {
+      slots[at] = {
+        rule: f.rule,
+        tool: f.tool,
+        outcome: "failed",
+        failure: "ambiguous_tool",
+      };
+      continue;
+    }
+    // THE ARGUMENTS FIRST (./arguments.ts): resolved, fitted and checked against the tool's
+    // original schema before anything is charged or latched. One that does not fit is not called, so
+    // it spends no call of the budget and holds no latch.
+    const prepared = await prepareArgs(
+      tool,
+      f,
+      fill
+        ? { context: fill.context, answers, questions: fill.questions }
+        : null,
+    );
+    const args = prepared.args;
+    if (!isNativeDecisionTool(f.tool)) {
+      loggedArgs.set(
+        at,
+        argsForLog(args, f.fill ?? {}, fill?.logValues ?? false),
+      );
+    }
+    if (!prepared.ok) {
+      slots[at] = {
+        rule: f.rule,
+        tool: f.tool,
+        outcome: "failed",
+        failure: prepared.failure,
+        ...(prepared.missing ? { missing: prepared.missing } : {}),
+      };
+      continue;
+    }
+    // Two rules written differently can call with the same arguments (one fixed, one filled with the
+    // same value): one call answers for both, as rules.ts merges identical actions as written.
+    const same = sent.find(
+      (x) => x.tool === f.tool && isDeepStrictEqual(x.args, args),
+    );
+    const into = same ? fired[same.at] : undefined;
+    if (into) {
+      loggedArgs.delete(at);
+      into.merged.push(f.rule, ...f.merged);
+      continue;
+    }
     if (calls >= maxCalls) {
       slots[at] = { rule: f.rule, tool: f.tool, outcome: "over_budget" };
       continue;
     }
+    callArgs.set(at, args);
     calls += 1;
+    sent.push({ at, tool: f.tool, args });
     if (dryRun) {
-      // The arguments are asked of the tool's own schema without running it, so a dry run shows the
-      // `invalid_arguments` a run would hit. The watcher's writes are native tools, schema'd in zod.
-      const fits =
-        !isInteropZodSchema(tool.schema) ||
-        (await interopSafeParseAsync(tool.schema, f.args)).success;
-      slots[at] = fits
-        ? { rule: f.rule, tool: f.tool, outcome: "decided" }
-        : {
-            rule: f.rule,
-            tool: f.tool,
-            outcome: "failed",
-            failure: "invalid_arguments",
-          };
+      slots[at] = { rule: f.rule, tool: f.tool, outcome: "decided" };
       continue;
     }
     toRun.push({ at, tool });
@@ -240,9 +304,9 @@ export async function applyDecisions(
   const reported = (upTo = fired.length): ActionReport[] =>
     slots.flatMap((a, at) => {
       const f = fired[at];
-      return a !== undefined && f !== undefined && at < upTo
-        ? [withMerged(a, f)]
-        : [];
+      if (a === undefined || f === undefined || at >= upTo) return [];
+      const logged = loggedArgs.get(at);
+      return [withMerged(logged ? { ...a, args: logged } : a, f)];
     });
   // A rule latches when its action RAN (in full or in part), or failed after writing something that
   // stays: one that could not run, wrote nothing, or that a fence refused, acts again on the next
@@ -271,30 +335,14 @@ export async function applyDecisions(
     const action = fired[r.at];
     return action ? together(action) : null;
   };
-  // An action whose arguments its tool's schema refuses is dispatched like any other and fails
-  // before its handler runs, so it writes nothing: it rides inside the run it sits in instead of
-  // parting the valid actions around it.
-  const inert = new Set<number>();
-  for (const r of toRun) {
-    const action = fired[r.at];
-    if (
-      action &&
-      isInteropZodSchema(r.tool.schema) &&
-      !(await interopSafeParseAsync(r.tool.schema, action.args)).success
-    ) {
-      inert.add(r.at);
-    }
-  }
   for (let i = 0; i < toRun.length; ) {
     const head = toRun[i];
     if (!head) break;
-    const key = inert.has(head.at) ? null : keyOf(head);
+    const key = keyOf(head);
     let end = i + 1;
-    // The run ends on its last member that shares the write, never on an inert one.
     for (let j = end; key !== null && j < toRun.length; j++) {
       const next = toRun[j];
       if (!next) break;
-      if (inert.has(next.at)) continue;
       if (keyOf(next) !== key) break;
       end = j + 1;
     }
@@ -378,7 +426,17 @@ export async function applyDecisions(
         running.push(
           member.tool
             .invoke(
-              f.args,
+              // A custom tool is called as a tool call, so a failure it answers with (an HTTP 503,
+              // a code tool's sandbox error) comes back as an error result instead of plain text
+              // (failure.ts), and is read as one below.
+              isNativeDecisionTool(f.tool)
+                ? (callArgs.get(member.at) ?? f.args)
+                : {
+                    type: "tool_call" as const,
+                    id: `decision-${f.rule}`,
+                    name: f.tool,
+                    args: callArgs.get(member.at) ?? f.args,
+                  },
               // Without the tick's signal: given it, the call would reject the moment the deadline
               // passes while its handler goes on, and what the handler then did would be lost. The
               // handlers keep their own deadline (the Chatwoot client's).
@@ -393,7 +451,28 @@ export async function applyDecisions(
               }),
             )
             .then(
-              () => {
+              (result: unknown) => {
+                if (
+                  (result as { status?: unknown } | null)?.status === "error"
+                ) {
+                  // Answered with a failure after it ran: it may have reached the other side,
+                  // unless the tool leaves nothing behind by construction (a code tool).
+                  if (isEffectFreeTool(member.tool)) {
+                    quiet.add(member.at);
+                  }
+                  slots[member.at] = {
+                    rule: f.rule,
+                    tool: f.tool,
+                    outcome: reports.some((r) => "noEffect" in r)
+                      ? "no_effect"
+                      : "failed",
+                    ...(reports.some((r) => "noEffect" in r)
+                      ? {}
+                      : { failure: "tool_error" }),
+                  };
+                  settled();
+                  return;
+                }
                 const fences = reports.filter(
                   (r): r is FenceReport => "fence" in r,
                 );
@@ -427,7 +506,8 @@ export async function applyDecisions(
                 // reported before it (`committed`), the call wrote nothing.
                 if (
                   err instanceof ToolInputParsingException ||
-                  sentNothing(err)
+                  sentNothing(err) ||
+                  isEffectFreeTool(member.tool)
                 ) {
                   quiet.add(member.at);
                 }
@@ -457,7 +537,8 @@ export async function applyDecisions(
                   tool: f.tool,
                   outcome: "failed",
                   failure:
-                    err instanceof ToolInputParsingException
+                    err instanceof ToolInputParsingException ||
+                    isMcpArgumentRefusal(err)
                       ? "invalid_arguments"
                       : "tool_error",
                   ...(committed.has(member.at)

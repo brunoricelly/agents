@@ -3,6 +3,7 @@ import {
   actionScope,
   conditionFor,
   conditionSummary,
+  customToolsOf,
   DECISION_TEXT_FIELD_MAX,
   decisionsFormIssues,
   decisionsRefusalFrom,
@@ -23,6 +24,8 @@ import {
   observationToForm,
   observationToStored,
 } from "@/client/pages/agents/observationFormState";
+import { namespacedToolName } from "@/graph/tools/mcp";
+import { mcpRuntimeBase } from "@/graph/tools/mcp-names";
 import {
   CHOICE_OPTIONS_MAX,
   decisionsBlockFingerprint,
@@ -953,5 +956,245 @@ describe("a threshold on screen", () => {
     expect([...decisionsFormIssues(form).keys()]).toContain(
       "rules.0.when.0.minProbability",
     );
+  });
+});
+
+// Two MCP servers whose names reduce to one slug give their tools one name, which the assembly
+// tells apart by order with a suffix: a rule must not be offered either, or it may call the other
+// server's tool (agents#1223).
+describe("the custom tools a rule is offered", () => {
+  test("no tool of two servers sharing a slug is offered, suffixed ones included; another server's is", () => {
+    const { all, granted } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [
+          { id: "1", name: "CRM", slug: "crm" },
+          { id: "2", name: "crm", slug: "crm" },
+          { id: "3", name: "Sheets", slug: "sheets" },
+        ],
+      },
+      [
+        { source: "MCP", mcpServerConnectionId: "1", enabledTools: ["abrir"] },
+        // `abrir_2` is the name the assembly may give the other server's `abrir`.
+        {
+          source: "MCP",
+          mcpServerConnectionId: "2",
+          enabledTools: ["abrir", "abrir_2"],
+        },
+        { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["append"] },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__sheets__append"]);
+    expect([...granted]).toEqual(["mcp__sheets__append"]);
+  });
+
+  // A long tool name trims the slug to make room, so `crm_extended` and `crm` meet on one name.
+  test("no tool whose name a trimmed slug reaches is offered, nor the suffix it may take", () => {
+    const long = "t".repeat(54);
+    const { all } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [
+          { id: "1", name: "CRM extended", slug: "crm_extended" },
+          { id: "2", name: "crm", slug: "crm" },
+          { id: "3", name: "Sheets", slug: "sheets" },
+        ],
+      },
+      [
+        { source: "MCP", mcpServerConnectionId: "1", enabledTools: [long] },
+        {
+          source: "MCP",
+          mcpServerConnectionId: "2",
+          enabledTools: [long, `${"t".repeat(52)}_2`, "abrir"],
+        },
+        { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["append"] },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__crm__abrir", "mcp__sheets__append"]);
+  });
+
+  test("the console's name before a suffix is the assembly's", () => {
+    for (const [slug, tool] of [
+      ["crm", "abrir"],
+      ["crm_extended", "t".repeat(54)],
+      ["a".repeat(28), "b".repeat(70)],
+    ] as const) {
+      expect(mcpRuntimeBase(slug, tool)).toBe(
+        namespacedToolName(slug, tool, new Set()),
+      );
+    }
+  });
+
+  // A disabled definition or connection is not in the toolset: not runnable, and no name taken.
+  test("a disabled tool is not granted, and a disabled server's tools collide with none", () => {
+    const { all, granted } = customToolsOf(
+      {
+        toolDefinitions: [
+          {
+            id: "1",
+            label: "",
+            toolName: "abrir_ticket",
+            args: [],
+            enabled: false,
+          },
+        ],
+        codeTools: [
+          {
+            id: "2",
+            label: "",
+            toolName: "registrar_caso",
+            args: [],
+            enabled: false,
+          },
+        ],
+        mcpConnections: [
+          { id: "3", name: "CRM", slug: "crm", enabled: false },
+          { id: "4", name: "crm", slug: "crm" },
+        ],
+      },
+      [
+        { source: "HTTP", toolDefinitionId: "1" },
+        { source: "CODE", codeToolDefinitionId: "2" },
+        { source: "MCP", mcpServerConnectionId: "3", enabledTools: ["abrir"] },
+        { source: "MCP", mcpServerConnectionId: "4", enabledTools: ["abrir"] },
+      ],
+    );
+    expect(all.has("abrir_ticket")).toBe(true);
+    expect([...granted]).toEqual(["mcp__crm__abrir"]);
+    expect(all.get("mcp__crm__abrir")?.label).toBe("crm: abrir");
+  });
+
+  test("a tool listed twice in one grant is still one server's", () => {
+    const { all } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [{ id: "1", name: "crm", slug: "crm" }],
+      },
+      [
+        {
+          source: "MCP",
+          mcpServerConnectionId: "1",
+          enabledTools: ["search", "search"],
+        },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__crm__search"]);
+  });
+
+  test("a server sharing a slug but enabling no tool hides none of the other's", () => {
+    const { all } = customToolsOf(
+      {
+        toolDefinitions: [],
+        codeTools: [],
+        mcpConnections: [
+          { id: "1", name: "CRM A", slug: "crm_a" },
+          { id: "2", name: "CRM_A", slug: "crm_a" },
+        ],
+      },
+      [
+        { source: "MCP", mcpServerConnectionId: "1", enabledTools: ["search"] },
+        { source: "MCP", mcpServerConnectionId: "2", enabledTools: [] },
+      ],
+    );
+    expect([...all.keys()]).toEqual(["mcp__crm_a__search"]);
+  });
+});
+
+// A tool whose schema gained a required argument after its rule was saved: the server accepts the
+// rule as stored, so the console asks only what the save changes (agents#1223).
+describe("a rule on a custom tool as stored", () => {
+  const tools = new Map([
+    [
+      "abrir_ticket",
+      {
+        name: "abrir_ticket",
+        label: "Abrir ticket",
+        kind: "http" as const,
+        args: [{ name: "motivo", type: "string" as const, required: true }],
+      },
+    ],
+  ]);
+  const block = {
+    ...BLOCK,
+    rules: [
+      {
+        when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+        action: { tool: "abrir_ticket", args: {} },
+      },
+    ],
+  };
+  const stored = { monitoring: { engine: "decisions", decisions: block } };
+
+  test("is not asked again when something else in the form is edited", () => {
+    const form = observationToForm(stored);
+    if (!form.decisions) throw new Error("fixture");
+    form.decisions.model = "gpt-6-sol";
+    const edited = { ...form, decisionsEdited: true };
+    expect(
+      [
+        ...decisionsFormIssues(
+          form.decisions,
+          decisionsBaseline(edited),
+          tools,
+          edited.storedDecisions,
+        ).keys(),
+      ].filter((k) => k.includes(".action.")),
+    ).toEqual([]);
+  });
+
+  test("a draft left missing an argument behind the language model is not stored over the block", () => {
+    const form = observationToForm({
+      monitoring: { engine: "decisions", decisions: BLOCK },
+    });
+    if (!form.decisions) throw new Error("fixture");
+    const rule = form.decisions.rules[0];
+    if (!rule) throw new Error("fixture");
+    form.decisions.rules[0] = {
+      ...rule,
+      tool: "abrir_ticket",
+      args: {},
+      fill: {},
+    };
+    const hidden = { ...form, engine: "llm" as const, decisionsEdited: true };
+    expect(decisionsBlockToStore(hidden, true, tools)).toEqual(BLOCK);
+  });
+
+  test("an action stored without args is the same action written back with empty ones", () => {
+    const apiBlock = {
+      ...block,
+      rules: [
+        {
+          when: [{ question: "pede_reembolso", minProbability: 0.7 }],
+          action: { tool: "abrir_ticket", fill: { motivo: "contact.name" } },
+        },
+      ],
+    };
+    const form = observationToForm({
+      monitoring: { engine: "decisions", decisions: apiBlock },
+    });
+    if (!form.decisions) throw new Error("fixture");
+    form.decisions.model = "gpt-6-sol";
+    const gained = new Map([
+      [
+        "abrir_ticket",
+        {
+          name: "abrir_ticket",
+          label: "Abrir ticket",
+          kind: "http" as const,
+          args: [
+            { name: "motivo", type: "string" as const, required: true },
+            { name: "canal", type: "string" as const, required: true },
+          ],
+        },
+      ],
+    ]);
+    expect(
+      [
+        ...decisionsFormIssues(form.decisions, null, gained, apiBlock).keys(),
+      ].filter((k) => k.includes(".action.")),
+    ).toEqual([]);
   });
 });
