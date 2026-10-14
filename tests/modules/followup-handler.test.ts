@@ -11,6 +11,7 @@ import {
   cancelAppointment,
   hasLiveAppointment,
 } from "@/modules/appointments/reminders";
+import { mediaFallbackDedupeKey } from "@/modules/chatwoot/channel-failure";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureAllTenantSweeps,
@@ -61,7 +62,35 @@ function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
 }
 
-function stubClient(over: { liveMeta?: Record<string, unknown> } = {}) {
+function stubClient(
+  over: {
+    liveMeta?: Record<string, unknown>;
+    // More of the live conversation for the first read: its status and version, when a test needs
+    // a read that a later change in Chatwoot made stale.
+    firstLive?: Record<string, unknown>;
+    // The version every live read reports (`updated_at`), when a test orders it against the mirror.
+    liveVersion?: number;
+    // What the catch-up read (by id) answers, when it is to see a later state than the pages.
+    afterPage?: Record<string, unknown>[];
+    // Runs after a toggle lands: what reaches the mirror while the caller reads the result back.
+    onToggle?: () => Promise<void>;
+    // The latest page of the conversation, which the handler reads to tell whether the last reply
+    // arrived. Empty by default: no reply of ours on it reads as nothing refused. Paged the way
+    // Chatwoot pages: the newest 20, or the 20 older than `before`.
+    page?: Record<string, unknown>[];
+    // Called before each page read, with how many reads came before it; what it returns, when
+    // anything, is answered instead of the page.
+    onRead?: (n: number) => Promise<unknown> | unknown;
+    // The status toggle fails while this is set (Chatwoot refusing the hand-over).
+    toggleFails?: { on: boolean };
+    // The live conversation read fails while this is set.
+    liveFails?: { on: boolean };
+  } = {},
+) {
+  let reads = 0;
+  // What a toggle set, so the live read after a hand-over sees it.
+  let status = "pending";
+  let liveReads = 0;
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
@@ -70,11 +99,53 @@ function stubClient(over: { liveMeta?: Record<string, unknown> } = {}) {
   const client = {
     // NOTE: `liveMeta` lets a test make the LIVE state (the requireLiveBotOwnership probe) agree
     // with the mirrored assignee it seeded — the default `{}` reads as unassigned.
-    getConversation: async (c: number) => ({
-      id: c,
-      status: "pending",
-      meta: over.liveMeta ?? {},
-    }),
+    getConversation: async (c: number) => {
+      if (over.liveFails?.on) throw new Error("Chatwoot unreachable");
+      const first = liveReads++ === 0 ? over.firstLive : undefined;
+      return {
+        ...(over.liveVersion === undefined
+          ? {}
+          : { updated_at: over.liveVersion }),
+        ...first,
+        id: c,
+        status: first?.status ?? status,
+        meta: first?.meta ?? over.liveMeta ?? {},
+      };
+    },
+    getMessages: async (
+      _c: number,
+      o?: { before?: number; after?: number },
+    ) => {
+      const instead = await over.onRead?.(reads++);
+      if (instead !== undefined) return instead;
+      const rows = [...(over.page ?? [])].sort(
+        (a, b) => Number(a.id) - Number(b.id),
+      );
+      // NOTE: the catch-up read: everything past the id, reactions to older messages included.
+      if (o?.after !== undefined)
+        return {
+          payload: (over.afterPage ?? rows)
+            .filter((m) => Number(m.id) > (o.after ?? 0))
+            .slice(0, 100),
+        };
+      // Like the fork's pages, a reaction to a message older than the page is left out of it.
+      const plain = rows.filter(
+        (m) => o?.before === undefined || Number(m.id) < o.before,
+      );
+      const page = plain
+        .filter((m) => !(m as { reactsTo?: number }).reactsTo)
+        .slice(-20);
+      const lowest = Number(page[0]?.id ?? Infinity);
+      const reactions = plain.filter((m) => {
+        const to = (m as { reactsTo?: number }).reactsTo;
+        return to !== undefined && to >= lowest;
+      });
+      return {
+        payload: [...page, ...reactions].sort(
+          (a, b) => Number(a.id) - Number(b.id),
+        ),
+      };
+    },
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
       return {};
@@ -89,8 +160,11 @@ function stubClient(over: { liveMeta?: Record<string, unknown> } = {}) {
       labelSets.push(labels);
       return {};
     },
-    toggleStatus: async (c: number, _status: string) => {
+    toggleStatus: async (c: number, to: string) => {
+      if (over.toggleFails?.on) throw new Error("toggle refused");
       resolved.push(c);
+      status = to;
+      await over.onToggle?.();
       return {};
     },
   } as unknown as ChatwootClient;
@@ -751,6 +825,1292 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         data: { mode: "production" },
       });
     }
+  });
+
+  // The agent's reply as it sits on the latest page: refused by the channel when `refused` is set.
+  function replyRow(
+    id: number,
+    opts: {
+      refused?: boolean;
+      botId?: number;
+      sendId?: string;
+      createdAt?: number;
+    } = {},
+  ) {
+    return {
+      id,
+      content: "O plano custa R$ 89",
+      message_type: 1,
+      private: false,
+      // Past the wait for a resend to be armed, unless a test sets its own.
+      created_at: opts.createdAt ?? Math.floor(Date.now() / 1000) - 1_200,
+      sender: { type: "agent_bot", id: opts.botId ?? 5 },
+      content_attributes: {
+        ...(opts.refused
+          ? { external_error: "(#131000) Something went wrong" }
+          : {}),
+        ...(opts.sendId ? { fazer_ai_send_id: opts.sendId } : {}),
+      },
+    };
+  }
+  const note = (id: number) => ({ ...replyRow(id), private: true });
+  const run = (convId: number, s: ReturnType<typeof stubClient>) =>
+    followUpHandler(jobFor(convId), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+  const due = () => ({
+    lastInboundAt: new Date(Date.now() - 20 * 60_000),
+    lastFollowUpAt: null,
+  });
+
+  // The production case: the reply never reached the customer and nothing will resend it, so a nudge
+  // would ask about an answer they never saw. The conversation goes to the team instead.
+  test("a reply the channel refused, with no resend coming, is handed over instead of nudged", async () => {
+    await seedConversation(1700, due());
+    const s = stubClient({ page: [replyRow(17001, { refused: true })] });
+    expect(await run(1700, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1700]);
+    expect(s.notes[0]?.[1]).toContain("131000");
+    // The episode is spent: the sweep does not arm it again until the customer speaks.
+    expect(await lastFollowUpOf(1700)).not.toBeNull();
+  });
+
+  // A resend that already ran and still left the reply refused (skipped, or refused itself) is no
+  // longer coming; a note the bot left after the reply is not something the customer received.
+  test("a spent resend job and a later private note still read as a reply that did not arrive", async () => {
+    await seedConversation(1705, due());
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "MEDIA_TEXT_FALLBACK",
+        dedupeKey: mediaFallbackDedupeKey(instanceId, 17051),
+        status: "DONE",
+        runAt: new Date(Date.now() - 60_000),
+        payload: {},
+      },
+    });
+    const s = stubClient({
+      page: [
+        // NOTE: fresh, so the spent job is what says no resend is coming.
+        replyRow(17051, {
+          refused: true,
+          createdAt: Math.floor(Date.now() / 1000) - 60,
+        }),
+        { ...replyRow(17052), private: true },
+      ],
+    });
+    expect(await run(1705, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1705]);
+  });
+
+  test("while the refused reply's resend is queued, the step waits for it", async () => {
+    await seedConversation(1701, due());
+    const runAt = new Date(Date.now() + 3 * 60_000);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "MEDIA_TEXT_FALLBACK",
+        dedupeKey: mediaFallbackDedupeKey(instanceId, 17011),
+        status: "PENDING",
+        runAt,
+        payload: {},
+      },
+    });
+    const s = stubClient({ page: [replyRow(17011, { refused: true })] });
+    const result = await run(1701, s);
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    expect((result as { runAt: Date }).runAt.getTime()).toBeGreaterThan(
+      runAt.getTime(),
+    );
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(await lastFollowUpOf(1701)).toBeNull();
+  });
+
+  // The resend landed after the refusal: it is the newest reply, and the follow-up is the usual one.
+  // So is a refusal on another bot's message, which is not this agent's reply.
+  test("a delivered resend, or another bot's refused message, leaves the follow-up as it is", async () => {
+    await seedConversation(1702, due());
+    const resent = stubClient({
+      page: [replyRow(17021, { refused: true }), replyRow(17022)],
+    });
+    expect(await run(1702, resent)).toEqual({ outcome: "done" });
+    expect(resent.sent.length).toBeGreaterThan(0);
+    await seedConversation(1703, due());
+    const other = stubClient({
+      page: [replyRow(17031), replyRow(17032, { refused: true, botId: 99 })],
+    });
+    expect(await run(1703, other)).toEqual({ outcome: "done" });
+    expect(other.sent.length).toBeGreaterThan(0);
+  });
+
+  // The reply is every message of it: a voice note refused while the text after it landed did not
+  // arrive, and neither did a split reply whose first balloon was refused. A replacement that landed
+  // covers the message it replaces.
+  test("a reply is judged by all its messages and their replacements", async () => {
+    await seedConversation(1706, due());
+    const audio = stubClient({
+      page: [
+        replyRow(17061, { refused: true, sendId: "reply:k6:a" }),
+        replyRow(17062, { sendId: "reply:k6:b" }),
+      ],
+    });
+    expect(await run(1706, audio)).toEqual({ outcome: "done" });
+    expect(audio.sent).toEqual([]);
+    expect(audio.notes.map(([c]) => c)).toEqual([1706]);
+    await seedConversation(1707, due());
+    const replaced = stubClient({
+      page: [
+        replyRow(17071, { refused: true, sendId: "reply:k7:a" }),
+        replyRow(17072, { sendId: "reply:k7:b" }),
+        replyRow(17073, { sendId: "reply:k7:channel-resend:17071" }),
+      ],
+    });
+    expect(await run(1707, replaced)).toEqual({ outcome: "done" });
+    expect(replaced.sent.length).toBeGreaterThan(0);
+    expect(replaced.notes).toEqual([]);
+  });
+
+  // Notes and activity can push the reply off the newest page; not finding it there is not proof
+  // that it arrived.
+  test("a refused reply below a page of notes is still found", async () => {
+    await seedConversation(1708, due());
+    const s = stubClient({
+      page: [
+        replyRow(17080, { refused: true }),
+        ...Array.from({ length: 25 }, (_, i) => note(17081 + i)),
+      ],
+    });
+    expect(await run(1708, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1708]);
+  });
+
+  // A /reset during the reads withdrew the episode: nothing is handed over and nothing is stamped.
+  // A hand-over that could not be confirmed is asked again, without spending the episode.
+  test("a retired run or an unconfirmed hand-over leaves the episode unspent", async () => {
+    await seedConversation(1709, due());
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: `fu-retire-${process.pid}`,
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: { threadId: threadOf(1709) },
+      },
+    });
+    const retired = stubClient({
+      page: [replyRow(17091, { refused: true })],
+      onRead: async (n) => {
+        if (n === 1)
+          await suDb.schedulerJob.update({
+            where: { id: row.id },
+            data: {
+              payload: { threadId: threadOf(1709), cancelledAt: Date.now() },
+            },
+          });
+      },
+    });
+    const job = { ...jobFor(1709), id: row.id, claimSeq: row.claimSeq };
+    expect(
+      await followUpHandler(job, appDb, {
+        makeModel: fakeModel,
+        makeClient: retired.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    ).toEqual({ outcome: "done" });
+    expect(retired.notes).toEqual([]);
+    expect(await lastFollowUpOf(1709)).toBeNull();
+    await seedConversation(1710, due());
+    const unread = stubClient({
+      page: [replyRow(17101, { refused: true })],
+      onRead: (n) => (n > 0 ? {} : undefined),
+    });
+    expect(await run(1710, unread)).toMatchObject({ outcome: "reschedule" });
+    expect(unread.notes).toEqual([]);
+    expect(await lastFollowUpOf(1710)).toBeNull();
+  });
+
+  const customerRow = (id: number) => ({
+    id,
+    content: "Quanto custa?",
+    message_type: 0,
+    private: false,
+    created_at: Math.floor(Date.now() / 1000) - 900,
+    sender: { type: "contact", id: 31 },
+    content_attributes: {},
+  });
+
+  // A note at the bottom of the newest page does not end the reply: its refused first balloon sits a
+  // page further back, and the delivered balloon on the newest page does not stand for it.
+  test("notes inside a reply do not cut the read short", async () => {
+    await seedConversation(1711, { ...due(), lastRepliedMessageId: 17110 });
+    const s = stubClient({
+      page: [
+        customerRow(17110),
+        replyRow(17111, { refused: true, sendId: "reply:k11:a" }),
+        ...Array.from({ length: 25 }, (_, i) => note(17112 + i)),
+        replyRow(17140, { sendId: "reply:k11:b" }),
+      ],
+    });
+    expect(await run(1711, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1711]);
+  });
+
+  // The customer already wrote after the refused reply: their turn is coming, so nothing is handed
+  // over and nothing is nudged; the next run reads the episode's end from the mirror.
+  test("a customer message after the refused reply holds the step", async () => {
+    await seedConversation(1712, due());
+    const s = stubClient({
+      page: [replyRow(17121, { refused: true }), customerRow(17122)],
+    });
+    expect(await run(1712, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The hand-over is pinned to the customer message the reply answered: one the mirror recorded past
+  // it is a turn still owed, so the conversation is not opened, and the episode is not spent on a
+  // hand-over that did not happen.
+  test("the hand-over yields to a newer customer message the mirror already has", async () => {
+    await seedConversation(1713, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1713 },
+      data: { lastInboundMessageId: 17135 },
+    });
+    const s = stubClient({
+      page: [customerRow(17130), replyRow(17131, { refused: true })],
+    });
+    expect(await run(1713, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1713)).toBeNull();
+  });
+
+  // A customer message the agent already handled in silence (a skip) moved the conversation past the
+  // refused reply, and so did a person answering after it: the follow-up is the usual one, neither
+  // held forever nor handed over.
+  test("a handled customer message or a person's reply after the refusal supersedes it", async () => {
+    await seedConversation(1714, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1714 },
+      data: { lastHandledMessageId: 17142 },
+    });
+    const handled = stubClient({
+      page: [replyRow(17141, { refused: true }), customerRow(17142)],
+    });
+    expect(await run(1714, handled)).toEqual({ outcome: "done" });
+    expect(handled.notes).toEqual([]);
+    expect(handled.sent.length).toBeGreaterThan(0);
+    await seedConversation(1715, due());
+    const person = stubClient({
+      page: [
+        replyRow(17151, { refused: true }),
+        { ...replyRow(17152), sender: { type: "user", id: 3 } },
+      ],
+    });
+    expect(await run(1715, person)).toEqual({ outcome: "done" });
+    expect(person.notes).toEqual([]);
+    expect(person.sent.length).toBeGreaterThan(0);
+  });
+
+  // The newest balloon is found, but the pages run out before the reply starts: an unread balloon
+  // may be the refused one, so the step holds instead of calling the reply delivered.
+  test("a reply whose start lies past the pages read holds the step", async () => {
+    await seedConversation(1716, due());
+    const s = stubClient({
+      page: [
+        replyRow(17160, { refused: true, sendId: "reply:k16:a" }),
+        ...Array.from({ length: 110 }, (_, i) => note(17161 + i)),
+        replyRow(17300, { sendId: "reply:k16:b" }),
+      ],
+    });
+    expect(await run(1716, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // Imported history lands with new ids above the refused reply; it is old, not a newer answer.
+  test("an imported outgoing message does not stand for the refused reply", async () => {
+    await seedConversation(1719, due());
+    const s = stubClient({
+      page: [
+        replyRow(17191, { refused: true }),
+        {
+          ...replyRow(17192),
+          sender: { type: "user", id: 3 },
+          content_attributes: { imported: true },
+        },
+      ],
+    });
+    expect(await run(1719, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1719]);
+  });
+
+  // A customer message written between two balloons of the reply is a turn still owed too.
+  test("a customer message between the reply's balloons holds the step", async () => {
+    await seedConversation(1720, due());
+    const s = stubClient({
+      page: [
+        replyRow(17201, { refused: true, sendId: "reply:k20:a" }),
+        customerRow(17202),
+        replyRow(17203, { sendId: "reply:k20:b" }),
+      ],
+    });
+    expect(await run(1720, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // The same message handled in silence moved the conversation past the reply instead: the nudge is
+  // the usual one, not a hand-over pinned to the message before it.
+  test("a customer message between the balloons, handled in silence, supersedes the reply", async () => {
+    await seedConversation(1729, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1729 },
+      data: { lastHandledMessageId: 17292 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17290),
+        replyRow(17291, { refused: true, sendId: "reply:k29:a" }),
+        customerRow(17292),
+        replyRow(17293, { sendId: "reply:k29:b" }),
+      ],
+    });
+    expect(await run(1729, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1729]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A reply whose watermark write failed after the send is still recorded as the answer to its
+  // customer message, and that message marks where the reply starts, ahead of pages of notes.
+  test("the recorded reply marks where the reply starts when the watermark lags", async () => {
+    await seedConversation(1730, { ...due(), lastRepliedMessageId: 17410 });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1730 },
+      data: { lastHandledMessageId: null },
+    });
+    const s = stubClient({
+      page: [
+        ...Array.from({ length: 110 }, (_, i) => note(17300 + i)),
+        customerRow(17410),
+        replyRow(17411, { sendId: "reply:k30:a" }),
+      ],
+    });
+    expect(await run(1730, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1730]);
+  });
+
+  // The handled message's earlier balloon sits on an older page: the read goes on to it rather than
+  // taking the handled message for the one the reply answered.
+  test("a handled message between balloons on two pages does not end the read", async () => {
+    await seedConversation(1731, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1731 },
+      data: { lastHandledMessageId: 17312 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17310),
+        replyRow(17311, { sendId: "reply:k31:a" }),
+        customerRow(17312),
+        ...Array.from({ length: 18 }, (_, i) => note(17313 + i)),
+        replyRow(17331, { refused: true, sendId: "reply:k31:b" }),
+      ],
+    });
+    expect(await run(1731, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1731]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A person who replied after the refused balloon moved the conversation past it, even with a later
+  // balloon of the same reply after their message.
+  test("a person's reply between the refused balloon and a later one supersedes it", async () => {
+    await seedConversation(1732, due());
+    const s = stubClient({
+      page: [
+        replyRow(17321, { refused: true, sendId: "reply:k32:a" }),
+        { ...replyRow(17322), sender: { type: "user", id: 3 } },
+        replyRow(17323, { sendId: "reply:k32:b" }),
+      ],
+    });
+    expect(await run(1732, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1732]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The refused reply answered a reaction to an older message, which the pages leave out: the catch-up
+  // read starts at the handled message, so the hand-over is pinned past it and the fence holds.
+  test("a reaction the reply answered is read for the hand-over's pin", async () => {
+    await seedConversation(1750, { ...due(), lastRepliedMessageId: 17501 });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1750 },
+      data: { lastInboundMessageId: 17501 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17500),
+        {
+          ...customerRow(17501),
+          content: "👍",
+          content_attributes: { is_reaction: true },
+          reactsTo: 17300,
+        },
+        replyRow(17502, { refused: true }),
+      ],
+    });
+    expect(await run(1750, s)).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1750]);
+  });
+
+  // The refusal is on Chatwoot before the webhook that arms its resend reached us: no job yet is not a
+  // resend that ran, so the step waits a bounded while instead of handing over.
+  test("a fresh refusal whose resend is not armed yet waits for it", async () => {
+    await seedConversation(1751, due());
+    const sent = Math.floor(Date.now() / 1000) - 60;
+    const s = stubClient({
+      page: [replyRow(17511, { refused: true, createdAt: sent })],
+    });
+    const out = await run(1751, s);
+    expect(out).toMatchObject({ outcome: "reschedule" });
+    const at = (out as { runAt: Date }).runAt.getTime();
+    expect(at).toBeGreaterThan(Date.now() + 8 * 60_000);
+    expect(at).toBeLessThanOrEqual(sent * 1000 + 10 * 60_000 + 1_000);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A file with no text is resent as nothing, so its refusal is not waited for either.
+  test("a fresh refusal on a file with no text is handed over at once", async () => {
+    await seedConversation(1753, due());
+    const s = stubClient({
+      page: [
+        {
+          ...replyRow(17531, {
+            refused: true,
+            createdAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+          content: "",
+          attachments: [
+            { id: 1, file_type: "image", data_url: "https://x/y.png" },
+          ],
+        },
+      ],
+    });
+    expect(await run(1753, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1753]);
+  });
+
+  // A voice note whose reply text is nowhere (not on it, not transcribed, not kept by this process)
+  // is resent as nothing, so its refusal is not waited for.
+  test("a fresh refusal on a voice note with no text is handed over at once", async () => {
+    await seedConversation(1755, due());
+    const s = stubClient({
+      page: [
+        {
+          ...replyRow(17551, {
+            refused: true,
+            createdAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+          content: "",
+          attachments: [
+            { id: 2, file_type: "audio", data_url: "https://x/a.ogg" },
+          ],
+        },
+      ],
+    });
+    expect(await run(1755, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1755]);
+  });
+
+  // The same voice note carrying the reply it was rendered from gets a resend, and is waited for.
+  test("a fresh refusal on a voice note with its reply text waits for the resend", async () => {
+    await seedConversation(1756, due());
+    const row = replyRow(17561, {
+      refused: true,
+      createdAt: Math.floor(Date.now() / 1000) - 60,
+    });
+    const s = stubClient({
+      page: [
+        {
+          ...row,
+          content: "",
+          attachments: [
+            { id: 3, file_type: "audio", data_url: "https://x/b.ogg" },
+          ],
+          content_attributes: {
+            ...row.content_attributes,
+            fazer_ai_reply_text: "O plano custa R$ 89",
+          },
+        },
+      ],
+    });
+    expect(await run(1756, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // Who holds the conversation needs only the bot's id: a bot token that does not decrypt does not
+  // keep a hand-over that landed from being spent.
+  test("a hand-over retry is confirmed with the bot's token unreadable", async () => {
+    await seedConversation(1757, due());
+    const bot = await suDb.chatwootAgentBot.findFirstOrThrow({
+      where: { tenantId, chatwootInstanceId: instanceId },
+      select: { id: true, accessToken: true },
+    });
+    await suDb.chatwootAgentBot.update({
+      where: { id: bot.id },
+      data: { accessToken: "not-a-ciphertext" },
+    });
+    try {
+      const s = stubClient({
+        page: [replyRow(17571, { refused: true })],
+        liveMeta: { assignee_type: "User", assignee: { id: 9, name: "Ana" } },
+      });
+      const out = await followUpHandler(
+        {
+          ...jobFor(1757),
+          payload: { ...jobFor(1757).payload, handoverRetry: true },
+        },
+        appDb,
+        {
+          makeModel: fakeModel,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      );
+      expect(out).toEqual({ outcome: "done" });
+      expect(await lastFollowUpOf(1757)).not.toBeNull();
+    } finally {
+      await suDb.chatwootAgentBot.update({
+        where: { id: bot.id },
+        data: { accessToken: bot.accessToken },
+      });
+    }
+  });
+
+  // A retry for a conversation gone from the mirror (its instance removed) ends instead of waiting
+  // for a reconcile that cannot happen.
+  test("a hand-over retry for a conversation no longer mirrored ends", async () => {
+    const s = stubClient({ page: [replyRow(17541, { refused: true })] });
+    const out = await followUpHandler(
+      {
+        ...jobFor(1754),
+        payload: { ...jobFor(1754).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(out).toEqual({ outcome: "done" });
+  });
+
+  // A refusal that never gets a resend (a wall, or a resend refused itself) is not waited for.
+  test("a fresh refusal no resend follows is handed over at once", async () => {
+    await seedConversation(1752, due());
+    const s = stubClient({
+      page: [
+        replyRow(17521, {
+          refused: true,
+          sendId: "reply:k52:channel-resend:17520",
+          createdAt: Math.floor(Date.now() / 1000) - 60,
+        }),
+      ],
+    });
+    expect(await run(1752, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1752]);
+  });
+
+  // Another bot's answer to the customer message was refused too: it closes the message for the
+  // flush, but nothing on record says it was handled, so it does not supersede the refused reply.
+  test("a customer message answered only by a refused foreign reply does not supersede", async () => {
+    await seedConversation(1758, due());
+    const s = stubClient({
+      page: [
+        replyRow(17581, { refused: true }),
+        customerRow(17582),
+        replyRow(17583, { refused: true, botId: 777 }),
+      ],
+    });
+    expect(await run(1758, s)).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes.map(([c]) => c)).toEqual([1758]);
+  });
+
+  // A customer message that arrived after the turn's last look and before its reply was written is
+  // still queued for its own turn: it holds the step, though it sorts before the reply.
+  test("an open customer message before the refused reply holds the step", async () => {
+    await seedConversation(1749, { ...due(), lastRepliedMessageId: 17490 });
+    const s = stubClient({
+      page: [
+        customerRow(17490),
+        customerRow(17491),
+        replyRow(17492, { refused: true }),
+      ],
+    });
+    expect(await run(1749, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.resolved).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A blank message the mirror already counts as the newest inbound does not block the hand-over's
+  // fence: it was assessed here, and the hand-over is pinned past it.
+  test("a blank message after the refused reply does not block the hand-over", async () => {
+    await seedConversation(1735, { ...due(), lastRepliedMessageId: 17350 });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1735 },
+      data: { lastInboundMessageId: 17352 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17350),
+        replyRow(17351, { refused: true }),
+        { ...customerRow(17352), content: "  " },
+      ],
+    });
+    expect(await run(1735, s)).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1735]);
+  });
+
+  // A reaction is a turn for the flush, so one after the refused reply holds the step like a message.
+  test("a reaction after the refused reply holds the step", async () => {
+    await seedConversation(1736, due());
+    const s = stubClient({
+      page: [
+        replyRow(17361, { refused: true }),
+        {
+          ...customerRow(17362),
+          content: "👍",
+          content_attributes: { is_reaction: true },
+        },
+      ],
+    });
+    expect(await run(1736, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+  });
+
+  // A reaction to an older message is left out of the fork's pages; the catch-up read brings it, and
+  // handled, it moved the conversation past the reply like any handled message.
+  test("a handled reaction to an older message is found past the pages", async () => {
+    await seedConversation(1744, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1744 },
+      data: { lastHandledMessageId: 17470, lastInboundMessageId: 17470 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17440),
+        replyRow(17441, { refused: true }),
+        ...Array.from({ length: 25 }, (_, i) => note(17442 + i)),
+        {
+          ...customerRow(17470),
+          content: "👍",
+          content_attributes: { is_reaction: true },
+          reactsTo: 17400,
+        },
+      ],
+    });
+    expect(await run(1744, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1744]);
+    expect(s.resolved).toEqual([]);
+  });
+
+  // A catch-up read that does not read whole holds the step: the reaction it lost may be the one that
+  // moved the conversation past the reply.
+  test("a catch-up read that does not read holds the step", async () => {
+    await seedConversation(1745, due());
+    const s = stubClient({
+      page: [replyRow(17451, { refused: true })],
+      onRead: (n) =>
+        n === 1
+          ? { payload: [{ id: 17452, message_type: 0 }, null] }
+          : undefined,
+    });
+    expect(await run(1745, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.resolved).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The catch-up read is the later look at the reply: a refusal that landed between the two reads is
+  // on it, and wins over the earlier copy.
+  test("a refusal seen only by the catch-up read is not lost", async () => {
+    await seedConversation(1746, due());
+    const s = stubClient({
+      page: [replyRow(17461)],
+      afterPage: [replyRow(17461, { refused: true })],
+    });
+    expect(await run(1746, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1746]);
+  });
+
+  // A replacement that landed between the reads joins the reply it replaces.
+  test("a replacement seen only by the catch-up read completes the reply", async () => {
+    await seedConversation(1747, due());
+    const s = stubClient({
+      page: [replyRow(17471, { refused: true, sendId: "reply:k47:a" })],
+      afterPage: [
+        replyRow(17471, { refused: true, sendId: "reply:k47:a" }),
+        replyRow(17472, { sendId: "reply:k47:channel-resend:17471" }),
+      ],
+    });
+    expect(await run(1747, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1747]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A new reply of the agent's that landed between the reads: the conversation moved while it was
+  // read, so the step holds and reads it again.
+  test("a new reply seen only by the catch-up read holds the step", async () => {
+    await seedConversation(1748, due());
+    const s = stubClient({
+      page: [replyRow(17481, { sendId: "reply:k48:a" })],
+      afterPage: [
+        replyRow(17481, { sendId: "reply:k48:a" }),
+        replyRow(17482, { refused: true, sendId: "reply:k49:a" }),
+      ],
+    });
+    expect(await run(1748, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // A person's reply the channel refused too did not reach the customer either.
+  test("a person's refused reply after the refused one does not supersede it", async () => {
+    await seedConversation(1738, due());
+    const s = stubClient({
+      page: [
+        replyRow(17381, { refused: true }),
+        {
+          ...replyRow(17382, { refused: true }),
+          sender: { type: "user", id: 3 },
+        },
+      ],
+    });
+    expect(await run(1738, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1738]);
+  });
+
+  // A sender-less outgoing row may be the echo of our own balloon, not a person: it does not stand
+  // for the refused balloon.
+  test("an unattributed outgoing row does not supersede the refused balloon", async () => {
+    await seedConversation(1737, due());
+    const s = stubClient({
+      page: [
+        replyRow(17371, { refused: true, sendId: "reply:k37:a" }),
+        { ...replyRow(17372), sender: null },
+        replyRow(17373, { sendId: "reply:k37:b" }),
+      ],
+    });
+    expect(await run(1737, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1737]);
+  });
+
+  // An automation message the channel refused as well did not reach the customer either, so it does
+  // not stand for the refused reply.
+  test("a refused automation message after the reply does not supersede it", async () => {
+    await seedConversation(1721, due());
+    const s = stubClient({
+      page: [
+        replyRow(17211, { refused: true }),
+        { ...replyRow(17212, { refused: true }), sender: null },
+      ],
+    });
+    expect(await run(1721, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1721]);
+  });
+
+  // The hand-over landed but its confirming read failed: the retry finds the conversation with the
+  // team, and spends the episode then instead of leaving it to be handed over again.
+  test("a retry that finds the hand-over done spends the episode", async () => {
+    await seedConversation(1722, due());
+    const blind = { on: false };
+    const s = stubClient({
+      page: [replyRow(17221, { refused: true })],
+      liveFails: blind,
+    });
+    const confirmations = s.makeClient;
+    let toggled = false;
+    const client = await confirmations();
+    const toggle = (
+      client as unknown as {
+        toggleStatus: (c: number, t: string) => Promise<unknown>;
+      }
+    ).toggleStatus;
+    (client as unknown as { toggleStatus: unknown }).toggleStatus = async (
+      c: number,
+      t: string,
+    ) => {
+      const r = await toggle(c, t);
+      toggled = true;
+      blind.on = true;
+      return r;
+    };
+    const first = await run(1722, s);
+    expect(toggled).toBe(true);
+    expect(first).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(await lastFollowUpOf(1722)).toBeNull();
+    blind.on = false;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1722 },
+      data: { statusClaimUntil: new Date(Date.now() - 1_000) },
+    });
+    const second = await followUpHandler(
+      {
+        ...jobFor(1722),
+        payload: (first as { payload: Record<string, unknown> }).payload,
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(second).toEqual({ outcome: "done" });
+    expect(await lastFollowUpOf(1722)).not.toBeNull();
+  });
+
+  // A customer message between the balloons does not mark where the reply starts: the read goes on
+  // to its first, refused balloon a page further back, and the message is a turn still owed.
+  test("a customer message inside the reply does not cut the read short", async () => {
+    await seedConversation(1723, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1723 },
+      data: { lastHandledMessageId: 17230 },
+    });
+    const s = stubClient({
+      page: [
+        customerRow(17230),
+        replyRow(17231, { refused: true, sendId: "reply:k23:a" }),
+        ...Array.from({ length: 5 }, (_, i) => note(17232 + i)),
+        customerRow(17240),
+        ...Array.from({ length: 18 }, (_, i) => note(17241 + i)),
+        replyRow(17260, { sendId: "reply:k23:b" }),
+      ],
+    });
+    expect(await run(1723, s)).toMatchObject({ outcome: "reschedule" });
+    expect(s.notes).toEqual([]);
+    expect(s.sent).toEqual([]);
+  });
+
+  // Imported history attributed to the bot is old, so it is not the agent's newest reply; a template
+  // a person sent after the refusal reached the customer, so it is.
+  test("imported bot history hides nothing, and a person's template supersedes the refusal", async () => {
+    await seedConversation(1724, due());
+    const imported = stubClient({
+      page: [
+        replyRow(17241, { refused: true }),
+        {
+          ...replyRow(17242),
+          content_attributes: { imported: true },
+        },
+      ],
+    });
+    expect(await run(1724, imported)).toEqual({ outcome: "done" });
+    expect(imported.notes.map(([c]) => c)).toEqual([1724]);
+    await seedConversation(1725, due());
+    const template = stubClient({
+      page: [
+        replyRow(17251, { refused: true }),
+        {
+          ...replyRow(17252),
+          message_type: 3,
+          sender: { type: "user", id: 3 },
+        },
+      ],
+    });
+    expect(await run(1725, template)).toEqual({ outcome: "done" });
+    expect(template.notes).toEqual([]);
+    expect(template.sent.length).toBeGreaterThan(0);
+  });
+
+  // A message of an earlier reply marks where the newest one starts, so a long history before it
+  // is not read, and the delivered reply is not held for want of a boundary.
+  test("an earlier reply's message ends the read", async () => {
+    await seedConversation(1726, due());
+    const s = stubClient({
+      page: [
+        ...Array.from({ length: 110 }, (_, i) => note(17260 + i)),
+        replyRow(17380, { sendId: "reply:k26a:a" }),
+        replyRow(17381, { sendId: "reply:k26b:a" }),
+      ],
+    });
+    expect(await run(1726, s)).toEqual({ outcome: "done" });
+    expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  // A message that renders to nothing is never answered, so it is not a turn coming.
+  test("a blank customer message after the refusal does not hold the step", async () => {
+    await seedConversation(1717, due());
+    // NOTE: covered by the watermark too, so only its blankness keeps it from superseding the reply.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1717 },
+      data: { lastHandledMessageId: 17172 },
+    });
+    const s = stubClient({
+      page: [
+        replyRow(17171, { refused: true }),
+        { ...customerRow(17172), content: "  " },
+      ],
+    });
+    expect(await run(1717, s)).toEqual({ outcome: "done" });
+    expect(s.notes.map(([c]) => c)).toEqual([1717]);
+  });
+
+  // A resend that landed after the anchor (the mirror has not seen it) is the reply the customer got:
+  // the delay counts from it, not from the older activity.
+  test("a late resend restarts the inactivity delay", async () => {
+    await seedConversation(1760, due());
+    const s = stubClient({
+      page: [
+        replyRow(17601, { refused: true, sendId: "reply:k60:a" }),
+        replyRow(17602, {
+          sendId: "reply:k60:channel-resend:17601",
+          createdAt: Math.floor(Date.now() / 1000) - 10,
+        }),
+      ],
+    });
+    const out = await run(1760, s);
+    expect(out).toMatchObject({ outcome: "reschedule" });
+    expect((out as { runAt: Date }).runAt.getTime()).toBeGreaterThan(
+      Date.now() + 30_000,
+    );
+    expect(s.sent).toEqual([]);
+  });
+
+  // The attempt may leave the mirror's claim saying `open`, which only the retry reconciles: its
+  // reschedule is committed, so a run past its deadline still writes the marker.
+  test("a hand-over retry is committed so a late run keeps its marker", async () => {
+    await seedConversation(1759, due());
+    const s = stubClient({
+      page: [replyRow(17591, { refused: true })],
+      toggleFails: { on: true },
+    });
+    let committed = false;
+    const out = await followUpHandler(
+      jobFor(1759),
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+      {
+        signal: new AbortController().signal,
+        commit: () => {
+          committed = true;
+        },
+      },
+    );
+    expect(out).toMatchObject({ payload: { handoverRetry: true } });
+    expect(committed).toBe(true);
+  });
+
+  // A refused toggle leaves the mirror's claim saying `open`; the retry runs past the claim's life,
+  // reconciles the mirror from Chatwoot and hands over, instead of ending on the stale `open`.
+  test("a hand-over whose toggle failed is retried after the mirror is reconciled", async () => {
+    await seedConversation(1718, due());
+    const fails = { on: true };
+    const s = stubClient({
+      page: [replyRow(17181, { refused: true })],
+      toggleFails: fails,
+    });
+    const first = await run(1718, s);
+    expect(first).toMatchObject({ outcome: "reschedule" });
+    const again = first as { runAt: Date; payload: Record<string, unknown> };
+    expect(again.payload.handoverRetry).toBe(true);
+    expect(again.runAt.getTime()).toBeGreaterThan(Date.now() + 40_000);
+    expect(await lastFollowUpOf(1718)).toBeNull();
+    // Run while the claim still lives, the retry cannot reconcile past it and waits again.
+    const early = await followUpHandler(
+      { ...jobFor(1718), payload: again.payload },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(early).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(s.resolved).toEqual([]);
+    // NOTE: the claim's life, run out as the reschedule waits for it to.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1718 },
+      data: { statusClaimUntil: new Date(Date.now() - 1_000) },
+    });
+    fails.on = false;
+    // A retry that cannot read Chatwoot keeps waiting for the reconcile, marker and all, rather than
+    // ending on the mirror's stale `open`.
+    const live = { on: true };
+    const blind = stubClient({
+      page: [replyRow(17181, { refused: true })],
+      liveFails: live,
+    });
+    const held = await followUpHandler(
+      { ...jobFor(1718), payload: again.payload },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: blind.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(held).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    const second = await followUpHandler(
+      { ...jobFor(1718), payload: again.payload },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(second).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1718]);
+    expect(await lastFollowUpOf(1718)).not.toBeNull();
+  });
+
+  // A gate already dispensed the customer message: no turn will run for it, so it does not hold the
+  // step. Like a message answered, it moved the conversation past the reply, and the nudge goes.
+  test("a customer message a gate dispensed does not hold the step", async () => {
+    await seedConversation(1727, due());
+    const conv = await suDb.conversation.update({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 1727,
+        },
+      },
+      data: { replyClaimFloorMessageId: 17270 },
+    });
+    await suDb.replyDispensal.create({
+      data: {
+        tenantId,
+        conversationId: conv.id,
+        fromMessageId: 17270,
+        toMessageId: 17272,
+      },
+    });
+    const s = stubClient({
+      page: [replyRow(17271, { refused: true }), customerRow(17272)],
+    });
+    expect(await run(1727, s)).toEqual({ outcome: "done" });
+    expect(s.sent.map(([c]) => c)).toEqual([1727]);
+    expect(s.notes).toEqual([]);
+  });
+
+  // The live read says the conversation is with the team, but the mirror holds a newer version that
+  // gave it back to the bot: the retry goes by the newer one and hands over again, instead of
+  // spending the episode on a hand-over that was undone.
+  test("a hand-over retry goes by the mirror's newer status, not the older live read", async () => {
+    await seedConversation(1728, due());
+    const version = Math.floor(Date.now() / 1000);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1728 },
+      data: { status: "pending", chatwootStatusAt: version },
+    });
+    const s = stubClient({
+      page: [replyRow(17281, { refused: true })],
+      firstLive: { status: "open", updated_at: version - 60 },
+    });
+    const done = await followUpHandler(
+      {
+        ...jobFor(1728),
+        payload: { ...jobFor(1728).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(done).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1728]);
+    expect(s.notes.map(([c]) => c)).toEqual([1728]);
+  });
+
+  // Another bot took the conversation: it is out of this agent's hands, and the retry spends the
+  // episode there instead of handing over again and again.
+  test("a hand-over retry finding another bot holding the conversation spends the episode", async () => {
+    await seedConversation(1733, due());
+    const s = stubClient({
+      page: [replyRow(17331, { refused: true })],
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 777 } },
+    });
+    const done = await followUpHandler(
+      {
+        ...jobFor(1733),
+        payload: { ...jobFor(1733).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(done).toEqual({ outcome: "done" });
+    expect(s.notes).toEqual([]);
+    expect(await lastFollowUpOf(1733)).not.toBeNull();
+  });
+
+  // The same on the first pass: the hand-over stands down for another bot, and the episode is spent.
+  test("a hand-over finding another bot holding the conversation spends the episode", async () => {
+    await seedConversation(1734, due());
+    const s = stubClient({
+      page: [replyRow(17341, { refused: true })],
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 777 } },
+    });
+    expect(await run(1734, s)).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1734)).not.toBeNull();
+  });
+
+  // An operator gave the conversation back while the hand-over read it: the read is older than the
+  // mirror, so the episode is not spent on it and the hand-over is asked again.
+  test("a hand-over read older than the mirror does not spend the episode", async () => {
+    await seedConversation(1740, due());
+    const version = Math.floor(Date.now() / 1000);
+    const s = stubClient({
+      page: [replyRow(17401, { refused: true })],
+      liveVersion: version - 60,
+      onToggle: async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 1740 },
+          data: {
+            status: "pending",
+            chatwootStatusAt: version,
+            statusClaimUntil: null,
+          },
+        });
+      },
+    });
+    expect(await run(1740, s)).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+    expect(await lastFollowUpOf(1740)).toBeNull();
+  });
+
+  // The note the failed toggle posted is activity, but the retry is a hand-over still owed, not a
+  // nudge: it does not wait out the inactivity delay again.
+  test("a hand-over retry does not wait out the inactivity delay", async () => {
+    await seedConversation(1739, { ...due(), lastEventAt: new Date() });
+    const s = stubClient({ page: [replyRow(17391, { refused: true })] });
+    const done = await followUpHandler(
+      {
+        ...jobFor(1739),
+        payload: { ...jobFor(1739).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(done).toEqual({ outcome: "done" });
+    expect(s.resolved).toEqual([1739]);
+  });
+
+  // The read found no incoming message, while the mirror already has a newer one: the hand-over is
+  // pinned to the reply itself, so that message keeps its turn.
+  test("a hand-over with no inbound read yields to one the mirror has", async () => {
+    await seedConversation(1741, due());
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 1741 },
+      data: { lastInboundMessageId: 17415 },
+    });
+    const s = stubClient({ page: [replyRow(17411, { refused: true })] });
+    await run(1741, s);
+    expect(s.resolved).toEqual([]);
+    expect(await lastFollowUpOf(1741)).toBeNull();
+  });
+
+  // A retry that finds the reply answered after all is a nudge again, and waits out the delay.
+  test("a hand-over retry that finds the reply delivered waits like a nudge", async () => {
+    await seedConversation(1742, { ...due(), lastEventAt: new Date() });
+    // No reply of ours on the page, so the wait is the retry's own and not the resend's.
+    const s = stubClient();
+    const out = await followUpHandler(
+      {
+        ...jobFor(1742),
+        payload: { ...jobFor(1742).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(out).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
+  });
+
+  // A page that does not read on a retry defers it, and the deferral is still a hand-over retry: the
+  // next run does not wait out the inactivity delay again.
+  test("a hand-over retry deferred by an unread page keeps its marker", async () => {
+    await seedConversation(1743, { ...due(), lastEventAt: new Date() });
+    const s = stubClient({ onRead: () => ({}) });
+    const out = await followUpHandler(
+      {
+        ...jobFor(1743),
+        payload: { ...jobFor(1743).payload, handoverRetry: true },
+      },
+      appDb,
+      {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(out).toMatchObject({
+      outcome: "reschedule",
+      payload: { handoverRetry: true },
+    });
+  });
+
+  test("a page that does not read holds the step instead of nudging", async () => {
+    await seedConversation(1704, due());
+    const s = stubClient();
+    const client = await s.makeClient();
+    (client as unknown as { getMessages: () => Promise<unknown> }).getMessages =
+      async () => ({});
+    const result = await run(1704, s);
+    expect(result).toMatchObject({ outcome: "reschedule" });
+    expect(s.sent).toEqual([]);
   });
 
   test("(l) backs off (reschedules) instead of nudging while a turn is in flight", async () => {

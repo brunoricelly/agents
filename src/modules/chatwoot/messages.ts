@@ -1,6 +1,10 @@
 import type { VisualAttachment } from "@/modules/vision/extract-message";
 import type { UnreadFile } from "@/modules/vision/unread";
-import { CHATWOOT_PLATFORM_SENT_KEY, CHATWOOT_SEND_ID_KEY } from "./constants";
+import {
+  CHATWOOT_PLATFORM_SENT_KEY,
+  CHATWOOT_REPLY_TEXT_KEY,
+  CHATWOOT_SEND_ID_KEY,
+} from "./constants";
 import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import {
   activityStatusFrom,
@@ -111,6 +115,13 @@ export interface ChatwootMessageRow {
   // `CHATWOOT_PLATFORM_SENT_KEY`: the platform sent this on the admin token, so the user Chatwoot
   // names as sender is not a person typing. Optional because a hand-built row carries no mark.
   platformSent?: boolean;
+  // `content_attributes.external_error`: what the channel said when it refused this message. Chatwoot
+  // writes it only while the message is `failed`, so its presence is the refusal. Optional because a
+  // hand-built row carries none.
+  externalError?: string | null;
+  // `CHATWOOT_REPLY_TEXT_KEY`: the reply a voice note was rendered from, which a resend sends as
+  // text. Optional because a hand-built row carries none.
+  replyText?: string;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -345,6 +356,13 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
           ? ca.external_sender_name
           : null,
       imported: ca?.imported === true,
+      ...(typeof ca?.external_error === "string" && ca.external_error.trim()
+        ? { externalError: ca.external_error }
+        : {}),
+      ...(typeof ca?.[CHATWOOT_REPLY_TEXT_KEY] === "string" &&
+      (ca[CHATWOOT_REPLY_TEXT_KEY] as string).trim()
+        ? { replyText: ca[CHATWOOT_REPLY_TEXT_KEY] as string }
+        : {}),
       // Read as a STRING and nothing else. The bag is shared with Chatwoot's own keys and with
       // whatever an operator's automation writes there, so a value of another shape is somebody
       // else's key that happens to collide, not a name this build wrote.

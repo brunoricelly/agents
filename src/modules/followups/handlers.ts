@@ -19,6 +19,22 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import {
+  agentBotChatwootId,
+  loadChatwootClient,
+} from "@/modules/chatwoot/instance";
+import { pendingIncoming } from "@/modules/chatwoot/messages";
+import {
+  parseLiveConversation,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
+import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
+import { announceFailedTurn } from "@/modules/conversations/failure-note";
+import {
+  readSelectionState,
+  selectOpenMessages,
+} from "@/modules/debounce/watermark";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
@@ -50,6 +66,11 @@ import {
 } from "./settings";
 import { snoozedFollowUpHandler, sweepSnoozedFollowUps } from "./snoozed";
 import { readSnoozedFollowUpConfig } from "./snoozed-settings";
+import {
+  type LastReplyDelivery,
+  lastReplyDelivery,
+  type Row,
+} from "./undelivered";
 
 // Follow-up handlers for the scheduler. The SWEEP is coarse: it enqueues a FOLLOWUP per inactive,
 // bot-handled conversation and re-arms itself. The FOLLOWUP is precise: it re-checks the gate
@@ -445,6 +466,98 @@ export function followUpConfigVersion(
   return `${agentUpdatedAt.getTime()}:${hoursUpdatedAt?.getTime() ?? 0}`;
 }
 
+// The agent's own bot on the conversation's inbox, the one the failed-turn note posts as: another bot
+// holding the conversation has it out of this agent's hands.
+async function ourAgentBotIdOf(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+): Promise<number | null> {
+  const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.conversation.findFirst({
+      where: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+      },
+      select: { inbox: { select: { agentId: true } } },
+    }),
+  );
+  const agentId = conv?.inbox?.agentId;
+  if (agentId == null) return null;
+  return agentBotChatwootId(tenantId, instanceId, agentId, base);
+}
+
+// How long past the hand-over's status claim the retry runs, so the claim has run out by then.
+const HANDOVER_RETRY_SLACK_MS = 5_000;
+
+// The mirror brought to Chatwoot's word, answering who holds the conversation there, or `unread`
+// when it was not: a read or a reconcile that fails, or a claim still alive, leaves the mirror as it
+// was.
+async function reconcileFromChatwoot(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  conversationId: number,
+  deps?: RuntimeDeps,
+): Promise<"bot" | "handed" | "unread"> {
+  try {
+    const client = await loadChatwootClient(tenantId, instanceId, {
+      base,
+      ...(deps?.makeClient ? { makeClient: deps.makeClient } : {}),
+    });
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (!live) return "unread";
+    const done = await reconcileMirrorFromLive({
+      tenantId,
+      instanceId,
+      conversationId,
+      live,
+      base,
+    });
+    // NOTE: a claim still alive outranks Chatwoot's word, and the mirror keeps its `open`.
+    if (done.refusedByStatusClaim || !done.state) return "unread";
+    // The row as the reconcile left it, not the snapshot: a webhook newer than the read outranks it.
+    const ourAgentBotId = await ourAgentBotIdOf(
+      base,
+      tenantId,
+      instanceId,
+      conversationId,
+    );
+    return shouldBotHandle(done.state, { ourAgentBotId }) ? "bot" : "handed";
+  } catch (e) {
+    logger.warn(
+      "followUpHandler: could not reconcile the conversation before a hand-over retry (conv=%s): %s",
+      String(conversationId),
+      e instanceof Error ? e.message : String(e),
+    );
+    return "unread";
+  }
+}
+
+function maxOrNull(a: number | null, b: number | null): number | null {
+  return a === null ? b : b === null ? a : Math.max(a, b);
+}
+
+// The Chatwoot ids of the agent's own bots on this instance.
+async function agentBotIdsOf(
+  base: PrismaClient,
+  tenantId: bigint,
+  instanceId: bigint,
+  agentId: bigint,
+): Promise<number[]> {
+  const bots = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findMany({
+      where: { chatwootInstanceId: instanceId, agentId },
+      select: { chatwootAgentBotId: true },
+    }),
+  );
+  return bots.map((b) => b.chatwootAgentBotId);
+}
+
 // A deferral that does not depend on the configuration (a retry backoff, a turn in flight, a live
 // decline) says so, and is kept whatever the configuration does.
 const BACKOFF_DEFERRAL = "backoff";
@@ -521,6 +634,59 @@ export async function followUpHandler(
   const { instanceId, conversationId } = parsed;
   const tenantId = job.tenantId;
 
+  // A hand-over whose toggle did not land, or was not confirmed, leaves the mirror's claim saying
+  // `open` whatever Chatwoot says, and the liveness gate below would end the episode on it. The retry
+  // runs past the claim's life and reconciles the mirror from Chatwoot first.
+  // A hand-over still owed, carried past the reconcile: it is not a nudge, so it does not wait out the
+  // inactivity cadence again.
+  const retryingHandover = job.payload.handoverRetry === true;
+  if (retryingHandover) {
+    // A conversation gone from the mirror (its instance removed) has nothing to reconcile, and
+    // a retry that waited for it would wait forever.
+    const mirrored = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findFirst({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+        select: { id: true },
+      }),
+    );
+    if (!mirrored) return { outcome: "done" };
+    const now = await reconcileFromChatwoot(
+      base,
+      tenantId,
+      instanceId,
+      conversationId,
+      deps,
+    );
+    // NOTE: a reconcile that did not happen leaves the claim's `open` for the gate to end on, so the
+    // retry waits for one instead.
+    if (now === "unread") {
+      return {
+        outcome: "reschedule",
+        runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+        payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+      };
+    }
+    // NOTE: the earlier hand-over did land: its episode is spent here, before the gate ends the run
+    // on the conversation no longer being the bot's.
+    if (now === "handed") {
+      const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.$executeRaw(Prisma.sql`
+          UPDATE conversations
+             SET last_follow_up_at = now()
+           WHERE tenant_id = ${tenantId}
+             AND chatwoot_instance_id = ${instanceId}
+             AND chatwoot_conversation_id = ${conversationId}
+             AND ${jobNotRetiredSql(job)}`),
+      );
+      if (stamped > 0) run?.commit();
+      return { outcome: "done" };
+    }
+  }
+
   const ctx = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
       where: {
@@ -540,6 +706,7 @@ export async function followUpHandler(
         inboxId: true,
         testActivatedAt: true,
         lastRepliedMessageId: true,
+        lastHandledMessageId: true,
         // NOTE: The fence's own axis; see the note beside it below.
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
@@ -549,7 +716,7 @@ export async function followUpHandler(
     if (!conv?.inboxId) return null;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true, chatwootInboxId: true },
+      select: { agentId: true, chatwootInboxId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
     const agent = await db.agent.findUnique({
@@ -609,6 +776,7 @@ export async function followUpHandler(
     return {
       conv,
       agentId: inbox.agentId,
+      whatsappProvider: inbox.provider,
       // Through the shared derivation: only the agent's own switch matters to a line this short.
       fullDetail: readDebugModes(agent.settings, null).fullDetail,
       followUpCfg,
@@ -702,15 +870,20 @@ export async function followUpHandler(
           ctx.conv.lastProactiveAt,
         )
       : lastFollowUpAt;
-  if (anchor) {
-    const dueAt = anchor.getTime() + stepDelayMinutes(step) * 60_000;
-    if (Date.now() < dueAt) {
-      return {
-        outcome: "reschedule",
-        runAt: new Date(dueAt),
-        payload: { ...job.payload, deferredUnder: ctx.configVersion },
-      };
-    }
+  const notDueYet = (later?: Date): JobResult | null => {
+    const from = later && (!anchor || later > anchor) ? later : anchor;
+    if (!from) return null;
+    const dueAt = from.getTime() + stepDelayMinutes(step) * 60_000;
+    if (Date.now() >= dueAt) return null;
+    return {
+      outcome: "reschedule",
+      runAt: new Date(dueAt),
+      payload: { ...job.payload, deferredUnder: ctx.configVersion },
+    };
+  };
+  if (!retryingHandover) {
+    const wait = notDueYet();
+    if (wait) return wait;
   }
 
   // Stamps `lastFollowUpAt` (the column /reset clears) unless the job was retired, returning
@@ -772,6 +945,186 @@ export async function followUpHandler(
       runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
       payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
     };
+  }
+
+  // The reply the customer is silent about, asked before any model spend. One the channel refused
+  // never reached them, so a nudge about it is a question about nothing: while its resend is queued
+  // the step waits for it, and once nothing more will send it the conversation goes to the team, as
+  // a turn the agent could not complete does. docs/tts.md, "An inactivity follow-up never nudges".
+
+  // A reply recorded with no handled watermark after it (the write after the send failed) still
+  // answered its customer message, so that message marks where the reply starts too.
+  const handledThrough = maxOrNull(
+    ctx.conv.lastHandledMessageId,
+    ctx.conv.lastRepliedMessageId,
+  );
+  // The flush's own answer to "is this customer message still owed a reply", so the follow-up
+  // waits for exactly the turns the flush would run.
+  const stillOpen = async (
+    rows: Row[],
+  ): Promise<{ open: Set<number>; settled: Set<number> }> => {
+    const agentBotIds = await agentBotIdsOf(
+      base,
+      tenantId,
+      instanceId,
+      ctx.agentId,
+    );
+    const state = await readSelectionState({
+      tenantId,
+      conversationDbId: ctx.conv.id,
+      messageIds: pendingIncoming(rows, null).map((m) => m.id),
+      base,
+    });
+    const open = new Set(
+      selectOpenMessages({
+        page: rows,
+        scalarFloor: handledThrough,
+        state,
+        purpose: "reply",
+        managedBotId: agentBotIds[0] ?? null,
+        whatsappProvider: ctx.whatsappProvider,
+      }).map((m) => m.id),
+    );
+    return { open, settled: new Set([...state.claimed, ...state.dispensed]) };
+  };
+  let delivery: LastReplyDelivery;
+  try {
+    delivery = await lastReplyDelivery({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conversationId,
+      agentBotIds: await agentBotIdsOf(base, tenantId, instanceId, ctx.agentId),
+      handledThrough,
+      whatsappProvider: ctx.whatsappProvider,
+      stillOpen,
+      base,
+      ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
+    });
+  } catch (e) {
+    logger.warn(
+      "followUpHandler: could not tell whether the last reply arrived (thread=%s): %s",
+      threadId,
+      e instanceof Error ? e.message : String(e),
+    );
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
+  // NOTE: a customer message Chatwoot has and the mirror has not reached yet: the turn it starts
+  // ends this episode, and the next run reads that from the mirror.
+  if (delivery.state === "customer_spoke") {
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + IN_FLIGHT_BACKOFF_MS),
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
+  if (delivery.state === "resend_pending") {
+    return {
+      outcome: "reschedule",
+      runAt: delivery.until,
+      payload: { ...job.payload, deferredUnder: BACKOFF_DEFERRAL },
+    };
+  }
+  if (delivery.state === "undelivered") {
+    const lost = delivery;
+    await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conversationId,
+      // NOTE: asked again right before the hand-over: a /reset that retired this run withdrew the
+      // episode, and a resend or a new reply that landed since is the conversation answered after all.
+      assess: async () => {
+        try {
+          if (await jobRetiredStrict(job, base))
+            return { path: "direct", fence: "superseded" };
+          const again = await lastReplyDelivery({
+            tenantId,
+            instanceId,
+            chatwootConversationId: conversationId,
+            agentBotIds: await agentBotIdsOf(
+              base,
+              tenantId,
+              instanceId,
+              ctx.agentId,
+            ),
+            handledThrough,
+            whatsappProvider: ctx.whatsappProvider,
+            stillOpen,
+            base,
+            ...(deps?.makeClient
+              ? { deps: { makeClient: deps.makeClient } }
+              : {}),
+          });
+          return {
+            path: "direct",
+            fence:
+              again.state === "undelivered" &&
+              again.messageId === lost.messageId
+                ? "clear"
+                : "superseded",
+          };
+        } catch {
+          return { path: "direct", fence: "unknown" };
+        }
+      },
+      // NOTE: pinned to the customer message the reply answered: a newer one mirrored meanwhile is a
+      // turn still owed, and the hand-over stands down for it.
+      aboutMessageId: lost.assessedThrough,
+      error: new Error(
+        `the channel refused the agent's last reply (code ${lost.code ?? "unknown"}) and it was not resent`,
+      ),
+      base,
+      ...(deps?.makeClient ? { deps: { makeClient: deps.makeClient } } : {}),
+    });
+    // NOTE: a hand-over that happened spends the episode, and the stamp keeps the sweep from arming
+    // it again until the customer speaks. Happened is Chatwoot no longer having the bot hold it, not
+    // the note: the note can be posted, or coalesced, with the toggle refused. One that did not (the
+    // reply landed meanwhile, a read or the toggle failed) is asked again shortly, unless the run
+    // was retired.
+    if (
+      (await reconcileFromChatwoot(
+        base,
+        tenantId,
+        instanceId,
+        conversationId,
+        deps,
+      )) === "handed"
+    ) {
+      await stampUnlessRetired();
+      return { outcome: "done" };
+    }
+    if (await jobRetired(job, base)) return { outcome: "done" };
+    // NOTE: the attempt may have left the mirror's claim saying `open`, which only a retry reconciles,
+    // so the marker is written even past the run's deadline.
+    run?.commit();
+    return {
+      outcome: "reschedule",
+      runAt: new Date(
+        Date.now() + STATUS_CLAIM_TTL_MS + HANDOVER_RETRY_SLACK_MS,
+      ),
+      payload: {
+        ...job.payload,
+        deferredUnder: BACKOFF_DEFERRAL,
+        handoverRetry: true,
+      },
+    };
+  }
+  // NOTE: a retry that found the reply answered after all is a nudge again, and waits like one. The
+  // marker stays on every deferral before this point, since the hand-over is still owed there.
+  if (retryingHandover) {
+    const { handoverRetry: _retry, ...payload } = job.payload;
+    job = { ...job, payload };
+    const wait = notDueYet();
+    if (wait) return wait;
+  }
+  // NOTE: a resend that landed after the anchor (a delayed one, or one the mirror has not seen) is
+  // the reply the customer got, and the delay counts from it.
+  if (delivery.state === "delivered" && delivery.repliedAt) {
+    const wait = notDueYet(delivery.repliedAt);
+    if (wait) return wait;
   }
 
   const idleMin = lastEventAt
