@@ -1,5 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
-import { isHumanHandback } from "./markers";
+import { isHumanHandback, isUndeliveredReplyNote } from "./markers";
 
 // Which slice of the persisted history travels to the model this turn. The thread is keyed per
 // contact-inbox, so it spans every conversation the contact had on that channel and nothing prunes
@@ -78,6 +78,23 @@ export function selectHistoryWindow(
     // ./handback.ts reads it as announced and never writes another, so losing it here leaves the turn
     // answering from the transfer context for the rest of the conversation.
     if (start > 0 && isHumanHandback(history[start - 1] as BaseMessage)) {
+      start--;
+    }
+    // An undelivered-reply note at the edge, as the opener or right before it, brings back the
+    // act it speaks of, from the message that act answered: the note says "the actions above", and
+    // without them it names nothing the next turn can report. Over the ceiling when it has to be, for
+    // the reason the turn being answered is.
+    // Repeated, because the act it brings back can sit right after an older note: two turns that
+    // acted and were superseded in a row. Each pass moves `start` strictly back.
+    for (;;) {
+      const edge = [start, start - 1].find((i) => {
+        const m = history[i];
+        return m !== undefined && isUndeliveredReplyNote(m);
+      });
+      if (edge === undefined) break;
+      start = edge;
+      while (start > 0 && history[start - 1]?.getType() !== "human") start--;
+      if (start === 0) break;
       start--;
     }
   }
