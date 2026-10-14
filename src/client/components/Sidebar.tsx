@@ -1,5 +1,5 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, RotateCw, X } from "lucide-react";
 import { type ReactNode, useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink } from "react-router";
@@ -10,6 +10,7 @@ import { Tooltip } from "@/client/components/Tooltip";
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useBranding } from "@/client/contexts/BrandingContext";
+import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
 import {
   SIDEBAR_COLLAPSED_WIDTH,
   useSidebar,
@@ -27,6 +28,7 @@ import {
   SUPPORT_LINK,
   type SupportContact,
 } from "@/client/lib/navigation";
+import { reloadIntoServedBuild, useStaleBuild } from "@/client/lib/staleBuild";
 import { cn, isSafeHttpUrl } from "@/client/lib/utils";
 import { Logo } from "./Logo";
 import { SidebarResizer } from "./SidebarResizer";
@@ -310,6 +312,8 @@ function SidebarFooter({
 function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
   const { t } = useTranslation();
   const { update } = useUpdates();
+  const { stale, serverVersion } = useStaleBuild();
+  const confirmLeave = useConfirmLeave();
   if (!APP_VERSION) return null;
   const full = `v${APP_VERSION}`;
   const hasUpdate = update.available && !!update.latestVersion;
@@ -329,6 +333,26 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
       })
     : full;
 
+  // A tab older than the server says so here too, ahead of the release link: the release check
+  // compares the server with GitHub, so after a deploy it goes quiet while this tab is still behind.
+  // Its mark is the reload icon, never the release dot: the dot means a newer release exists, and
+  // while the tab is stale the reload is the one thing to do, so the release link waits for it.
+  const staleTooltip = serverVersion
+    ? t("staleBuild.badgeTooltipVersion", "Console updated to v{{version}}", {
+        version: serverVersion,
+      })
+    : t("staleBuild.badgeTooltip", "Console updated");
+  const reloadButton = (content: ReactNode, className: string) => (
+    <button
+      type="button"
+      onClick={() => confirmLeave(reloadIntoServedBuild)}
+      aria-label={`${staleTooltip}. ${t("staleBuild.reload", "Reload")}`}
+      className={className}
+    >
+      {content}
+    </button>
+  );
+
   const proBadge = isPro ? (
     <span className="rounded-sm bg-accent-solid px-1 font-semibold text-[9px] text-accent-foreground uppercase leading-tight tracking-wide">
       {proLabel}
@@ -344,11 +368,28 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
     >
       {collapsed ? (
         <Tooltip
-          content={isPro ? `${versionTooltip} · ${proLabel}` : versionTooltip}
+          content={
+            isPro
+              ? `${stale ? staleTooltip : versionTooltip} · ${proLabel}`
+              : stale
+                ? staleTooltip
+                : versionTooltip
+          }
           side="right"
           sideOffset={10}
         >
-          {hasUpdate ? (
+          {stale ? (
+            reloadButton(
+              <>
+                <RotateCw
+                  className="mx-auto mb-0.5 h-3 w-3"
+                  aria-hidden="true"
+                />
+                {APP_VERSION}
+              </>,
+              "block w-full truncate text-info hover:underline",
+            )
+          ) : hasUpdate ? (
             // Focusable link so keyboard/SR users can reach the tooltip and act on the update; the
             // dot stays decorative (aria-hidden) and aria-label carries the "new version" state.
             <a
@@ -373,7 +414,18 @@ function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {
       ) : (
         <span className="inline-flex items-center gap-1.5">
           {proBadge}
-          {hasUpdate ? (
+          {stale ? (
+            <Tooltip content={staleTooltip} side="top">
+              {reloadButton(
+                <>
+                  {full}
+                  <RotateCw className="h-3 w-3" aria-hidden="true" />
+                  {t("staleBuild.reloadShort", "reload")}
+                </>,
+                "inline-flex items-center gap-1 text-info hover:underline",
+              )}
+            </Tooltip>
+          ) : hasUpdate ? (
             <Tooltip content={versionTooltip} side="top">
               <a
                 href={upgradeHref}
