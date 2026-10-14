@@ -1,9 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
 import {
   clearTurnInFlight,
   isTurnInFlight,
@@ -14,8 +12,18 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { dbProbeFailed } from "@/tests/db-gate";
-import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
+import {
+  dropReengageWorld,
+  fakeModel,
+  makeStub,
+  page,
+  REPLY,
+  type ReengageWorld,
+  reengageCtx,
+  seedReengageConversation,
+  seedReengageWorld,
+} from "../utils/reengage";
 import { PromptCapturingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -41,192 +49,32 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
+let world: ReengageWorld;
 let tenantId = 0n;
 let instanceId = 0n;
-let inboxDbId = 0n;
 let agentId = 0n;
 
 // A literal address in TEST-NET-3: the SSRF guard vets the final URL for real here, and an IP needs
 // no resolver to be vetted.
 const AUTH_URL = "https://203.0.113.9:9443/check";
 
-const REPLY = "Desculpe a demora, já te ajudo!";
-const fakeModel = () => new FakeListChatModel({ responses: [REPLY] });
-
 function ctx(): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+  return reengageCtx(world);
 }
 
-// `pages` serves a DIFFERENT thread per `getMessages` call, which is how a delivery landing between
-// two reads of the same conversation is told. Without it the stub is a Chatwoot frozen in time, and
-// every re-read in the code under test is answered by the state it already saw.
-function makeStub(opts: {
-  page?: unknown;
-  pages?: unknown[];
-  // What the catch-up read (`?after=`) answers.
-  after?: unknown;
-  sent: Array<[number, string]>;
-  // Roda a cada leitura de mensagens, que é o único momento em que o hold do botão e a marca do
-  // turno podem ser distinguidos de fora: o coalesce lê ANTES de o turno se marcar.
-  onGetMessages?: () => void;
-  // A versão que pode ESPERAR, para uma barreira de largada sincronizar duas chamadas no mesmo
-  // ponto. `onGetMessages` é síncrono de propósito (é sonda); esta serve para segurar.
-  onGetMessagesAsync?: () => Promise<void>;
-}) {
-  let i = 0;
-  const client = {
-    getMessages: async (_conv: number, o?: { after?: number }) => {
-      // NOTE: the catch-up read (`?after=`) is the fork's listing by id, a read of its own that
-      // carries the reactions its default page leaves out. It answers from `after`, and does not
-      // advance `pages`: that sequence is the default page as it moves under the code.
-      if (o?.after != null) return opts.after ?? { payload: [] };
-      opts.onGetMessages?.();
-      if (opts.onGetMessagesAsync) await opts.onGetMessagesAsync();
-      if (!opts.pages) return opts.page;
-      const p = opts.pages[Math.min(i, opts.pages.length - 1)];
-      i += 1;
-      return p;
-    },
-    sendMessage: async (conversationId: number, content: string) => {
-      opts.sent.push([conversationId, content]);
-      return {};
-    },
-    toggleTyping: async () => ({}),
-  } as unknown as ChatwootClient;
-  return async () => client;
-}
-
-function page(
-  msgs: Array<{
-    id: number;
-    content: string;
-    type?: number;
-    private?: boolean;
-    // Segundos desde a época, como o Chatwoot manda. Só os testes de idade passam este campo; a
-    // ausência dele é o que todo o resto do arquivo exercita, e ela tem que continuar significando
-    // "esta página não diz quando a mensagem chegou".
-    createdAt?: number;
-  }>,
-) {
-  return {
-    payload: msgs.map((m) => ({
-      id: m.id,
-      content: m.content,
-      message_type: m.type ?? 0,
-      private: m.private ?? false,
-      ...(m.createdAt === undefined ? {} : { created_at: m.createdAt }),
-    })),
-  };
-}
-
-async function seedConversation(
+const seedConversation = (
   convId: number,
-  over: {
-    assigneeType?: string | null;
-    assigneeId?: number | null;
-    lastError?: string | null;
-    contactId?: bigint;
-    lastHandledMessageId?: number;
-    contactInboxId?: number;
-  } = {},
-): Promise<bigint> {
-  const c = await suDb.conversation.create({
-    data: {
-      tenantId,
-      chatwootInstanceId: instanceId,
-      chatwootConversationId: convId,
-      status: "pending",
-      assigneeType: over.assigneeType ?? null,
-      assigneeId: over.assigneeId ?? null,
-      inboxId: inboxDbId,
-      ...(over.contactId ? { contactId: over.contactId } : {}),
-      threadId: `${tenantId}:${instanceId}:${convId}`,
-      lastEventAt: new Date(),
-      lastError: over.lastError ?? null,
-      lastErrorAt: over.lastError ? new Date() : null,
-      lastHandledMessageId: over.lastHandledMessageId ?? null,
-      ...(over.contactInboxId !== undefined
-        ? { contactInboxId: over.contactInboxId }
-        : {}),
-    },
-  });
-  return c.id;
-}
+  over?: Parameters<typeof seedReengageConversation>[3],
+) => seedReengageConversation(suDb, world, convId, over);
 
 describe.skipIf(!dbUp)("reengage", () => {
   beforeAll(async () => {
-    const t = await suDb.tenant.create({
-      data: { name: "RE", slug: `re-${process.pid}` },
-    });
-    tenantId = t.id;
-    const inst = await seedChatwootInstance(suDb, {
-      tenantId,
-      accountId: 9,
-      baseUrl: "https://chat.example.com",
-      adminToken: encryptJson("ADMIN"),
-    });
-    instanceId = inst.id;
-    const llmKey = await suDb.vaultEntry.create({
-      data: { tenantId, name: "llm-key", secret: encryptJson("sk-test") },
-      select: { id: true },
-    });
-    const agent = await suDb.agent.create({
-      data: {
-        tenantId,
-        name: "Atendente",
-        systemPrompt: "Você é prestativa.",
-        modelConfig: {
-          provider: "openai",
-          model: "gpt-4o-mini",
-          credentialRef: `vault:${llmKey.id}`,
-        },
-      },
-    });
-    await suDb.chatwootAgentBot.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        agentId: agent.id,
-        chatwootAgentBotId: 9,
-        accessToken: encryptJson("BOT"),
-        webhookSecret: encryptJson("S"),
-        webhookRouteTokenHash: `re-route-${process.pid}`,
-        name: "Atendente",
-      },
-    });
-    agentId = agent.id;
-    const inbox = await suDb.inbox.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        chatwootInboxId: 7,
-        name: "Suporte",
-        agentId: agent.id,
-      },
-    });
-    inboxDbId = inbox.id;
+    world = await seedReengageWorld(suDb, `re-${process.pid}`);
+    ({ tenantId, instanceId, agentId } = world);
   });
 
   afterAll(async () => {
-    if (tenantId) {
-      for (const table of [
-        "audit_logs",
-        "llm_usage",
-        "conversations",
-        "contacts",
-        "inboxes",
-        "agents",
-        "vault_entries",
-        "chatwoot_instances",
-      ]) {
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
-        );
-      }
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM tenants WHERE id = ${tenantId}`,
-      );
-    }
+    if (tenantId) await dropReengageWorld(suDb, tenantId);
     await suDb.$disconnect();
     await appDb.$disconnect();
   });
@@ -627,9 +475,9 @@ describe.skipIf(!dbUp)("reengage", () => {
 
     // NOTE: a barreira fica no ÚLTIMO ponto injetável antes do portão, o endpoint de autorização:
     // as duas chamadas são seguradas ali e liberadas juntas. Isso não prova a exclusão sozinho (as
-    // idas ao banco depois da barreira re-serializam as duas); a forma do portão é cercada em
-    // `reengage-gate-atomic.test.ts`. Duas conversas do MESMO contato, porque a thread de grafo é a
-    // do contato-inbox: a mesma memória que a exclusão protege.
+    // idas ao banco depois da barreira re-serializam as duas); a ordem do portão é provada em
+    // `reengage-gate-atomic.test.ts`, com a leitura de posse segurada. Duas conversas do MESMO
+    // contato, porque a thread de grafo é a do contato-inbox: a mesma memória que a exclusão protege.
     test("dois cliques que chegam juntos ao portão não viram dois turnos", async () => {
       const CI = 601;
       const idA = await seedConversation(9601, {
