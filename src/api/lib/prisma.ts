@@ -1,7 +1,7 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { lockTimeoutOption } from "@/api/lib/pool-options";
+import { runtimePoolOptions } from "@/api/lib/pool-options";
 import config from "@/config";
 import type { PoolClass } from "@/lib/pool-class";
 import { instrumentPool } from "@/lib/pool-stats";
@@ -14,11 +14,7 @@ function poolClient(name: PoolClass, max: number): PrismaClient {
     adapter: new PrismaPg(
       instrumentPool(
         name,
-        new Pool({
-          connectionString: config.databaseUrl,
-          max,
-          ...lockTimeoutOption(),
-        }),
+        new Pool(runtimePoolOptions(config.databaseUrl, max)),
       ),
       // Built here, so the adapter ends it on `$disconnect` only when told to.
       { disposeExternalPool: true },
