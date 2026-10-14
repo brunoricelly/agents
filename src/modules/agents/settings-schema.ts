@@ -19,6 +19,7 @@ import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
 } from "@/modules/agents/tool-guidance";
+import { GUARDABLE_TOOL_NAME } from "@/modules/agents/tool-preconditions";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { CONTACT_FIELDS } from "@/modules/chatwoot/contact-fields";
 import {
@@ -899,6 +900,27 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
+// Keyed by any tool name, so the names are checked rather than published: a catalog of native
+// properties would not refuse a typo here (the catchall takes any valid name) and only adds size.
+const guardableToolKeys = <T extends z.ZodTypeAny>(value: T) =>
+  z
+    .object({})
+    .catchall(value)
+    .check((ctx) => {
+      for (const [name, value] of Object.entries(ctx.value)) {
+        // NOTE: a removal (`null`) passes whatever its name, so a rule stored under a name that is no
+        // longer valid can still be deleted; the write boundary says whether it was there.
+        if (value === null || GUARDABLE_TOOL_NAME.test(name)) continue;
+        ctx.issues.push({
+          code: "custom",
+          input: ctx.value,
+          path: [name],
+          message:
+            "must be a tool name: letters, digits, `_` or `-`, up to 64, not starting with `_`",
+        });
+      }
+    });
+
 // The `set_labels` guard: a block of its own, since it fences a tool (`settings.labels` is refused on
 // write). Loose like its siblings.
 const setLabels = z
@@ -932,7 +954,7 @@ const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
 
 // The field descriptions live on the BLOCK: the value is serialized once per key, so a per-field
 // `.describe()` would be published once per native tool.
-const toolPreconditions = nativeToolKeys(
+const toolPreconditions = guardableToolKeys(
   z
     .looseObject({
       kind: z.literal("attribute"),
@@ -955,7 +977,7 @@ const toolPreconditions = nativeToolKeys(
     // that already worked.
     .nullable(),
 ).describe(
-  "per-native-tool precondition, checked by the runtime BEFORE the call runs (send `null` for a tool to remove its rule): `key` is the custom-attribute key that must be set on the chosen `scope`, and `equals` is the required value (omit it to require any non-blank value). Unmet, the tool does not run and the model is told why. Only native tools can be guarded (issue #389 tracks the rest).",
+  "per-tool precondition, keyed by the name the model calls (native, toolpack, HTTP, code, `mcp__<server>__<tool>`); `null` removes one. `key` is the attribute that must be set on `scope`, `equals` the required value (omit for any). Unmet, the call does not run and the model is told why.",
 );
 
 // What a monitoring agent does with what it reads. Descriptions kept short: the MCP schema ceiling

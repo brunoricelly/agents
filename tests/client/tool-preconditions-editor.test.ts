@@ -262,11 +262,11 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
     },
   );
 
-  test("a condition on a tool this editor cannot offer survives a save", () => {
-    // Configured over REST on an HTTP/MCP/integration tool. Rendering it would produce a row with a
-    // blank selector, and the only sensible reaction to a blank row is to delete it.
+  test("a condition on a name this editor cannot render survives a save", () => {
+    // A name the write boundary refuses (stored before the boundary existed, or by hand). Rendering it
+    // would produce a row the next save could not write, and the reaction to that is to delete it.
     const stored = {
-      create_invoice: { kind: "attribute", scope: "contact", key: "cpf" },
+      "create invoice": { kind: "attribute", scope: "contact", key: "cpf" },
     };
     expect(parseToolPreconditionRows(stored)).toEqual([]);
     expect(resave(stored)).toEqual(stored);
@@ -387,11 +387,7 @@ describe("the console offers exactly what the API accepts", () => {
   });
 
   test("a name the API refuses is one the editor never renders", () => {
-    for (const tool of [
-      "create_invoice",
-      "mcp__crm__deal",
-      " handoff_to_human ",
-    ]) {
+    for (const tool of ["has space", "__proto__", " handoff_to_human "]) {
       const bag = {
         [tool]: { kind: "attribute", scope: "conversation", key: "k" },
       };
@@ -407,7 +403,7 @@ describe("the console offers exactly what the API accepts", () => {
   // the moment the API starts refusing a rule the operator never opened.
   test("saving an untouched tab does not turn a carried-through entry into a 400", () => {
     const legacy = {
-      mcp__crm__create_deal: {
+      "legacy tool": {
         kind: "attribute",
         scope: "conversation",
         key: "cpf",
@@ -428,7 +424,7 @@ describe("the console offers exactly what the API accepts", () => {
     const stored = { toolPreconditions: {} };
     const next = {
       toolPreconditions: {
-        mcp__crm__create_deal: {
+        "legacy tool": {
           kind: "attribute",
           scope: "conversation",
           key: "cpf",
@@ -436,5 +432,298 @@ describe("the console offers exactly what the API accepts", () => {
       },
     };
     expect(() => assertSettingsToolPreconditions(next, stored)).toThrow();
+  });
+});
+
+// Every source's granted tools can carry a rule, and the select is where the operator finds them. A
+// rule whose tool the agent no longer has (renamed, revoked, server gone) guards nothing, so the row
+// says so instead of reading as protection.
+describe("the Tools tab offers every granted tool, and flags a rule on one that is gone", () => {
+  afterEach(cleanup);
+
+  const catalog = {
+    toolDefinitions: [
+      {
+        id: "7",
+        name: "busca",
+        label: "Busca por CPF",
+        enabled: true,
+        toolName: "busca_por_cpf",
+        args: [],
+      },
+    ],
+    integrationInstances: [
+      {
+        id: "9",
+        catalogType: "google-calendar",
+        kind: "TOOLPACK",
+        name: "Agenda da escola",
+        enabled: true,
+        tools: [
+          { name: "calendar_check_availability", args: [] },
+          { name: "calendar_create_event", args: [] },
+        ],
+      },
+    ],
+    mcpConnections: [{ id: "5", name: "CRM", enabled: true, slug: "crm" }],
+  };
+  // The shape the server sends: every id key present, the arrays always arrays.
+  const grant = (g: Record<string, unknown>) => ({
+    toolDefinitionId: null,
+    mcpServerConnectionId: null,
+    integrationInstanceId: null,
+    documentTemplateId: null,
+    codeToolDefinitionId: null,
+    knowledgeBaseIds: [],
+    enabledTools: [],
+    ...g,
+  });
+  const grants = [
+    grant({ source: "HTTP", toolDefinitionId: "7" }),
+    grant({
+      source: "INTEGRATION",
+      integrationInstanceId: "9",
+      enabledTools: ["calendar_check_availability"],
+    }),
+    grant({
+      source: "MCP",
+      mcpServerConnectionId: "5",
+      enabledTools: ["create_deal"],
+    }),
+  ];
+  const GONE = /is not among the agent's tools/;
+  const offered = () =>
+    [
+      ...(screen.getByRole("combobox", { name: "Tool" }) as HTMLSelectElement)
+        .options,
+    ].map((o) => o.value);
+
+  test("toolpack, HTTP and MCP tools are offered, and only the granted ones", async () => {
+    const stub = stubEditorApi({ settings: {} }, { catalog, grants });
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a precondition" }),
+    );
+    expect(offered()).toEqual(
+      expect.arrayContaining([
+        "busca_por_cpf",
+        "calendar_check_availability",
+        "mcp__crm__create_deal",
+      ]),
+    );
+    expect(offered()).not.toContain("calendar_create_event");
+  });
+
+  test("a rule on a toolpack tool is saved under the name the model calls", async () => {
+    const stub = stubEditorApi({ settings: {} }, { catalog, grants });
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a precondition" }),
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: "Tool" }), {
+      target: { value: "calendar_check_availability" },
+    });
+    // NOTE: an input with suggestions (`list`) is a combobox, not a textbox.
+    fireEvent.change(screen.getByRole("combobox", { name: "Attribute" }), {
+      target: { value: "dia_turno" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+    await waitFor(() =>
+      expect(
+        stub.writes.some((w) => w.method === "PATCH" && w.body.settings),
+      ).toBe(true),
+    );
+    const settings = stub.writes.find(
+      (w) => w.method === "PATCH" && w.body.settings,
+    )?.body.settings as Record<string, Record<string, unknown>>;
+    expect(settings.toolPreconditions?.calendar_check_availability).toEqual({
+      kind: "attribute",
+      scope: "conversation",
+      key: "dia_turno",
+    });
+  });
+
+  test("a rule on a tool the agent no longer has is shown with a warning", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_antiga: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    expect(
+      await screen.findByText(
+        "busca_antiga is not among the agent's tools: it was renamed, removed or turned off. This rule guards nothing.",
+      ),
+    ).toBeTruthy();
+    expect(offered()).toContain("busca_antiga");
+  });
+
+  // Two MCP connections whose names give one slug expose names the select holds back (a new rule
+  // could guard the other server's tool), but a saved rule on one still guards a tool the turn builds.
+  test("a rule on a built name the select holds back carries no warning", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            mcp__crm__create_deal: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      },
+      {
+        catalog: {
+          ...catalog,
+          mcpConnections: [
+            { id: "5", name: "CRM", enabled: true, slug: "crm" },
+            { id: "6", name: "CRM!", enabled: true, slug: "crm" },
+          ],
+        },
+        grants: [
+          ...grants,
+          grant({
+            source: "MCP",
+            mcpServerConnectionId: "6",
+            enabledTools: ["create_deal"],
+          }),
+        ],
+      },
+    );
+    await renderEditor(stub, "tools");
+    expect(offered()).toContain("mcp__crm__create_deal");
+    expect(screen.queryByText(GONE)).toBeNull();
+  });
+
+  test("a rule on a granted tool carries no warning", async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_por_cpf: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    await screen.findByRole("combobox", { name: "Tool" });
+    expect(screen.queryByText(GONE)).toBeNull();
+  });
+  test('clearing a saved value keeps "equals" chosen while the new one is typed', async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_por_cpf: {
+              kind: "attribute",
+              scope: "contact",
+              key: "cpf",
+              equals: "ok",
+            },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Required value" }),
+      { target: { value: "" } },
+    );
+    expect(
+      (screen.getByRole("combobox", { name: "Condition" }) as HTMLSelectElement)
+        .value,
+    ).toBe("equals");
+    expect(
+      screen.getByRole("textbox", { name: "Required value" }),
+    ).toBeTruthy();
+  });
+
+  test("the select groups the offered tools by where they come from", async () => {
+    const stub = stubEditorApi({ settings: {} }, { catalog, grants });
+    await renderEditor(stub, "tools");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add a precondition" }),
+    );
+    const select = screen.getByRole("combobox", {
+      name: "Tool",
+    }) as HTMLSelectElement;
+    const groups = Object.fromEntries(
+      [...select.querySelectorAll("optgroup")].map((g) => [
+        g.label,
+        [...g.querySelectorAll("option")].map((o) => o.value),
+      ]),
+    );
+    expect(groups["HTTP tools"]).toEqual(["busca_por_cpf"]);
+    expect(groups["MCP servers"]).toEqual(["mcp__crm__create_deal"]);
+    expect(groups.Integrations).toEqual(["calendar_check_availability"]);
+  });
+
+  test('choosing "equals" saves the value, and going back to "any value" drops it', async () => {
+    const stub = stubEditorApi(
+      {
+        settings: {
+          toolPreconditions: {
+            busca_por_cpf: { kind: "attribute", scope: "contact", key: "cpf" },
+          },
+        },
+      },
+      { catalog, grants },
+    );
+    await renderEditor(stub, "tools");
+    const match = await screen.findByRole("combobox", { name: "Condition" });
+    expect(
+      screen.queryByRole("textbox", { name: "Required value" }),
+    ).toBeNull();
+    fireEvent.change(match, { target: { value: "equals" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Required value" }), {
+      target: { value: "ok" },
+    });
+    const saved = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save tools" }));
+      await waitFor(() =>
+        expect(
+          stub.writes.some((w) => w.method === "PATCH" && w.body.settings),
+        ).toBe(true),
+      );
+      const w = stub.writes.filter(
+        (x) => x.method === "PATCH" && x.body.settings,
+      );
+      const settings = w[w.length - 1]?.body.settings as Record<
+        string,
+        Record<string, unknown>
+      >;
+      return settings.toolPreconditions?.busca_por_cpf;
+    };
+    expect(await saved()).toEqual({
+      kind: "attribute",
+      scope: "contact",
+      key: "cpf",
+      equals: "ok",
+    });
+    stub.writes.length = 0;
+    fireEvent.change(screen.getByRole("combobox", { name: "Condition" }), {
+      target: { value: "any" },
+    });
+    expect(await saved()).toEqual({
+      kind: "attribute",
+      scope: "contact",
+      key: "cpf",
+    });
   });
 });

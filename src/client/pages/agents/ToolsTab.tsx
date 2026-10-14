@@ -9,13 +9,13 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
-import { DECISION_ACTION_TOOLS } from "@/modules/decisions/config";
 import type { CrossInboxCaseState } from "./CrossInboxCaseFields";
+import { assembledToolNames, guardableToolsOf } from "./guardableTools";
 import type { ResolveConversationState } from "./ResolveConversationFields";
 import { SectionNav } from "./SectionNav";
 import type { SendImageState } from "./SendImageFields";
 import { TabActionBar } from "./TabActionBar";
-import { offeredPackTools, ToolGrantsEditor } from "./ToolGrantsEditor";
+import { ToolGrantsEditor } from "./ToolGrantsEditor";
 import { ToolPreconditionsEditor } from "./ToolPreconditionsEditor";
 import type {
   GrantState,
@@ -145,24 +145,15 @@ export function ToolsTab({
   onOpenPlayground,
 }: ToolsTabProps) {
   const { t } = useTranslation();
-  // The native tools this agent actually has, by ToolGrantsEditor's rule (no NATIVE row = all,
-  // a row = its allowlist), minus what a watcher's muted turn strips (`offeredPackTools`): a rule on
-  // a tool the agent does not get is inert and reads as protection. Both branches are filtered, since
-  // a saved row can still name a delivery tool; `optionsFor` keeps a saved row's own tool visible.
-  const nativeGrant = grants.find((g) => g.source === "NATIVE");
-  const offeredNative = new Set(
-    offeredPackTools(catalog.native, observing).map((n) => n.name),
-  );
-  const grantedNativeTools = (
-    nativeGrant
-      ? (nativeGrant.enabledTools ?? [])
-      : catalog.native.map((n) => n.name)
-  )
-    .filter((n) => offeredNative.has(n))
-    .filter(
-      (n) =>
-        !decides || (DECISION_ACTION_TOOLS as readonly string[]).includes(n),
-    );
+  // Every granted tool a precondition can be put on, by the name the model calls it.
+  const guardableTools = guardableToolsOf(catalog, grants, {
+    observing,
+    decides,
+  });
+  const assembledTools = assembledToolNames(catalog, grants, {
+    observing,
+    decides,
+  });
 
   // Section index for the Tools tab: mirrors the section ids set on ToolGrantsEditor's
   // blocks + the capability map below.
@@ -270,9 +261,11 @@ export function ToolsTab({
             setIntegrationCollapsed={setIntegrationCollapsed}
           />
           <ToolPreconditionsEditor
+            agentId={agentId}
             rows={toolPreconditions}
             onChange={setToolPreconditions}
-            grantedNativeTools={grantedNativeTools}
+            guardableTools={guardableTools}
+            assembledTools={assembledTools}
             decides={decides}
           />
         </div>

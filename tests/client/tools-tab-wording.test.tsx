@@ -20,9 +20,11 @@ describe("the Tools tab's wording", () => {
   test("the preconditions' help says what happens on each engine", () => {
     render(
       <ToolPreconditionsEditor
+        agentId="1"
         rows={[]}
         onChange={() => {}}
-        grantedNativeTools={[]}
+        guardableTools={[]}
+        assembledTools={new Set()}
         decides
       />,
     );
@@ -32,9 +34,11 @@ describe("the Tools tab's wording", () => {
     cleanup();
     render(
       <ToolPreconditionsEditor
+        agentId="1"
         rows={[]}
         onChange={() => {}}
-        grantedNativeTools={[]}
+        guardableTools={[]}
+        assembledTools={new Set()}
       />,
     );
     expect(screen.queryAllByText(/is told why/).length).toBeGreaterThan(0);
