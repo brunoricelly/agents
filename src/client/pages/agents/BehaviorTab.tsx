@@ -128,7 +128,7 @@ import {
 } from "./OtherInboxesFields";
 import type { ObservationState } from "./observationFormState";
 import { Section, SectionNav } from "./SectionNav";
-import { signatureOnToggle } from "./signatureFormState";
+import { type SignatureSeed, signatureOnToggle } from "./signatureFormState";
 import {
   newSnoozedStep,
   type SnoozedCadenceState,
@@ -428,6 +428,8 @@ interface BehaviorTabProps {
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   signature: SignatureState;
   setSignature: React.Dispatch<React.SetStateAction<SignatureState>>;
+  // What the switch last seeded (`signatureOnToggle`), held by the page so it outlives the tab.
+  signatureSeed: React.MutableRefObject<SignatureSeed | null>;
   vision: VisionState;
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
@@ -1595,6 +1597,7 @@ export function BehaviorTab({
   setSplit,
   signature,
   setSignature,
+  signatureSeed,
   vision,
   setVision,
   visionCredBaseUrl,
@@ -3288,9 +3291,15 @@ export function BehaviorTab({
               // Through the pair, not a second copy of the rule here: what the toggle does to the
               // text is a decision (seed an empty box, never touch a kept one) and it belongs where
               // a test can reach it.
-              onCheckedChange={(v) =>
-                setSignature(signatureOnToggle(signature, v))
-              }
+              onCheckedChange={(v) => {
+                const next = signatureOnToggle(
+                  signature,
+                  v,
+                  signatureSeed.current,
+                );
+                signatureSeed.current = next.seed;
+                setSignature(next.form);
+              }}
               label={t(
                 "editor.signatureEnabled",
                 "Add a signature to the agent's messages",

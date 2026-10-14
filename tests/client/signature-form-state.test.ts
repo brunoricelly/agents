@@ -124,30 +124,66 @@ describe("signatureOnToggle: the seed, and the guard that matters more", () => {
   };
 
   test("turning it on over an empty box seeds the agent's name", () => {
-    expect(signatureOnToggle(off, true)).toEqual({
-      ...off,
-      enabled: true,
-      text: SIGNATURE_SEED,
-    });
+    const up = signatureOnToggle(off, true, null);
+    expect(up.form).toEqual({ ...off, enabled: true, text: SIGNATURE_SEED });
+    expect(up.seed).toEqual({ form: up.form, from: "" });
   });
 
   test("a box holding only whitespace counts as empty", () => {
-    expect(signatureOnToggle({ ...off, text: "   \n" }, true).text).toBe(
+    expect(
+      signatureOnToggle({ ...off, text: "   \n" }, true, null).form.text,
+    ).toBe(SIGNATURE_SEED);
+  });
+
+  test("turning it OFF never touches the operator's text", () => {
+    const on = { ...off, enabled: true, text: SIG };
+    const down = signatureOnToggle(on, false, null);
+    expect(down.form).toEqual({ ...on, enabled: false });
+    // and the whole point: back on gives it back byte for byte
+    expect(signatureOnToggle(down.form, true, down.seed).form).toEqual(on);
+  });
+
+  // The seed is the switch's own suggestion, not something the operator wrote: turned straight back
+  // off over it, the box holds what it held before, so on and off again is no change at all.
+  test("turning it off over the untouched seed gives back the box as it was", () => {
+    for (const before of ["", "  \n"]) {
+      const box = { ...off, text: before };
+      const up = signatureOnToggle(box, true, null);
+      expect(signatureOnToggle(up.form, false, up.seed).form).toEqual(box);
+    }
+  });
+
+  // Any edit since the seed hands the switch a new form, even one that types the seed back: the text
+  // is then the operator's, and off keeps it.
+  test("a seed edited, even back to itself, stays when the switch goes off", () => {
+    const up = signatureOnToggle(off, true, null);
+    const retyped = { ...up.form, text: SIGNATURE_SEED };
+    expect(signatureOnToggle(retyped, false, up.seed).form.text).toBe(
       SIGNATURE_SEED,
     );
   });
 
-  test("turning it OFF never touches the text", () => {
-    const on = { ...off, enabled: true, text: SIG };
-    expect(signatureOnToggle(on, false)).toEqual({ ...on, enabled: false });
-    // and the whole point: back on gives it back byte for byte
-    expect(signatureOnToggle(signatureOnToggle(on, false), true)).toEqual(on);
+  // Text that reads like the seed is the operator's when the switch did not put it there: typed by
+  // hand into an enabled empty box, or a saved signature. Off keeps it.
+  test("a seed the switch did not put there stays when the switch goes off", () => {
+    const typed = { ...off, enabled: true, text: SIGNATURE_SEED };
+    expect(signatureOnToggle(typed, false, null).form.text).toBe(
+      SIGNATURE_SEED,
+    );
+  });
+
+  // Turning it on over a kept text seeds nothing, and says so, so a later off has nothing to undo.
+  test("on over a kept text records no seed", () => {
+    const up = signatureOnToggle(off, true, null);
+    expect(
+      signatureOnToggle({ ...off, text: SIG }, true, up.seed).seed,
+    ).toBeNull();
   });
 
   // The seed is only useful if it resolves; a literal `{{...}}` in the preview would teach the
   // operator the variables do not work at the moment they are learning the field.
   test("the seed names a variable the field supports", () => {
-    const seeded = signatureOnToggle(off, true);
+    const seeded = signatureOnToggle(off, true, null).form;
     const [first] = signaturePreviewParts(
       seeded,
       (_k: string, d: string) => d,
@@ -181,9 +217,10 @@ describe("a stored signature longer than the cap", () => {
   // meet this: turning a long signature off for a while.
   test("turning it off and on again does not shorten it", () => {
     const form = signatureToForm({ signature: { text: LONG } });
-    expect(signatureOnToggle(signatureOnToggle(form, false), true).text).toBe(
-      LONG,
-    );
+    expect(
+      signatureOnToggle(signatureOnToggle(form, false, null).form, true, null)
+        .form.text,
+    ).toBe(LONG);
   });
 });
 
@@ -252,9 +289,9 @@ describe("the frequency the form reads and the one it writes", () => {
       frequency: "once" as const,
       separator: "blank" as const,
     };
-    expect(signatureOnToggle(off, true).frequency).toBe("once");
-    expect(signatureOnToggle({ ...off, enabled: true }, false).frequency).toBe(
-      "once",
-    );
+    expect(signatureOnToggle(off, true, null).form.frequency).toBe("once");
+    expect(
+      signatureOnToggle({ ...off, enabled: true }, false, null).form.frequency,
+    ).toBe("once");
   });
 });

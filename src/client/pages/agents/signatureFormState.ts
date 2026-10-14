@@ -59,13 +59,27 @@ export function signatureToStored(form: SignatureState): {
 // seeding over a kept text would lose it.
 export const SIGNATURE_SEED = "**{{nome_agente}}**";
 
+// What the switch remembers after seeding: the form it produced, and the text the box held before.
+export interface SignatureSeed {
+  form: SignatureState;
+  from: string;
+}
+
+// The seed is the switch's own suggestion, so turning the switch off over it gives back what the box
+// held before: on and off again is then no change, and the tab is clean. Only while the form is the
+// very object the switch produced: an edit since, a save or a reload hands the tab a new one, and the
+// text in it is then the operator's, which off keeps like any text they wrote.
 export function signatureOnToggle(
   form: SignatureState,
   enabled: boolean,
-): SignatureState {
-  return {
-    ...form,
-    enabled,
-    text: enabled && !form.text.trim() ? SIGNATURE_SEED : form.text,
-  };
+  seed: SignatureSeed | null,
+): { form: SignatureState; seed: SignatureSeed | null } {
+  if (enabled) {
+    if (form.text.trim()) return { form: { ...form, enabled }, seed: null };
+    const seeded = { ...form, enabled, text: SIGNATURE_SEED };
+    return { form: seeded, seed: { form: seeded, from: form.text } };
+  }
+  if (seed?.form === form)
+    return { form: { ...form, enabled, text: seed.from }, seed: null };
+  return { form: { ...form, enabled }, seed: null };
 }
