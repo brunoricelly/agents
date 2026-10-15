@@ -98,6 +98,9 @@ export function DecisionsReplay({
     }
   }
 
+  const timesText = (n: number): string =>
+    t("editor.decisionsReplayTimes", "{{count}} times", { count: n });
+
   const actedText = (rule: number): string => {
     if (report && report.storedBlock !== storedBlock) {
       return t(
@@ -118,8 +121,11 @@ export function DecisionsReplay({
     }
     return t(
       "editor.decisionsReplayActed",
-      "As saved, it acted on {{conversations}} conversations, {{ticks}} times.",
-      { conversations: acted.conversations.length, ticks: acted.ticks },
+      "As saved, it acted on {{count}} conversations, {{times}}.",
+      {
+        count: acted.conversations.length,
+        times: timesText(acted.ticks),
+      },
     );
   };
 
@@ -236,10 +242,10 @@ export function DecisionsReplay({
                 <span className="text-text-secondary">
                   {t(
                     "editor.decisionsReplayWould",
-                    "Would act on {{conversations}} conversations, {{ticks}} times.",
+                    "Would act on {{count}} conversations, {{times}}.",
                     {
-                      conversations: r.would.conversations.length,
-                      ticks: r.would.ticks,
+                      count: r.would.conversations.length,
+                      times: timesText(r.would.ticks),
                     },
                   )}{" "}
                   {actedText(r.rule)}
