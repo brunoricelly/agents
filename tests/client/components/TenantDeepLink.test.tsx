@@ -6,9 +6,11 @@ import {
   beforeEach,
   describe,
   expect,
+  jest,
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -18,6 +20,7 @@ import {
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
 import * as AuthModule from "@/client/contexts/AuthContext";
+import { SESSION_RETRY_MS } from "@/client/lib/useSessionRetry";
 import { withI18n } from "@/tests/utils/i18n";
 import { stubExports } from "@/tests/utils/module-stub";
 
@@ -156,6 +159,7 @@ describe("TenantDeepLink", () => {
     });
   });
   afterEach(() => {
+    jest.useRealTimers();
     cleanup();
     sessionStorage.removeItem(KEY);
     localStorage.removeItem(KEY);
@@ -338,11 +342,18 @@ describe("TenantDeepLink", () => {
   // the list a moment later. Until then a person is not known to be tenant-bound, so a link to
   // another of their tenants holds the gate instead of refusing it on the wrong tenant's page.
   test("right after login, a link to another tenant waits for the membership list", async () => {
+    jest.useFakeTimers();
+    refreshes = 0;
     role = "TENANT_ADMIN";
     userTenantId = "10";
     userTenants = undefined;
     renderAt("?switchTenant=20");
-    await new Promise((r) => setTimeout(r, 50));
+    // A full retry later the gate has asked for the session again and still decided nothing.
+    act(() => {
+      jest.advanceTimersByTime(SESSION_RETRY_MS);
+    });
+    expect(refreshes).toBeGreaterThanOrEqual(1);
+    jest.useRealTimers();
     expect(shows("panel")).toBe(false);
     expect(reloads.length).toBe(0);
     expect(seenSearch).toBe("?switchTenant=20");
@@ -366,11 +377,18 @@ describe("TenantDeepLink", () => {
   });
 
   test("right after login, the admin gate waits for the membership list", async () => {
+    jest.useFakeTimers();
+    refreshes = 0;
     role = "AGENT";
     userTenantId = "10";
     userTenants = undefined;
     const view = renderAdminRouteAt("?switchTenant=20");
-    await new Promise((r) => setTimeout(r, 50));
+    // A full retry later the gate has asked for the session again and still decided nothing.
+    act(() => {
+      jest.advanceTimersByTime(SESSION_RETRY_MS);
+    });
+    expect(refreshes).toBeGreaterThanOrEqual(1);
+    jest.useRealTimers();
     expect(shows("conversations")).toBe(false);
     expect(reloads.length).toBe(0);
     userTenants = [
@@ -406,11 +424,18 @@ describe("TenantDeepLink", () => {
   // membership's, and the tab may have another tenant selected where the person is an
   // administrator.
   test("right after login, an admin page waits for the session before sending anybody away", async () => {
+    jest.useFakeTimers();
+    refreshes = 0;
     role = "AGENT";
     userTenantId = "10";
     userTenants = undefined;
     const view = renderAdminRouteAt("");
-    await new Promise((r) => setTimeout(r, 50));
+    // A full retry later the gate has asked for the session again and still decided nothing.
+    act(() => {
+      jest.advanceTimersByTime(SESSION_RETRY_MS);
+    });
+    expect(refreshes).toBeGreaterThanOrEqual(1);
+    jest.useRealTimers();
     expect(shows("conversations")).toBe(false);
     userTenants = [{ id: "10", name: "A", role: "AGENT" }];
     view.rerender(
