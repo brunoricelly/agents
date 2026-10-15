@@ -75,3 +75,62 @@ export function flowLevelLabel(level: string, t: TFunction): string {
       return level;
   }
 }
+
+// The outcomes of a guardrail line that could not set up a screening at all. Nothing was judged, so
+// the gate failed open and the message went on unchecked, on rows written before `detail.unchecked`
+// existed too. `analysis_failed` is not here: on those older rows it also covers a screening that
+// failed in part while another check tripped and stopped the message.
+const GUARDRAIL_NEVER_JUDGED_OUTCOMES = new Set([
+  "credential_not_found",
+  "model_unavailable",
+]);
+
+// What a guardrail line that could not judge meant for the message, in words, or null for any other
+// line, including a screening that failed in part and still tripped (`unchecked: false`).
+export function guardrailUncheckedLabel(
+  stage: string,
+  detail: Record<string, unknown> | null,
+  t: TFunction,
+): string | null {
+  if (stage !== "guardrail" || !detail) return null;
+  if (detail.unchecked === false) return null;
+  const outcome = typeof detail.outcome === "string" ? detail.outcome : null;
+  const unchecked =
+    detail.unchecked === true ||
+    (outcome !== null && GUARDRAIL_NEVER_JUDGED_OUTCOMES.has(outcome));
+  if (!unchecked) {
+    if (outcome !== "analysis_failed") return null;
+    return t(
+      "logs.guardrailUnchecked.unknown",
+      "The check failed; this older line does not record whether the message was let through",
+    );
+  }
+  switch (detail.direction) {
+    case "input":
+      return t(
+        "logs.guardrailUnchecked.input",
+        "The check failed, so the customer's message was let through unchecked",
+      );
+    case "output":
+      return t(
+        "logs.guardrailUnchecked.output",
+        "The check failed, so the reply was let through unchecked",
+      );
+    default:
+      return null;
+  }
+}
+
+export function guardrailClassifierLabel(
+  classifier: unknown,
+  t: TFunction,
+): string | null {
+  switch (classifier) {
+    case "chat":
+      return t("logs.guardrailClassifier.chat", "language model");
+    case "decisions":
+      return t("logs.guardrailClassifier.decisions", "classification API");
+    default:
+      return null;
+  }
+}
