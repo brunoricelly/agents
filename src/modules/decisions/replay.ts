@@ -13,6 +13,7 @@ import {
   getAgent,
 } from "@/modules/agents/service";
 import {
+  type DecisionQuestion,
   type DecisionRule,
   type DecisionsConfig,
   decisionsBlockFingerprint,
@@ -65,6 +66,10 @@ export interface ReplayReport {
   ticksUnreadable: number;
   // Ticks of the window that ran the stored block, which is what `acted` counts.
   ticksStoredBlock: number;
+  // The mark of the stored block `stored` is indexed by (`decisionsBlockFingerprint`), null when it
+  // cannot run: a caller matching its own rules to `stored` checks it first, since another save may
+  // have reordered the stored rules since it read them.
+  storedBlock: string | null;
   // The draft's questions differ from the stored ones: a new or edited question has no recorded
   // answer, and only a try that asks the classifier can show what it would answer.
   questionsChanged: boolean;
@@ -198,7 +203,7 @@ export async function replayDecisions(
   // under a secret-looking name) would replay as a miss, which is a "no" the classifier never said.
   const readable = (l: DecidedLine): boolean =>
     config.questions.every(
-      (q) => l.answers[q.name] === undefined || isAnswer(l.answers[q.name]),
+      (q) => l.answers[q.name] === undefined || isAnswer(q, l.answers[q.name]),
     );
   let ticksUsed = 0;
   let ticksUnreadable = 0;
@@ -238,6 +243,7 @@ export async function replayDecisions(
     ticksNotComparable: lines.length - ticksUsed - ticksUnreadable,
     ticksUnreadable,
     ticksStoredBlock,
+    storedBlock: storedMark,
     questionsChanged: storedQuestions !== draftQuestions,
     rules: config.rules.map((r, i) => ({
       rule: i,
@@ -296,21 +302,21 @@ export function replayConversation(
 const isNumber = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
 
-// An answer as `answersForLog` writes it, with the fields `evaluateRules` reads.
-function isAnswer(v: unknown): boolean {
+// An answer to this question as `answersForLog` writes it, with the fields `evaluateRules` reads. A
+// choice must still be one of the question's options: the log cuts a long value and scrubs one that
+// looks like a secret, and either would replay as "another option".
+function isAnswer(q: DecisionQuestion, v: unknown): boolean {
   const a = bag(v);
   if (!a) return false;
-  switch (a.type) {
+  if (a.type === "refusal") return true;
+  if (a.type !== q.type) return false;
+  switch (q.type) {
     case "yes_no":
       return isNumber(a.probability);
     case "choice":
-      return typeof a.choice === "string";
+      return q.options.some((o) => o.value === a.choice);
     case "score":
       return isNumber(a.score);
-    case "refusal":
-      return true;
-    default:
-      return false;
   }
 }
 

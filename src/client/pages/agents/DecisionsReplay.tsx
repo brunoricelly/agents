@@ -15,6 +15,7 @@ interface ReplayReport {
   ticksNotComparable: number;
   ticksUnreadable: number;
   ticksStoredBlock: number;
+  storedBlock: string | null;
   questionsChanged: boolean;
   rules: { rule: number; would: ReplayCount }[];
   stored: { rule: number; acted: ReplayCount }[];
@@ -29,6 +30,7 @@ const LINKS_SHOWN = 8;
 export function DecisionsReplay({
   agentId,
   revision,
+  storedBlock,
   block,
   blocked,
   ruleLabel,
@@ -38,6 +40,9 @@ export function DecisionsReplay({
   // When the agent was last saved: a save renumbers the stored rules a report's `stored` is keyed by,
   // so a report from before it is dropped.
   revision: string | null;
+  // The mark of the stored block this screen loaded: the origins below index it, so counts are
+  // matched only when the server read the same block.
+  storedBlock: string | null;
   // The questions and rules a save would write.
   block: { questions: unknown[]; rules: unknown[] };
   // The block has a problem to fix first: the server would refuse it.
@@ -94,6 +99,12 @@ export function DecisionsReplay({
   }
 
   const actedText = (rule: number): string => {
+    if (report && report.storedBlock !== storedBlock) {
+      return t(
+        "editor.decisionsReplayStoredMoved",
+        "The saved rules changed elsewhere; reload to see what each one did.",
+      );
+    }
     const origin = ruleOrigin(rule);
     const acted =
       origin === null

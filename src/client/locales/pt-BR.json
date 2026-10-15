@@ -1898,6 +1898,7 @@
     "decisionsReplayRuleLabel": "Regra {{n}}: {{summary}}",
     "decisionsReplayRuleNumber": "Regra {{n}}",
     "decisionsReplayRun": "Testar",
+    "decisionsReplayStoredMoved": "As regras salvas mudaram em outro lugar; recarregue para ver o que cada uma fez.",
     "decisionsReplayTitle": "Testar nas conversas recentes",
     "decisionsReplayUnreadable": "Ficaram de fora, o log esconde uma resposta delas: {{n}}.",
     "decisionsReplayUsed": "{{used}} das últimas {{window}} decisões responderam estas perguntas e foram usadas.",

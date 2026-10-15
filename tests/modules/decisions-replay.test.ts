@@ -382,6 +382,56 @@ describe.skipIf(!dbUp)("replaying a draft over the recorded answers", () => {
     expect(r.rules[0]?.would.ticks).toBe(1);
   });
 
+  test("a choice the log cut or scrubbed is unreadable, not another option", async () => {
+    const [c1] = convs as [bigint];
+    const questions = [
+      {
+        name: "topic",
+        type: "choice",
+        instructions: "About?",
+        options: [
+          { value: "refund", description: "money back" },
+          { value: "other", description: "anything else" },
+        ],
+      },
+    ];
+    const choice = (value: string) => ({
+      topic: {
+        type: "choice",
+        choice: value,
+        confidence: 0.9,
+        probabilities: {},
+      },
+    });
+    const qmark = decisionsQuestionsFingerprint(asConfig({ questions }));
+    await seed([
+      row(c1, 0, { questions: qmark, block: "x", answers: choice("refu…") }),
+      row(c1, 0, { questions: qmark, block: "x", answers: choice("refund") }),
+    ]);
+    const r = await replayDecisions(
+      ctx(),
+      agentId,
+      {
+        questions,
+        rules: [
+          {
+            when: [{ question: "topic", equals: "refund" }],
+            action: { tool: "set_labels", args: { add: ["refund"] } },
+          },
+        ],
+      },
+      appDb,
+    );
+    expect(r.ticksUnreadable).toBe(1);
+    expect(r.ticksUsed).toBe(1);
+    expect(r.rules[0]?.would.ticks).toBe(1);
+  });
+
+  test("the report names the stored block its `stored` counts index", async () => {
+    const r = await replayDecisions(ctx(), agentId, draft(), appDb);
+    expect(r.storedBlock).toBe(MARK);
+  });
+
   test("a rule naming a custom tool the tenant does not have is refused, as a save refuses it", async () => {
     await expect(
       replayDecisions(

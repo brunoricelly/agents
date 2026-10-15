@@ -1835,6 +1835,7 @@
     "decisionsReplayRuleLabel": "Rule {{n}}: {{summary}}",
     "decisionsReplayRuleNumber": "Rule {{n}}",
     "decisionsReplayRun": "Try",
+    "decisionsReplayStoredMoved": "The saved rules changed elsewhere; reload to see what each one did.",
     "decisionsReplayTitle": "Try on recent conversations",
     "decisionsReplayUnreadable": "Left out, the log hides an answer they gave: {{n}}.",
     "decisionsReplayUsed": "{{used}} of the latest {{window}} decisions answered these questions and were replayed.",
