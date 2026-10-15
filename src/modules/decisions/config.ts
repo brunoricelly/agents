@@ -591,6 +591,15 @@ export function decisionsFingerprint(
   );
 }
 
+// WHICH QUESTIONS A TICK ASKED, apart from its rules. Answers recorded under one set of rules are
+// still answers to the same questions after the rules change, so a replay of edited rules can use
+// them (./replay.ts); a question whose wording changed is a different question.
+export function decisionsQuestionsFingerprint(
+  config: Pick<DecisionsConfig, "questions">,
+): string {
+  return markOf(canon({ questions: config.questions }));
+}
+
 function canon(v: unknown): unknown {
   return Array.isArray(v)
     ? v.map(canon)

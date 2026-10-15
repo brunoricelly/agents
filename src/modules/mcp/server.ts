@@ -28,6 +28,7 @@ import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveri
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
   agentConfigHealth,
+  agentDecisionsReplay,
   agentGet,
   agentToolsGet,
   alertChannelList,
@@ -539,6 +540,25 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { agent_id: string }, eff) =>
         writeContent(await agentConfigHealth(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "agent_decisions_replay",
+      {
+        description:
+          "Replay a decisions block over the answers this agent's newest ticks recorded: per rule what it `would` do, per saved rule what it `acted` on. No provider call, no write.",
+        inputSchema: {
+          agent_id: z.string(),
+          questions: z.array(z.unknown()),
+          rules: z.array(z.unknown()),
+        },
+      },
+      async (
+        args: { agent_id: string; questions: unknown[]; rules: unknown[] },
+        eff,
+      ) => writeContent(await agentDecisionsReplay(eff, args)),
     );
 
     registerTenantTool(

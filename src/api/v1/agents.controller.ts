@@ -31,6 +31,7 @@ import {
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
+import { REPLAY_WINDOW, replayDecisions } from "@/modules/decisions/replay";
 import {
   GUARDRAIL_HEALTH_WINDOW_HOURS,
   guardrailHealthWindowStart,
@@ -60,6 +61,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.agentModifiedElsewhere', 'This agent was changed somewhere else. Reload it and try again.')
 // translate('errors.agentObservesInboxes', 'This agent observes inboxes. Remove it as an observer first.')
 // translate('errors.agentNotRunnable', 'This agent has no runnable model configured.')
+// translate('errors.decisionsDraftInvalid', 'The questions and rules have a problem to fix before they can be tried.')
 // translate('errors.audioTooLarge', 'Audio file is too large')
 // translate('errors.baseUrlRequired', 'A base URL is required for this provider.')
 // translate('errors.credentialRequired', 'A credential is required to list provider models.')
@@ -443,6 +445,42 @@ export const agentsController = new Elysia({
       params: t.Object({
         id: t.String({
           description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // An unsaved questions-and-rules block replayed over the answers this agent's ticks recorded: per
+  // rule, how often it would act beside how often it did. No provider call and nothing written.
+  .post(
+    "/:id/decisions/replay",
+    async ({ tenantContext, params, body }) => ({
+      instance: instanceIdentity,
+      replay: await replayDecisions(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        body,
+      ),
+    }),
+    {
+      detail: doc(
+        "Replay questions and rules over recorded answers",
+        `Evaluates a questions-and-rules block (saved or not) over the answers the agent's own decided ticks recorded, the newest ${REPLAY_WINDOW} of them, and returns per rule how many conversations and ticks it would act on (\`rules[].would\`), and per rule of the STORED block, by its stored index, how many it acted on (\`stored[].acted\`), counted from the ticks that ran the stored block. Each conversation's ticks are replayed oldest first with the rule's trigger simulated from the start of the window. Only ticks that answered the same questions are used (\`ticksUsed\`); the others are counted in \`ticksNotComparable\`, and \`questionsChanged\` says the block's questions differ from the stored ones, which only a try that asks the classifier can show. Calls no provider and writes nothing.`,
+      ),
+      response: errors(400, 401, 403, 404, 422),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+      body: t.Object({
+        questions: t.Array(t.Unknown(), {
+          description:
+            "The block's questions, as stored under `monitoring.decisions.questions`.",
+        }),
+        rules: t.Array(t.Unknown(), {
+          description:
+            "The block's rules, as stored under `monitoring.decisions.rules`.",
         }),
       }),
     },

@@ -45,6 +45,7 @@ import {
   sourceFits,
   type ToolArgSpec,
 } from "@/modules/decisions/tool-args";
+import { DecisionsReplay } from "./DecisionsReplay";
 import {
   type DecisionLine,
   type DecisionsActivity,
@@ -64,6 +65,8 @@ import {
   type DecisionRuleForm,
   type DecisionsForm,
   decisionsFormIssues,
+  decisionsToStored,
+  decisionsUntouched,
   decisionTextCap,
   emptyCondition,
   freshDecisionKey,
@@ -1825,6 +1828,23 @@ export function DecisionsFields({
     );
   };
 
+  // What a replay is asked: the questions and rules a save would write.
+  const replayBlock = useMemo(() => {
+    const b =
+      storedDecisions && decisionsUntouched(decisions, storedDecisions)
+        ? storedDecisions
+        : decisionsToStored(decisions);
+    return {
+      questions: Array.isArray(b.questions) ? b.questions : [],
+      rules: Array.isArray(b.rules) ? b.rules : [],
+    };
+  }, [decisions, storedDecisions]);
+  const replayBlocked =
+    decisions.questions.length === 0 ||
+    [...issues.keys()].some(
+      (k) => k.startsWith("questions") || k.startsWith("rules"),
+    );
+
   const gapText = (rule: DecisionRuleForm): string | null => {
     switch (actionGap(rule)) {
       case "note_empty":
@@ -1860,6 +1880,31 @@ export function DecisionsFields({
             { count: activity.decisions },
           )}
         </p>
+      )}
+
+      {savedAt !== null && (
+        <DecisionsReplay
+          agentId={agentId}
+          block={replayBlock}
+          blocked={replayBlocked}
+          ruleLabel={(i) => {
+            const rule = decisions.rules[i];
+            return rule
+              ? t(
+                  "editor.decisionsReplayRuleLabel",
+                  "Rule {{n}}: {{summary}}",
+                  {
+                    n: i + 1,
+                    summary: ruleSummary(rule),
+                    interpolation: { escapeValue: false },
+                  },
+                )
+              : t("editor.decisionsReplayRuleNumber", "Rule {{n}}", {
+                  n: i + 1,
+                });
+          }}
+          ruleOrigin={(i) => decisions.rules[i]?.origin ?? null}
+        />
       )}
 
       <div id="decisions-questions" className="flex scroll-mt-4 flex-col gap-3">

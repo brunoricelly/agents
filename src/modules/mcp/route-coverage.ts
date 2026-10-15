@@ -42,6 +42,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
     gap: "guardrails health of one agent",
   },
   "GET /v1/agents/:id/config-health": { tool: "agent_config_health" },
+  "POST /v1/agents/:id/decisions/replay": { tool: "agent_decisions_replay" },
   "GET /v1/agents/:id/inboxes/out-of-office": {
     gap: "Chatwoot out-of-office replies on the agent's inboxes",
   },

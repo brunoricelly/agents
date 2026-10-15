@@ -38,6 +38,7 @@ import {
   getConversationDetail,
   getConversationMessages,
 } from "@/modules/conversations/service";
+import { replayDecisions } from "@/modules/decisions/replay";
 import { documentAuthoringSchema } from "@/modules/documents/blocks";
 import { pageIssuedDocuments } from "@/modules/documents/issue";
 import { documentStarters } from "@/modules/documents/starters";
@@ -152,6 +153,30 @@ export async function agentConfigHealth(
   if (typeof id !== "bigint") return id;
   try {
     return ok({ health: await readAgentConfigHealth(ctx, id, { base }) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function agentDecisionsReplay(
+  principal: VerifiedToken,
+  args: { agent_id: string; questions: unknown[]; rules: unknown[] },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.agent_id, "agent_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({
+      replay: await replayDecisions(
+        ctx,
+        id,
+        { questions: args.questions, rules: args.rules },
+        base,
+      ),
+    });
   } catch (e) {
     return failOf(e);
   }

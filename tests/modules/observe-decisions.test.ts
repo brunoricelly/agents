@@ -20,6 +20,8 @@ import {
 import { __resetChatwootVocabCache } from "@/modules/chatwoot/vocab";
 import {
   decisionsBlockFingerprint,
+  decisionsQuestionsFingerprint,
+  readDecisionsConfig,
   ruleStateKey,
 } from "@/modules/decisions/config";
 import * as decisionsRun from "@/modules/decisions/run";
@@ -681,6 +683,11 @@ describe.skipIf(!dbUp)("the decisions engine of a monitoring agent", () => {
     const d = await detail();
     expect(d.acted).toBe(false);
     expect(d.actions).toEqual([]);
+    // The questions' own mark, which tells a replay of edited rules these answers still apply.
+    const read = readDecisionsConfig(decisionsBlock());
+    expect(read.ok && d.questions).toBe(
+      read.ok && decisionsQuestionsFingerprint(read.config),
+    );
     expect(d.notFired).toEqual([
       {
         rule: 0,

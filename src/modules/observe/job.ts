@@ -63,6 +63,7 @@ import {
 import {
   type DecisionsConfig,
   decisionsFingerprint,
+  decisionsQuestionsFingerprint,
   readDecisionsConfig,
 } from "@/modules/decisions/config";
 import type { DecisionResult } from "@/modules/decisions/providers";
@@ -1703,6 +1704,8 @@ export async function runObserve(
           engine: "decisions",
           // Which questions and rules this tick ran: the rule indices below mean nothing without it.
           block: decisionsFingerprint(config),
+          // Which questions it asked, so a replay of edited rules knows these answers still apply.
+          questions: decisionsQuestionsFingerprint(config),
           ...detail,
           ...(labelWrites.length > 0 ? { labels: labelWrites } : {}),
         },

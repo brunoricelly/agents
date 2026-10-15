@@ -397,6 +397,7 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
   // A starter question's name, cut after everything outside `[a-z0-9_]` became an underscore.
   "src/client/pages/agents/DecisionsFields.tsx": [1, "ascii"],
+  "src/client/pages/agents/DecisionsReplay.tsx": [1, "array"],
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
