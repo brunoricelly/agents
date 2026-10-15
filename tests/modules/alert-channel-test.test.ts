@@ -14,7 +14,7 @@ import {
 import { dbProbeFailed } from "@/tests/db-gate";
 import { flowLogCount } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
-import { POLL_DEADLINE_MS } from "../utils/poll";
+import { until } from "../utils/poll";
 
 // ── A SMOKE DETECTOR WITH A BUTTON ON IT ──
 //
@@ -608,19 +608,22 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     });
     // TICK UNTIL IT CLAIMS. The claim is `FOR UPDATE ... SKIP LOCKED`, so a row another
     // transaction holds is skipped until the next tick; under the full suite other files share the
-    // database, so one tick can claim nothing. The loop returns the moment it delivers.
-    const until = Date.now() + POLL_DEADLINE_MS;
-    while (real.sent.length === 0 && Date.now() < until) {
-      await processAlertBatch({
-        base: appDb,
-        tenantId,
-        coalesceWindowMs: 0,
-        fetchImpl: real.fetchImpl,
-        assertSafe: allowAll,
+    // database, so one tick can claim nothing. The wait returns the moment it delivers.
+    // A worker that throws fails the test from here; the row is removed either way.
+    try {
+      await until("the alert delivered by a tick", async () => {
+        await processAlertBatch({
+          base: appDb,
+          tenantId,
+          coalesceWindowMs: 0,
+          fetchImpl: real.fetchImpl,
+          assertSafe: allowAll,
+        });
+        return real.sent.length > 0;
       });
-      if (real.sent.length === 0) await Bun.sleep(50);
+    } finally {
+      await suDb.alertDelivery.deleteMany({ where: { id: row.id } });
     }
-    await suDb.alertDelivery.deleteMany({ where: { id: row.id } });
 
     expect(real.sent).toHaveLength(1);
     const probeSent = probe.sent[0] as Sent;
