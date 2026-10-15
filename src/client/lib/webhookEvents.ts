@@ -25,6 +25,21 @@ export function webhookEventLabel(ev: string, t: TFunction): string {
       return t("webhooks.eventLabels.kanbanCardMoved", "Kanban card moved");
     case "llm.usage":
       return t("webhooks.eventLabels.llmUsage", "LLM usage reported");
+    case "document.approval_requested":
+      return t(
+        "webhooks.eventLabels.documentApprovalRequested",
+        "Document approval requested",
+      );
+    case "document.approval_decided":
+      return t(
+        "webhooks.eventLabels.documentApprovalDecided",
+        "Document approval decided",
+      );
+    case "document.approval_outcome":
+      return t(
+        "webhooks.eventLabels.documentApprovalOutcome",
+        "Document approval outcome",
+      );
     case "tenant.created":
       return t("webhooks.eventLabels.tenantCreated", "Workspace created");
     case "heartbeat":

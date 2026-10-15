@@ -30,6 +30,9 @@ describe("outbound events", () => {
       "kanban.card_moved",
       "llm.usage",
       "tenant.created",
+      "document.approval_requested",
+      "document.approval_decided",
+      "document.approval_outcome",
       "heartbeat",
     ]);
   });
