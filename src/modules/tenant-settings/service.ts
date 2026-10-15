@@ -10,7 +10,13 @@ import {
   type TranslatedParam,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { markUndisclosed, redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
+import {
+  type ApprovalLinkSettings,
+  normalizeApprovalLink,
+  parseApprovalLinkSettings,
+} from "@/modules/documents/approval-link";
 import { unprintablePhrase } from "@/modules/documents/printable";
 import {
   forgetPriceOverrides,
@@ -191,6 +197,7 @@ export interface TenantSettingsDto {
   company: CompanySettings;
   spendCeiling: SpendCeilingConfig;
   priceOverrides: PriceOverridesBlock;
+  approvalLink: ApprovalLinkSettings;
 }
 
 export async function getTenantSettings(
@@ -210,6 +217,7 @@ export async function getTenantSettings(
       spendCeiling: readSpendCeilingConfig(raw),
       // The runtime's reader too, for the same reason: what the console lists is what prices a call.
       priceOverrides: readPriceOverrides(raw),
+      approvalLink: parseApprovalLinkSettings(raw),
     };
   });
 }
@@ -241,7 +249,8 @@ async function patchBlock<
     | SpendCeilingStored
     | SpendCeilingLegacyStored
     | PriceOverridesBlock
-    | ProactiveBreakerConfig,
+    | ProactiveBreakerConfig
+    | ApprovalLinkSettings,
 >(
   ctx: TenantContext,
   base: PrismaClient,
@@ -251,7 +260,8 @@ async function patchBlock<
     | "company"
     | "spendCeiling"
     | "priceOverrides"
-    | "proactiveBreaker",
+    | "proactiveBreaker"
+    | "approvalLink",
   // Handed both states, so a block can report what moved without carrying what it holds (the
   // company profile needs the difference; see `sides` for the shape the others use).
   audit: {
@@ -455,6 +465,53 @@ export async function updateLangfuse(
     },
   );
   return next;
+}
+
+export interface ApprovalLinkUpdateInput {
+  mode: ApprovalLinkSettings["mode"];
+  // Absent keeps the saved template, so switching the mode alone does not lose it.
+  urlTemplate?: string;
+}
+
+// The link at the end of an approval request's private note (documents/approval-link.ts). The
+// template is checked against the mode it is saved with, inside the lock, where the kept one is read.
+export async function updateApprovalLink(
+  ctx: TenantContext,
+  input: ApprovalLinkUpdateInput,
+  base: PrismaClient = basePrisma,
+): Promise<ApprovalLinkSettings> {
+  return patchBlock(
+    ctx,
+    base,
+    "approvalLink",
+    {
+      action: "tenant_settings.approval_link_set",
+      target: "tenant_settings:approvalLink",
+      // NOTE: the template's host only: a path or query may carry a token, and the trail keeps it.
+      // A change the redaction hides is marked on both sides, so the row still says something moved.
+      project: (before, after) => {
+        const b = parseApprovalLinkSettings(before);
+        const a = parseApprovalLinkSettings(after);
+        const shown = (l: ApprovalLinkSettings) => ({
+          mode: l.mode,
+          urlTemplate: l.urlTemplate ? redactEndpoint(l.urlTemplate) : "",
+        });
+        const hidden =
+          b.urlTemplate !== a.urlTemplate &&
+          shown(b).urlTemplate === shown(a).urlTemplate;
+        return {
+          before: hidden ? markUndisclosed(shown(b)) : shown(b),
+          after: hidden ? markUndisclosed(shown(a)) : shown(a),
+        };
+      },
+    },
+    (raw) =>
+      normalizeApprovalLink({
+        mode: input.mode,
+        urlTemplate:
+          input.urlTemplate ?? parseApprovalLinkSettings(raw).urlTemplate,
+      }),
+  );
 }
 
 export type CompanyUpdateInput = Partial<
