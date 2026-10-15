@@ -22,14 +22,19 @@ import {
 export function DecisionTickMarker({
   entry,
   previous,
+  test = false,
 }: {
-  entry: TrailEntry;
+  // Only the tick and its duration are read, so a test's result (which has no trail row) draws too.
+  entry: Pick<TrailEntry, "decision" | "durationMs">;
   // The previous decided tick of the same agent in this conversation, when there is one: the
   // collapsed marker says which answers moved since.
   previous?: DecisionTickView;
+  // A test from the conversation page (modules/decisions/try.ts): nothing ran, so the marker says
+  // what WOULD run, and it opens expanded since the test was asked for to read it.
+  test?: boolean;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(test);
   const tick = entry.decision;
   if (!tick) return null;
   const failed = tick.outcome === "failed";
@@ -45,9 +50,12 @@ export function DecisionTickMarker({
     ? t("conversation.trail.decision.failed", "Classification failed")
     : skipped
       ? t("conversation.trail.decision.skipped", "Classification skipped")
-      : t("conversation.trail.decision.classified", "Classified");
+      : test
+        ? t("conversation.trail.decision.test", "Test, nothing was run")
+        : t("conversation.trail.decision.classified", "Classified");
   const why = failed || skipped ? whyText(tick, t) : null;
-  const summary = failed || skipped ? null : summaryText(tick, t);
+  const summary =
+    failed || skipped ? null : test ? wouldText(tick, t) : summaryText(tick, t);
   const changes =
     failed || skipped || !previous ? [] : answerChanges(previous, tick);
   const hasDetails = tick.answers !== null || tick.actions.length > 0;
@@ -216,6 +224,26 @@ function summaryText(tick: DecisionTickView, t: T): string {
     : t("conversation.trail.decision.noActionRan", "no action ran");
 }
 
+// A test's line: how many rules would act, since none ran. A rule merged into an earlier rule's
+// identical action acts through it, so it counts too.
+function wouldText(tick: DecisionTickView, t: T): string {
+  let n = 0;
+  for (const raw of tick.actions) {
+    const a = raw as { outcome?: unknown; merged?: unknown } | null;
+    if (a?.outcome !== "decided") continue;
+    n += 1 + (Array.isArray(a.merged) ? a.merged.length : 0);
+  }
+  return n === 0
+    ? t("conversation.trail.decision.noRuleWouldAct", "no rule would act")
+    : t(
+        "conversation.trail.decision.rulesWouldAct",
+        "{{count}} rules would act",
+        {
+          count: n,
+        },
+      );
+}
+
 // Why a tick did not decide, in the screen's words for the reasons the engine writes, and the raw
 // code for one this build does not know.
 function whyText(tick: DecisionTickView, t: T): string {
@@ -259,6 +287,13 @@ function whyText(tick: DecisionTickView, t: T): string {
     return t(
       "conversation.trail.decision.noCustomerMessage",
       "No customer message to read yet",
+    );
+  }
+  if (tick.skipped === "contact_gate") {
+    return t(
+      "conversation.trail.decision.contactGate",
+      "The conditions in “{{section}}” leave this conversation out",
+      { section: t("editor.contactAuth", "Who this agent serves") },
     );
   }
   const code = tick.skipped ?? tick.failed ?? tick.failure;
@@ -482,7 +517,10 @@ function QuestionBlock({ q }: { q: QuestionView }) {
       )}
       {open && q.kind === "yes_no" && (
         <div className="flex flex-col gap-1 pl-5">
-          <Bar p={q.probability} chosen />
+          {/* The percentage is the head's "yes: …"; the bar is as wide as an option's. */}
+          <div className="w-16 sm:w-24">
+            <Bar p={q.probability} chosen />
+          </div>
           {q.thresholds.length > 0 && (
             <span className="text-text-muted">
               {q.thresholds
@@ -513,34 +551,40 @@ function ProbabilityLine({ row }: { row: ProbabilityRow }) {
   const { t } = useTranslation();
   return (
     <div
-      className="grid grid-cols-[minmax(0,1fr)_6rem_2.5rem] items-center gap-2"
+      className="grid grid-cols-[minmax(0,1fr)_4rem_2.5rem] items-start gap-2 sm:grid-cols-[minmax(0,1fr)_6rem_2.5rem]"
       data-testid="decision-option"
       data-chosen={row.chosen ? "true" : "false"}
     >
-      <span className="min-w-0 truncate">
-        <span
-          className={cn(
-            "font-mono",
-            row.chosen
-              ? "font-semibold text-text-primary"
-              : "text-text-secondary",
-          )}
-        >
-          {row.value}
-        </span>
-        {row.chosen && (
-          <span className="ml-1 text-accent">
-            {t("conversation.trail.decision.chosen", "chosen")}
+      {/* Wraps instead of cutting: an option's name and description are what the operator reads
+          the bar by, and an ellipsis left "reembol…" and "troca tr…" on a narrow column. */}
+      <span className="flex min-w-0 flex-col">
+        <span>
+          <span
+            className={cn(
+              "break-words font-mono",
+              row.chosen
+                ? "font-semibold text-text-primary"
+                : "text-text-secondary",
+            )}
+          >
+            {row.value}
           </span>
-        )}
+          {row.chosen && (
+            <span className="ml-1 inline-block whitespace-nowrap text-accent">
+              {t("conversation.trail.decision.chosen", "chosen")}
+            </span>
+          )}
+        </span>
         {row.description && (
-          <span className="ml-1 text-text-muted">{row.description}</span>
+          <span className="text-text-muted">{row.description}</span>
         )}
       </span>
       {row.probability === null ? (
         <span />
       ) : (
-        <Bar p={row.probability} chosen={row.chosen} />
+        <div className="flex h-4 items-center">
+          <Bar p={row.probability} chosen={row.chosen} />
+        </div>
       )}
       <span className="text-right tabular-nums">
         {row.probability === null ? "—" : percent(row.probability)}
@@ -594,7 +638,8 @@ function RuleRow({
       <span
         title={near ? text : undefined}
         className={cn(
-          r.kind === "fired" && r.outcome === "ran"
+          // A test's `decided` is what would run, the test's good outcome, not a failure.
+          r.kind === "fired" && (r.outcome === "ran" || r.outcome === "decided")
             ? "text-success"
             : r.kind === "fired"
               ? "text-error"
@@ -731,6 +776,8 @@ function ruleText(
   }
   if (r.kind === "fired") {
     const outcome = firedText(r, t);
+    // A test ran nothing, so "fired: would run" says the same twice.
+    if (r.outcome === "decided" && r.sameAs === null) return outcome;
     return r.sameAs !== null
       ? t(
           "conversation.trail.decision.sameAs",
@@ -758,6 +805,10 @@ function ruleText(
 
 function firedText(r: Extract<RuleView, { kind: "fired" }>, t: T): string {
   switch (r.outcome) {
+    case "decided":
+      return r.partial
+        ? t("conversation.trail.decision.wouldRunPartial", "would run, in part")
+        : t("conversation.trail.decision.wouldRun", "would run");
     case "ran":
       return r.partial
         ? t("conversation.trail.decision.ranPartial", "ran, in part")
