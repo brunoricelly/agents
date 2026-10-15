@@ -593,11 +593,16 @@ export function decisionsFingerprint(
 
 // WHICH QUESTIONS A TICK ASKED, apart from its rules. Answers recorded under one set of rules are
 // still answers to the same questions after the rules change, so a replay of edited rules can use
-// them (./replay.ts); a question whose wording changed is a different question.
+// them (./replay.ts); a question whose wording changed is a different question. Sorted by name, since
+// answers are keyed by name and moving a question on screen changes nothing it is asked; the order
+// inside a question (its options, its levels) is kept, a score's levels mean their position.
 export function decisionsQuestionsFingerprint(
   config: Pick<DecisionsConfig, "questions">,
 ): string {
-  return markOf(canon({ questions: config.questions }));
+  const byName = [...config.questions].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+  return markOf(canon({ questions: byName }));
 }
 
 function canon(v: unknown): unknown {

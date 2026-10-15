@@ -8,7 +8,10 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { getAgent } from "@/modules/agents/service";
+import {
+  assertDecisionActionArgsUsable,
+  getAgent,
+} from "@/modules/agents/service";
 import {
   type DecisionRule,
   type DecisionsConfig,
@@ -56,6 +59,10 @@ export interface ReplayReport {
   ticksUsed: number;
   // Decided ticks of the window answered with other questions.
   ticksNotComparable: number;
+  // Decided ticks that answered these questions but whose line does not hold an answer that can be
+  // read back (the log hides a value whose question is named like a secret): neither replayed nor
+  // read as a "no".
+  ticksUnreadable: number;
   // Ticks of the window that ran the stored block, which is what `acted` counts.
   ticksStoredBlock: number;
   // The draft's questions differ from the stored ones: a new or edited question has no recorded
@@ -112,6 +119,14 @@ export async function replayDecisions(
 ): Promise<ReplayReport> {
   const config = readDraft(draft);
   const agent = await getAgent(ctx, agentId, base);
+  // A custom tool's arguments, asked as a save asks them: a block the save would refuse is not one
+  // whose effect is worth reporting.
+  await assertDecisionActionArgsUsable(
+    ctx,
+    { monitoring: { decisions: { rules: draft.rules } } },
+    agent.settings,
+    base,
+  );
   const storedBlock = bag(bag(agent.settings)?.monitoring)?.decisions;
   const storedMark = decisionsBlockFingerprint(storedBlock);
   const stored = readDecisionsConfig({ decisions: storedBlock });
@@ -179,12 +194,19 @@ export async function replayDecisions(
     }
   }
 
+  // A line whose answers to these questions all read back as answers. One the log rewrote (a value
+  // under a secret-looking name) would replay as a miss, which is a "no" the classifier never said.
+  const readable = (l: DecidedLine): boolean =>
+    config.questions.every(
+      (q) => l.answers[q.name] === undefined || isAnswer(l.answers[q.name]),
+    );
   let ticksUsed = 0;
+  let ticksUnreadable = 0;
   let ticksStoredBlock = 0;
   for (const [conversationId, newestFirst] of byConversation) {
     replayConversation(
       config.rules,
-      [...newestFirst].reverse().filter(comparable),
+      [...newestFirst].reverse().filter((l) => comparable(l) && readable(l)),
       (rule) => {
         const w = would[rule];
         if (!w) return;
@@ -193,7 +215,10 @@ export async function replayDecisions(
       },
     );
     for (const l of newestFirst) {
-      if (comparable(l)) ticksUsed += 1;
+      if (comparable(l)) {
+        if (readable(l)) ticksUsed += 1;
+        else ticksUnreadable += 1;
+      }
       if (storedMark === null || l.block !== storedMark) continue;
       ticksStoredBlock += 1;
       for (const rule of ranRules(l.actions)) {
@@ -210,7 +235,8 @@ export async function replayDecisions(
   return {
     window: REPLAY_WINDOW,
     ticksUsed,
-    ticksNotComparable: lines.length - ticksUsed,
+    ticksNotComparable: lines.length - ticksUsed - ticksUnreadable,
+    ticksUnreadable,
     ticksStoredBlock,
     questionsChanged: storedQuestions !== draftQuestions,
     rules: config.rules.map((r, i) => ({
@@ -264,6 +290,27 @@ export function replayConversation(
       const key = keys[rule];
       if (key && triggers[rule] === "on_start") latched.delete(key);
     }
+  }
+}
+
+const isNumber = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(v);
+
+// An answer as `answersForLog` writes it, with the fields `evaluateRules` reads.
+function isAnswer(v: unknown): boolean {
+  const a = bag(v);
+  if (!a) return false;
+  switch (a.type) {
+    case "yes_no":
+      return isNumber(a.probability);
+    case "choice":
+      return typeof a.choice === "string";
+    case "score":
+      return isNumber(a.score);
+    case "refusal":
+      return true;
+    default:
+      return false;
   }
 }
 

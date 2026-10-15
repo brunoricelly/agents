@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { Button } from "@/client/components";
@@ -13,6 +13,7 @@ interface ReplayReport {
   window: number;
   ticksUsed: number;
   ticksNotComparable: number;
+  ticksUnreadable: number;
   ticksStoredBlock: number;
   questionsChanged: boolean;
   rules: { rule: number; would: ReplayCount }[];
@@ -27,12 +28,16 @@ const LINKS_SHOWN = 8;
 // how often it did. Reads only; the result is dropped as soon as the block on screen changes.
 export function DecisionsReplay({
   agentId,
+  revision,
   block,
   blocked,
   ruleLabel,
   ruleOrigin,
 }: {
   agentId: string;
+  // When the agent was last saved: a save renumbers the stored rules a report's `stored` is keyed by,
+  // so a report from before it is dropped.
+  revision: string | null;
   // The questions and rules a save would write.
   block: { questions: unknown[]; rules: unknown[] };
   // The block has a problem to fix first: the server would refuse it.
@@ -46,24 +51,29 @@ export function DecisionsReplay({
   const [report, setReport] = useState<ReplayReport | null>(null);
   const [running, setRunning] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const sent = JSON.stringify(block);
+  // What a report answers for: the block sent and the save it was read against.
+  const current = JSON.stringify([block, revision]);
+  const latest = useRef(current);
+  latest.current = current;
   const [reportFor, setReportFor] = useState<string | null>(null);
 
   useEffect(() => {
-    if (reportFor !== null && reportFor !== sent) {
+    if (reportFor !== null && reportFor !== current) {
       setReport(null);
       setReportFor(null);
     }
-  }, [sent, reportFor]);
+  }, [current, reportFor]);
 
   async function run() {
     setRunning(true);
     setFailure(null);
-    const asked = sent;
+    const asked = current;
     try {
       const { data, error } = await api.api.v1
         .agents({ id: agentId })
         .decisions.replay.post(block);
+      // NOTE: an answer for a block or a save that is no longer on screen is dropped.
+      if (latest.current !== asked) return;
       if (error || !data) {
         setFailure(
           apiErrorMessage(error) ||
@@ -185,6 +195,15 @@ export function DecisionsReplay({
                 { n: report.ticksNotComparable },
               )}
           </p>
+          {report.ticksUnreadable > 0 && (
+            <p className="text-text-muted text-xs">
+              {t(
+                "editor.decisionsReplayUnreadable",
+                "Left out, the log hides an answer they gave: {{n}}.",
+                { n: report.ticksUnreadable },
+              )}
+            </p>
+          )}
           {report.questionsChanged && (
             <p className="text-warning text-xs" role="status">
               {t(

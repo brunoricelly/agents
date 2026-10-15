@@ -1836,6 +1836,7 @@
     "decisionsReplayRuleNumber": "Rule {{n}}",
     "decisionsReplayRun": "Try",
     "decisionsReplayTitle": "Try on recent conversations",
+    "decisionsReplayUnreadable": "Left out, the log hides an answer they gave: {{n}}.",
     "decisionsReplayUsed": "{{used}} of the latest {{window}} decisions answered these questions and were replayed.",
     "decisionsReplayWould": "Would act on {{conversations}} conversations, {{ticks}} times.",
     "decisionsRuleBlocked": "could not run {{n}}",

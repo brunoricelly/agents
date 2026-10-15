@@ -1885,6 +1885,7 @@ export function DecisionsFields({
       {savedAt !== null && (
         <DecisionsReplay
           agentId={agentId}
+          revision={savedAt}
           block={replayBlock}
           blocked={replayBlocked}
           ruleLabel={(i) => {

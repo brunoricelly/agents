@@ -9,6 +9,7 @@ import {
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import { DecisionToolUnknownError } from "@/modules/agents/service";
 import {
   type DecisionRule,
   decisionsFingerprint,
@@ -41,6 +42,19 @@ const rule = (
   when: [{ question: "refund", minProbability }],
   action: { tool, args: tool === "set_labels" ? { add: ["refund"] } : {} },
   ...(trigger ? { trigger } : {}),
+});
+
+test("moving a question on screen keeps its answers comparable; rewording one does not", () => {
+  const a = { name: "a", type: "yes_no" as const, instructions: "A?" };
+  const b = { name: "b", type: "yes_no" as const, instructions: "B?" };
+  expect(decisionsQuestionsFingerprint({ questions: [a, b] })).toBe(
+    decisionsQuestionsFingerprint({ questions: [b, a] }),
+  );
+  expect(decisionsQuestionsFingerprint({ questions: [a, b] })).not.toBe(
+    decisionsQuestionsFingerprint({
+      questions: [{ ...a, instructions: "A, really?" }, b],
+    }),
+  );
 });
 
 describe("a conversation's ticks replayed with the trigger simulated", () => {
@@ -353,6 +367,38 @@ describe.skipIf(!dbUp)("replaying a draft over the recorded answers", () => {
     await expect(
       replayDecisions(ctx(), foreignAgentId, draft(), appDb),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  test("an answer the log hid is left out as unreadable, never replayed as a no", async () => {
+    const [c1] = convs as [bigint];
+    await seed([
+      row(c1, 0.9, { answers: { refund: "‹redacted›" } }),
+      row(c1, 0.9),
+    ]);
+    const r = await replayDecisions(ctx(), agentId, draft(), appDb);
+    expect(r.ticksUsed).toBe(1);
+    expect(r.ticksUnreadable).toBe(1);
+    expect(r.ticksNotComparable).toBe(0);
+    expect(r.rules[0]?.would.ticks).toBe(1);
+  });
+
+  test("a rule naming a custom tool the tenant does not have is refused, as a save refuses it", async () => {
+    await expect(
+      replayDecisions(
+        ctx(),
+        agentId,
+        {
+          questions: QUESTIONS,
+          rules: [
+            {
+              when: [{ question: "refund", minProbability: 0.5 }],
+              action: { tool: "no_such_tool", args: {} },
+            },
+          ],
+        },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(DecisionToolUnknownError);
   });
 
   test("MCP returns the same report and nothing is written", async () => {

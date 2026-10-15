@@ -1899,6 +1899,7 @@
     "decisionsReplayRuleNumber": "Regra {{n}}",
     "decisionsReplayRun": "Testar",
     "decisionsReplayTitle": "Testar nas conversas recentes",
+    "decisionsReplayUnreadable": "Ficaram de fora, o log esconde uma resposta delas: {{n}}.",
     "decisionsReplayUsed": "{{used}} das últimas {{window}} decisões responderam estas perguntas e foram usadas.",
     "decisionsReplayWould": "Agiria em {{conversations}} conversas, {{ticks}} vezes.",
     "decisionsRuleBlocked": "não pôde executar {{n}}",
