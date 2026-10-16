@@ -41,6 +41,7 @@ import {
   runScopedOn,
   type ScopedDb,
   type TenantContext,
+  type TxBudget,
 } from "@/lib/tenancy";
 import { ingestsContinuously, isMonitoring } from "@/modules/agents/mode";
 import { agentObservesNow, agentStillSpeaks } from "@/modules/agents/speaks";
@@ -200,6 +201,12 @@ import {
   openForHumanQueue,
   runHumanReplyTakeover,
 } from "./human-takeover";
+import {
+  applyInboxConnectionChange,
+  INBOX_CONNECTION_EVENT,
+  isInboxConnectionDelivery,
+  parseInboxConnectionChange,
+} from "./inbox-connection";
 import {
   type AgentBotIdentity,
   agentBotChatwootId,
@@ -938,7 +945,7 @@ export interface ReceiveChatwootResult {
   ack: true;
   // NOTE: No "duplicate": a redelivery is "received" like the first one (Chatwoot only needs that),
   // and `dispatch` says whether it still owes processing.
-  outcome: "queued" | "ignored";
+  outcome: "queued" | "ignored" | "processed";
   tenantId?: bigint;
   instanceId?: bigint;
   // The idempotency KEY (the X-Chatwoot-Delivery header, or a body digest when absent).
@@ -1004,6 +1011,9 @@ export async function receiveChatwootWebhook(
   } catch {
     throw new AppError("invalid JSON body", 400);
   }
+
+  if (isInboxConnectionDelivery(parsed))
+    return receiveInboxConnection(params, bot, parsed);
 
   const normalized = normalizeChatwootEvent(parsed);
   if (!normalized) return { ack: true, outcome: "ignored" };
@@ -1080,6 +1090,59 @@ export async function receiveChatwootWebhook(
     receivedAt: recorded.receivedAt.getTime(),
     agentBotId: bot.agentBotId,
     normalized,
+  };
+}
+
+// The ack pool's own bounds (2s to connect, 2s per statement) under one deadline, well inside Chatwoot's
+// ~5s: the general scoped budget would lift the statement timeout and let a held inbox lock stretch the ack.
+function inboxConnectionAckBudget(): TxBudget {
+  return { maxWait: 2_000, timeout: 2_000, deadline: Date.now() + 3_500 };
+}
+
+// A channel connection change is applied inside the ack, with no ledger row: it is one locked row and
+// at most one outbound insert, ordered by the fork's own write time, so a redelivery or the other
+// route's copy finds it already applied. A write that fails is a 503, for Chatwoot to retry.
+async function receiveInboxConnection(
+  params: ReceiveChatwootParams,
+  bot: { tenantId: bigint; instanceId: bigint },
+  parsed: unknown,
+): Promise<ReceiveChatwootResult> {
+  const change = parseInboxConnectionChange(parsed);
+  if (!change) {
+    logger.warn(
+      "chatwoot: a %s delivery without the expected shape was acked and dropped",
+      INBOX_CONNECTION_EVENT,
+    );
+    return { ack: true, outcome: "ignored" };
+  }
+  const ackBase = params.ackBase ?? params.base ?? ackPrisma;
+  let applied: Awaited<ReturnType<typeof applyInboxConnectionChange>>;
+  try {
+    applied = await runScopedOn(
+      ackBase,
+      sysCtx(bot.tenantId),
+      (db) =>
+        applyInboxConnectionChange(db, bot.tenantId, bot.instanceId, change),
+      inboxConnectionAckBudget(),
+    );
+  } catch (err) {
+    logger.warn(
+      "chatwoot: the connection change of inbox %d could not be applied, answered 503 for Chatwoot to retry: %s",
+      change.chatwootInboxId,
+      errMsg(err),
+    );
+    throw new ServiceUnavailableError(
+      "the connection change could not be recorded; retry",
+    );
+  }
+  return {
+    ack: true,
+    outcome:
+      applied === "stale" || applied === "unknown_inbox"
+        ? "ignored"
+        : "processed",
+    tenantId: bot.tenantId,
+    instanceId: bot.instanceId,
   };
 }
 
