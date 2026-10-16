@@ -149,13 +149,17 @@ export const SIGNALS: readonly SignalDef[] = [
     defaultDurationSeconds: 0,
     source: "process",
   },
-  // Debounce flushes due and not yet claimed: a customer waiting for a reply the lane has no slot for.
+  // Debounce flushes due and not yet claimed. Each sample counts whichever flush fell due since the
+  // last claim, so steady traffic keeps it at 1 or 2 with every job claimed within a second: it is
+  // there to read and starts muted. A customer actually waiting pages through the debounce lane's
+  // queue age and `debounce_lane_full_ms`.
   {
     name: "debounce_waiters",
     unit: "count",
     defaultThreshold: 0,
     defaultDurationSeconds: 30,
     source: "database",
+    defaultEnabled: false,
   },
   ...LANES.map(
     (lane): SignalDef => ({

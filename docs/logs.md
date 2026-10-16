@@ -125,7 +125,7 @@ The signals and their defaults (a super admin overrides any of them on the scree
 | `model_permit_waiters` | above 0 for 30 s | Model calls queued behind `AGENT_MODEL_CONCURRENCY`. |
 | `model_permit_oldest_ms` | above 30 s | How long the first of those has waited. |
 | `debounce_lane_full_ms` | above 30 s | Every debounce slot (`DEBOUNCE_TURN_SLOTS`) busy for that long. |
-| `debounce_waiters` | above 0 for 30 s | Message bursts due to be answered with no slot free. |
+| `debounce_waiters` | never (muted by default; above 0 for 30 s once turned on) | Message bursts due to be answered and not yet claimed. Steady traffic keeps it at 1 or 2 with each claimed within a second, so it is read beside the debounce lane's queue age, which is what pages when a customer actually waits. |
 | `scheduler_queue_age_ms:<lane>` | debounce above 30 s, observe above 60 s, shared above 5 min, compaction above 10 min | How overdue the lane's oldest due job is; the card lists each kind. |
 | `ingress_lag_p95_ms` | above 30 s | Chatwoot's webhooks reach this process late. |
 | `chatwoot_pending_oldest_ms` | above 60 s | A received Chatwoot webhook not yet picked up. |

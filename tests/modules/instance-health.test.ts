@@ -316,6 +316,33 @@ describe.skipIf(!dbUp)("above X for Y seconds", () => {
     ]);
   });
 
+  test("debounce waiters under steady traffic never page by default, the debounce lane's age does (catches a busy instance paging for a flush claimed within a second)", async () => {
+    await channel();
+    const t0 = 3_500_000;
+    for (let s = 0; s <= 90; s += 15) {
+      await evaluateSample(
+        { debounce_waiters: 2, "scheduler_queue_age_ms:debounce": 900 },
+        t0 + s * 1000,
+      );
+    }
+    expect(await deliveries()).toEqual([]);
+    await evaluateSample(
+      { debounce_waiters: 2, "scheduler_queue_age_ms:debounce": 31_000 },
+      t0 + 105_000,
+    );
+    const rows = await deliveries();
+    expect(rows.map((r) => [r.signal, r.kind])).toEqual([
+      ["scheduler_queue_age_ms:debounce", "firing"],
+    ]);
+    const listed = await listInstanceThresholds(appDb);
+    const waiters = listed.find((t) => t.signal === "debounce_waiters");
+    expect([
+      waiters?.enabled,
+      waiters?.defaultEnabled,
+      waiters?.isDefault,
+    ]).toEqual([false, false, true]);
+  });
+
   test("a muted-by-default rate turned on alerts, and a threshold saved without the switch keeps it muted (catches an edit silently unmuting a rate)", async () => {
     await channel();
     const signal = "scheduler_failed_per_min:TAKEOVER_RECOVERY";
