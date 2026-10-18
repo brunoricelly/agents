@@ -20,11 +20,11 @@
         "@elysiajs/static": "^1.4.10",
         "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
         "@langchain/anthropic": "1.5.12",
-        "@langchain/core": "1.2.14",
+        "@langchain/core": "1.2.17",
         "@langchain/deepseek": "1.1.17",
         "@langchain/google-genai": "2.3.2",
-        "@langchain/langgraph": "1.4.19",
-        "@langchain/langgraph-checkpoint-postgres": "1.0.5",
+        "@langchain/langgraph": "1.5.0",
+        "@langchain/langgraph-checkpoint-postgres": "1.1.0",
         "@langchain/mcp-adapters": "2.0.1",
         "@langchain/openai": "1.6.2",
         "@langchain/textsplitters": "1.0.2",
@@ -77,7 +77,7 @@
       },
       "devDependencies": {
         "@biomejs/biome": "^2.5.15",
-        "@happy-dom/global-registrator": "^20.14.5",
+        "@happy-dom/global-registrator": "^21.0.1",
         "@testing-library/dom": "^10.4.2",
         "@testing-library/jest-dom": "7",
         "@testing-library/react": "^16.3.3",
@@ -244,7 +244,7 @@
 
     "@gulpjs/to-absolute-glob": ["@gulpjs/to-absolute-glob@4.0.0", "", { "dependencies": { "is-negated-glob": "^1.0.0" } }, "sha512-kjotm7XJrJ6v+7knhPaRgaT6q8F8K2jiafwYdNHLzmV0uGLuZY43FK6smNSHUPrhq5kX2slCUy+RGG/xGqmIKA=="],
 
-    "@happy-dom/global-registrator": ["@happy-dom/global-registrator@20.14.5", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^20.14.5" } }, "sha512-B05ID9DhSwLs6mlm1fzlkAtTIvB3duCvjJjfr19LBrlTK7VZtRjDqoTRIVv13GuYuNdhByu8LSZgThwV3Rkj7g=="],
+    "@happy-dom/global-registrator": ["@happy-dom/global-registrator@21.0.1", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^21.0.1" } }, "sha512-wr/Rpo2cUXb9hOXdpsA3jJvite0YR+jWz3j5XNuXzzBoKpI17U4nzrPNykFu3iUNxT7WWQm/YxpW/aEqfgaZMA=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 
@@ -260,19 +260,19 @@
 
     "@langchain/anthropic": ["@langchain/anthropic@1.5.12", "", { "dependencies": { "@anthropic-ai/sdk": "^0.122.0", "zod": "^3.25.76 || ^4" }, "peerDependencies": { "@langchain/core": "^1.2.14" } }, "sha512-tVvI94zAtG6isYxBzL7hlbxfbqjmvx/BqBWAov7v+bABKYz3fZHFI2Io1UI5UzU+h/5SuC1qXUV+JxnaqylJJw=="],
 
-    "@langchain/core": ["@langchain/core@1.2.14", "", { "dependencies": { "@cfworker/json-schema": "^4.0.2", "@standard-schema/spec": "^1.1.0", "js-tiktoken": "^1.0.12", "langsmith": ">=0.5.0 <1.0.0", "mustache": "^4.2.0", "p-queue": "^6.6.2", "zod": "^3.25.76 || ^4" } }, "sha512-NP+FZMDO8kzVf79kiVHByveErVbTc1kUm0OvJuASxy5dt2xo/m7mi4O0npskU71A9h0vke3YUDYEciiAsXdCoA=="],
+    "@langchain/core": ["@langchain/core@1.2.17", "", { "dependencies": { "@cfworker/json-schema": "^4.0.2", "@standard-schema/spec": "^1.1.0", "js-tiktoken": "^1.0.12", "langsmith": ">=0.5.0 <1.0.0", "mustache": "^4.2.0", "p-queue": "^6.6.2", "zod": "^3.25.76 || ^4" } }, "sha512-aLQLSed6oLCMLtJHrINhnFmsu79G2UiDlRslbOx+TSN9NmU+WuDv1OtVxrLpYglhXNy53elSduMVk3XBPG9ulw=="],
 
     "@langchain/deepseek": ["@langchain/deepseek@1.1.17", "", { "dependencies": { "@langchain/openai": "1.6.2" }, "peerDependencies": { "@langchain/core": "^1.0.0" } }, "sha512-IDNS6N6irCiQZR7On+FpzRrctYyyTcNoFzLQ3nEQ6nT/C/XAuWUGw0EYGlyWj7KBRUnESyu/+Xa+WZrfYrJ1Xw=="],
 
     "@langchain/google-genai": ["@langchain/google-genai@2.3.2", "", { "dependencies": { "@google/generative-ai": "^0.24.1" }, "peerDependencies": { "@langchain/core": "^1.2.11" } }, "sha512-wiiHx3aBJmWJcKmYs/4xZo5KNRICYjdbwegtmH8ega7liYFKBY6e1F4ocMNL+ylApaRIYeO54ceAHNbKmRVHeQ=="],
 
-    "@langchain/langgraph": ["@langchain/langgraph@1.4.19", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.1.5", "@langchain/langgraph-sdk": "~1.12.1", "@langchain/protocol": "^0.0.19", "@standard-schema/spec": "1.1.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0" } }, "sha512-wfT1Nyfwnu/N56piXRXxX6SQQ48ju6rqkGOQPD3/9laSB91ht+pVnq97/3FKO+LybvXfXKiBkfxyIlumdBhIQQ=="],
+    "@langchain/langgraph": ["@langchain/langgraph@1.5.0", "", { "dependencies": { "@langchain/langgraph-checkpoint": "^1.2.0", "@langchain/langgraph-sdk": "~1.12.4", "@langchain/protocol": "^0.0.19", "@standard-schema/spec": "1.1.0" }, "peerDependencies": { "@langchain/core": "^1.1.48", "zod": "^3.25.32 || ^4.2.0" } }, "sha512-nYBV1vkWtAdU9GFDzdnPKiEMZVXerqCadRcyRtjTnd6Z4nIPmyB4SGSKioQFjSWBZK6nd/RIoyQVhjnLpw9oxQ=="],
 
-    "@langchain/langgraph-checkpoint": ["@langchain/langgraph-checkpoint@1.1.5", "", { "peerDependencies": { "@langchain/core": "^1.1.48" } }, "sha512-BwDwl5VeTOh6CVuiIPgsUgfK51vTJDMSbFcSCUfjJWsl8/DPdK/mbv+ejxJstkSk/BlSPMP4JfXWcN6jD2ea2Q=="],
+    "@langchain/langgraph-checkpoint": ["@langchain/langgraph-checkpoint@1.2.0", "", { "peerDependencies": { "@langchain/core": "^1.1.48" } }, "sha512-a9F1tO/bKGS4AlLR0FVa859oImD0iQiQLAAPkP66Nnp7a5dXPgys2IpzdJQ9slKiVznsSAFjxxNCmM25dBOvWA=="],
 
-    "@langchain/langgraph-checkpoint-postgres": ["@langchain/langgraph-checkpoint-postgres@1.0.5", "", { "dependencies": { "pg": "^8.12.0" }, "peerDependencies": { "@langchain/core": "^1.1.44", "@langchain/langgraph-checkpoint": "^1.1.4" } }, "sha512-kCpp9pOidYDexhOvpWN4Z6G4npr4+OH8Qe/2oo38NLbRa+AzMcuZDiEI8y9bh4v5fcMy/dhlJClCSQzl86ddUw=="],
+    "@langchain/langgraph-checkpoint-postgres": ["@langchain/langgraph-checkpoint-postgres@1.1.0", "", { "dependencies": { "pg": "^8.12.0" }, "peerDependencies": { "@langchain/core": "^1.1.44", "@langchain/langgraph-checkpoint": "^1.2.0" } }, "sha512-nz3b7T3nenzUvCA8zSACFvmsQ/DzPTsopBeL5WNDCrvKw/kYF47Cm9W+IpjsGJe0ixDrJ65mkfrHy5v9hbvfDg=="],
 
-    "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.12.1", "", { "dependencies": { "@langchain/protocol": "^0.0.19", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19" }, "optionalPeers": ["react", "react-dom"] }, "sha512-V/XSE7auTpfS5p3ByggDM6bKvRLeEjImb7/H+ng9qHkwCrYCGrZpVcuve2lH9pHQVOQlEtnHUsRZKQTWumcdhw=="],
+    "@langchain/langgraph-sdk": ["@langchain/langgraph-sdk@1.12.5", "", { "dependencies": { "@langchain/protocol": "^0.0.19", "@types/json-schema": "^7.0.15", "p-queue": "^9.0.1", "p-retry": "^7.1.1" }, "peerDependencies": { "@langchain/core": "^1.1.48", "react": "^18 || ^19", "react-dom": "^18 || ^19" }, "optionalPeers": ["react", "react-dom"] }, "sha512-zVaUOzduWHXtxOaI6w95m+JzUQN+2zyf3dKqaqrMVhIFO6rGVe7UvA14NBhBLizK1GsZIlEO3cHQfIAYQamUAg=="],
 
     "@langchain/mcp-adapters": ["@langchain/mcp-adapters@2.0.1", "", { "dependencies": { "@modelcontextprotocol/client": "^2.2.0", "@modelcontextprotocol/core": "^2.2.0", "zod": "^4.4.3" }, "peerDependencies": { "@langchain/core": "^1.2.6", "@langchain/langgraph": "^1.4.18" } }, "sha512-dYijIiyN5JdufWX1I8cGrhKnmtSzl50cKLPuH9196xpsEJBz9TO+Z/ZM9pcHNyKM7+OZJDJvwB+DS7cAVhyheA=="],
 
@@ -1086,7 +1086,7 @@
 
     "hachure-fill": ["hachure-fill@0.5.2", "", {}, "sha512-3GKBOn+m2LX9iq+JC1064cSFprJY4jL1jCXTcpnfER5HYE2l/4EfWSGzkPa/ZDBmYI0ZOEj5VHV/eKnPGkHuOg=="],
 
-    "happy-dom": ["happy-dom@20.14.5", "", { "dependencies": { "@types/node": ">=20.0.0", "@types/whatwg-mimetype": "^3.0.2", "@types/ws": "^8.18.1", "buffer-image-size": "^0.6.4", "entities": "^7.0.1", "whatwg-mimetype": "^3.0.0", "ws": "^8.21.0" } }, "sha512-x/RzkpWO40bTjIoT30iQtt64FLLmH/iRcUCN2X//bLx7H3ifkdfPXyqsro/OYtqzIAhiLMMA7mmiOR9C3NOKjQ=="],
+    "happy-dom": ["happy-dom@21.0.3", "", { "dependencies": { "@types/node": ">=20.0.0", "@types/whatwg-mimetype": "^3.0.2", "@types/ws": "^8.18.1", "buffer-image-size": "^0.6.4", "entities": "^7.0.1", "whatwg-mimetype": "^3.0.0", "ws": "^8.21.0" } }, "sha512-PesNgu5BnIEmAwzKGewB3K1ORFeznFZJ4JrRz89ea1wkHnxskdpzX9sN/+zb4KO6k8oSMhyJSj/cwXAFrYBBNA=="],
 
     "has-flag": ["has-flag@4.0.0", "", {}, "sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ=="],
 
