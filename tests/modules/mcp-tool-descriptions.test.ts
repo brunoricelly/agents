@@ -213,7 +213,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 33_645, with the 15 dashboard tools (Pro only; the Free tree has none of them).
+    // Measured at 33_645, with the 15 dashboard tools (Pro only; the Free tree has none of them) and
+    // agent_call_floor.
     expect(desc).toBeLessThanOrEqual(33_720);
     // Measured at 72_446, with `limits.maxProactivePerDay` and the `snoozedFollowUp` and
     // `otherInboxes` blocks on agent_settings_set, the approval switch and validity on the document
