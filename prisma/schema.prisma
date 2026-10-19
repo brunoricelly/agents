@@ -1578,7 +1578,7 @@ model Dashboard {
   // 24h | today | 7d | 30d: the period the view opens on.
   defaultRange   String   @default("24h") @map("default_range")
   // 0 (off), 60 or 300.
-  refreshSeconds Int      @default(0) @map("refresh_seconds")
+  refreshSeconds Int      @default(60) @map("refresh_seconds")
   // The TV mode's rotation: the dashboards it alternates, in order, by id, each for `tvSeconds`. Empty:
   // the TV shows this dashboard alone. A removed id is skipped on read.
   tvRotation     BigInt[] @default([]) @map("tv_rotation")
