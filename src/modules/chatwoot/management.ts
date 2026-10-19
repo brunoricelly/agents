@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -11,7 +11,12 @@ import {
   violatedConstraintOf,
 } from "@/lib/pg-error";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { isMonitoring } from "@/modules/agents/mode";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation } from "@/modules/audit/service";
@@ -1042,12 +1047,91 @@ export async function reconnectChatwootInstance(
   return dto;
 }
 
-// HARD-remove ONE account: delete the ChatwootInstance row (cascading its inboxes / conversations /
-// bots / webhook deliveries / agent threads), freeing the (serverKey, accountId) slot so the account
-// can be moved to ANOTHER tenant. Contacts are tenant-level (no FK) and are KEPT — they may belong to
-// the tenant's other accounts. Irreversible; the caller (controller) hard-gates it (SUPER_ADMIN +
-// re-typed name + password). Best-effort: the abandoned Chatwoot bots are left as-is — their route
-// token no longer resolves once this row is gone, so their webhooks are simply rejected.
+// The tables that grow with an account, emptied a batch per transaction before the account row goes,
+// in this order: conversations before contacts, so a contact's `SetNull` finds nothing left to null.
+// Each leads an index with (tenant_id, chatwoot_instance_id) except the delivery log, whose own
+// leads with chatwoot_instance_id; the batch is found through it either way.
+const REMOVAL_BATCHES = [
+  "chatwoot_webhook_deliveries",
+  "conversations",
+  "contacts",
+  "agent_threads",
+  "attendance_summaries",
+  "other_inbox_summaries",
+] as const;
+const REMOVAL_BATCH_ROWS = 1_000;
+
+// The bots a removal took off its account's inboxes, taken off in Chatwoot too: should the removal
+// stop and the account be reconnected, a bot still attached there would deliver as a binding nothing
+// here holds any more. Best-effort, after the commit, each one asked again first, as in
+// `softDisconnectChatwootInstance`: a bind or an observe after a reconnect is never undone.
+async function detachRemovedBots(
+  ctx: TenantContext,
+  id: bigint,
+  detach: number[],
+  unobserved: {
+    inbox_id: bigint;
+    agent_id: bigint;
+    chatwoot_inbox_id: number;
+    chatwoot_agent_bot_id: number | null;
+  }[],
+  base: PrismaClient,
+  deps: LoadChatwootClientDeps,
+): Promise<void> {
+  const observers = unobserved.filter((o) => o.chatwoot_agent_bot_id !== null);
+  if (ctx.tenantId === null || (detach.length === 0 && observers.length === 0))
+    return;
+  let client: ChatwootClient;
+  try {
+    client = await loadChatwootClient(ctx.tenantId, id, {
+      base,
+      makeClient: deps.makeClient,
+    });
+  } catch {
+    return;
+  }
+  for (const inboxId of detach) {
+    const authorized = await runScopedOn(base, ctx, (db) =>
+      db.inbox.count({
+        where: {
+          chatwootInstanceId: id,
+          chatwootInboxId: inboxId,
+          agentId: null,
+        },
+      }),
+    );
+    if (authorized === 0) continue;
+    try {
+      await client.setInboxAgentBot(inboxId, null);
+    } catch {
+      // best-effort: a per-inbox failure must not block detaching the rest
+    }
+  }
+  for (const o of observers) {
+    const back = await runScopedOn(base, ctx, (db) =>
+      db.inboxObserver.count({
+        where: { inboxId: o.inbox_id, agentId: o.agent_id },
+      }),
+    );
+    if (back > 0) continue;
+    try {
+      await client.removeInboxObserver(
+        o.chatwoot_inbox_id,
+        o.chatwoot_agent_bot_id as number,
+      );
+    } catch {
+      // best-effort, as above
+    }
+  }
+}
+
+// HARD-remove ONE account and everything under it, freeing the (serverKey, accountId) slot so the
+// account can be moved to ANOTHER tenant. Irreversible; the controller hard-gates it (SUPER_ADMIN +
+// re-typed name + password). Not one transaction, since a real account's cascade outgrows the
+// request's budget: the first locks, unbinds and disconnects the account (its abandoned Chatwoot
+// bots are left as-is, their webhooks rejected from then on), batches empty its large tables, and
+// the last records and deletes the row. Stopped anywhere between, the account stays disconnected
+// and the same call finishes it (docs/chatwoot.md).
 export async function removeChatwootInstance(
   ctx: TenantContext,
   id: bigint,
@@ -1055,47 +1139,184 @@ export async function removeChatwootInstance(
   deps: LoadChatwootClientDeps = {},
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  // While the credentials still exist: the delete takes them with the inboxes. The account is marked
-  // disconnected first, so a bind refuses it and every sync from then on, this one's or one already
-  // in flight, writes the calls off.
-  await runScopedOn(base, ctx, (db) =>
-    db.chatwootInstance.updateMany({
-      where: { id, disconnectedAt: null },
-      data: { disconnectedAt: new Date() },
-    }),
+  const tenantId = ctx.tenantId;
+  const { generation, detach, unobserved } = await runScopedOn(
+    base,
+    ctx,
+    async (db) => {
+      await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
+      const inst = await db.chatwootInstance.findUnique({
+        where: { id },
+        select: { id: true, accountId: true },
+      });
+      if (!inst) {
+        throw new NotFoundError(
+          "chatwoot instance not found",
+          "errors.chatwootInstanceNotFound",
+        );
+      }
+      // Disconnected and unbound before the first batch: no new delivery is admitted under the
+      // account, and no follow-up, nudge or observe tick finds an agent on its inboxes to send through,
+      // while it is emptied or if the removal stops halfway. Their bots come off in Chatwoot after the
+      // commit, as in a soft disconnect. A delivery already admitted may still write a few rows behind
+      // a batch; the final cascade takes them.
+      // Every inbox of the account locked first, in id order, bound or not: deleting an observer row
+      // bumps its inbox (`bump_binding_generation_on_observer`), and `unobserveInbox` locks the inbox
+      // before the observer, so taking the observer first would invert that order.
+      await db.$queryRaw`
+      SELECT id FROM inboxes
+       WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+       ORDER BY id FOR NO KEY UPDATE`;
+      const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
+      UPDATE inboxes SET agent_id = NULL, updated_at = now()
+       WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id} AND agent_id IS NOT NULL
+      RETURNING chatwoot_inbox_id`;
+      const unobserved = await db.$queryRaw<
+        {
+          inbox_id: bigint;
+          agent_id: bigint;
+          chatwoot_inbox_id: number;
+          chatwoot_agent_bot_id: number | null;
+        }[]
+      >`
+      WITH gone AS (
+        DELETE FROM inbox_observers o USING inboxes i
+         WHERE o.inbox_id = i.id AND i.tenant_id = ${tenantId} AND i.chatwoot_instance_id = ${id}
+        RETURNING o.inbox_id, o.agent_id, i.chatwoot_inbox_id)
+      SELECT g.inbox_id, g.agent_id, g.chatwoot_inbox_id, b.chatwoot_agent_bot_id
+        FROM gone g
+        LEFT JOIN chatwoot_agent_bots b
+          ON b.tenant_id = ${tenantId} AND b.chatwoot_instance_id = ${id} AND b.agent_id = g.agent_id`;
+      const { count: stamped } = await db.chatwootInstance.updateMany({
+        where: { id, disconnectedAt: null },
+        data: { disconnectedAt: new Date() },
+      });
+      // NOTE: Recorded as the disconnect it is, and only when it changed something, so a retry of a
+      // removal that stopped halfway adds no row. `instance.remove` is written by the delete itself.
+      if (stamped > 0 || unbound.length > 0 || unobserved.length > 0) {
+        await auditMutation(db, ctx, {
+          action: "instance.disconnect",
+          target: `chatwoot_instance:${id}`,
+          before: {
+            id: String(inst.id),
+            accountId: inst.accountId,
+            unboundInboxes: unbound.length,
+            removedObservers: unobserved.length,
+            stamped: stamped > 0,
+            removal: true,
+          },
+        });
+      }
+      const [row] = await db.$queryRaw<[{ generation: bigint }]>`
+      SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint AS generation
+        FROM chatwoot_instances WHERE id = ${id}`;
+      return {
+        generation: row.generation,
+        detach: unbound.map((r) => r.chatwoot_inbox_id),
+        unobserved,
+      };
+    },
   );
+  // NOTE: The account's route tokens stop resolving at the disconnect, not at the delete: the batches
+  // take long enough for the receiver to keep authenticating a cached token through all of them.
+  invalidateRouteTokenCache();
+  // While the credentials still exist, since the final delete takes them with the inboxes; after the
+  // disconnect, so a bind refuses the account and a sync already in flight writes the calls off too.
   await switchOffVoiceRouting(ctx, [id], base, deps);
-  await runScopedOn(base, ctx, async (db) => {
-    // NOTE: LOCKED before the count, because the count is about what the delete below is going to
-    // destroy. A sync holding this same lock is mirroring inboxes under the account right now; read
-    // without it, the snapshot is taken before that transaction commits and the cascade then takes
-    // rows the row never mentioned.
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
-    const inst = await db.chatwootInstance.findUnique({
-      where: { id },
-      select: { id: true, accountId: true, accountName: true },
-    });
-    if (!inst) {
-      throw new NotFoundError(
-        "chatwoot instance not found",
-        "errors.chatwootInstanceNotFound",
+  await detachRemovedBots(ctx, id, detach, unobserved, base, deps);
+  // Every batch, and the delete, first locks the account row and reads that it is still disconnected.
+  // Reconnecting (`reconnectChatwootInstance`, `connectAccount`) writes the same row, so it waits for
+  // the batch in flight and the next one sees it: the removal stops there, refused, rather than
+  // erasing an account that is taking traffic again. The disconnect it checks is the one this call
+  // opened with, to the microsecond, so reconnecting and disconnecting again between two batches
+  // still stops it. No row means a concurrent removal finished it.
+  let reconnected = false;
+  const stillRemoving = async (db: ScopedDb): Promise<boolean> => {
+    const [row] = await db.$queryRaw<{ same: boolean }[]>`
+      SELECT (EXTRACT(EPOCH FROM disconnected_at) * 1000000)::bigint IS NOT DISTINCT FROM ${generation}
+             AS same
+        FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
+    if (!row) return false;
+    if (!row.same) {
+      reconnected = true;
+      throw new ConflictError(
+        "this Chatwoot account was reconnected while it was being removed; remove it again to finish",
+        "errors.chatwootRemovalReconnected",
       );
     }
-    // NOTE: BEFORE the delete, and counted: the cascade takes this account's inboxes and agent bots with
-    // it, so afterwards there is nothing left to describe. No MCP twin either, so this name is the
-    // only record the action has ever had.
-    await auditMutation(db, ctx, {
-      action: "instance.remove",
-      target: `chatwoot_instance:${id}`,
-      before: {
-        id: String(inst.id),
-        accountId: inst.accountId,
-        accountName: inst.accountName,
-        inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
-      },
+    return true;
+  };
+  try {
+    for (const table of REMOVAL_BATCHES) {
+      const name = Prisma.raw(table);
+      // SKIP LOCKED: a row an admitted delivery is writing right now is left for the next batch (or
+      // the final cascade) instead of holding this one up to its lock timeout.
+      // NO KEY UPDATE, the module's mode (see the lock fence in tests/modules/audit-channel-family).
+      // MATERIALIZED: as a plain `IN (subquery)` the planner may rerun the locking subquery per outer
+      // row, and on a table with stale statistics it does, one scan per row. Picked once, the batch is
+      // a thousand primary-key deletes.
+      for (;;) {
+        const deleted = await runScopedOn(base, ctx, async (db) =>
+          (await stillRemoving(db))
+            ? db.$executeRaw`
+                WITH batch AS MATERIALIZED (
+                  SELECT id FROM ${name}
+                   WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${id}
+                   LIMIT ${REMOVAL_BATCH_ROWS}
+                     FOR NO KEY UPDATE SKIP LOCKED)
+                DELETE FROM ${name} WHERE id IN (SELECT id FROM batch)`
+            : null,
+        );
+        if (deleted === null) {
+          invalidateRouteTokenCache();
+          return;
+        }
+        if (deleted === 0) break;
+      }
+    }
+    await runScopedOn(base, ctx, async (db) => {
+      if (!(await stillRemoving(db))) return;
+      // Counted under the account lock, in the transaction that deletes: the cascade takes the
+      // inboxes and agent bots with it, so afterwards there is nothing left to describe, and a removal
+      // that stopped or was refused before this point never claims to have removed anything. No MCP
+      // twin either, so this name is the only record the action has ever had.
+      const inst = await db.chatwootInstance.findUniqueOrThrow({
+        where: { id },
+        select: { id: true, accountId: true, accountName: true },
+      });
+      await auditMutation(db, ctx, {
+        action: "instance.remove",
+        target: `chatwoot_instance:${id}`,
+        before: {
+          id: String(inst.id),
+          accountId: inst.accountId,
+          accountName: inst.accountName,
+          inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
+        },
+      });
+      await db.chatwootInstance.delete({ where: { id } });
     });
-    await db.chatwootInstance.delete({ where: { id } });
-  });
+  } catch (err) {
+    // The switch-off above wrote the calls off before the account came back, and a binding saved in
+    // between may have been written on before it: the account is staying, so its calls are written
+    // again as they stand now.
+    if (reconnected) {
+      const voiced = await runScopedOn(base, ctx, (db) =>
+        db.inbox.findMany({
+          where: {
+            chatwootInstanceId: id,
+            OR: [
+              { voiceAgentId: { not: null } },
+              { voiceRouteToken: { not: null } },
+            ],
+          },
+          select: { id: true },
+        }),
+      );
+      await syncVoiceInboxes(ctx, voiced, base, deps);
+    }
+    throw err;
+  }
   // NOTE: The delete cascades this instance's ChatwootAgentBot rows (schema.prisma: `onDelete: Cascade`),
   // so every route token it owned now resolves to nothing. Without this the receiver keeps
   // authenticating a retired token from memory, and the detached processing behind it fails on rows
