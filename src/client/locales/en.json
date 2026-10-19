@@ -392,7 +392,8 @@
     "title": "Branding"
   },
   "breadcrumbs": {
-    "dashboard": "Loading…"
+    "dashboard": "Loading…",
+    "dataSources": "Data sources"
   },
   "channels": {
     "account": "Account {{id}}",
@@ -4447,6 +4448,7 @@
     "paramNameRequired": "Parameter name is required.",
     "refAgents": "Agents",
     "refAlertChannels": "Alert channels",
+    "refDashboardSources": "Dashboard data sources",
     "references": "Usage",
     "refIntegrations": "Integrations",
     "refMcp": "MCP servers",

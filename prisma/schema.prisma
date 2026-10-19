@@ -189,6 +189,7 @@ model Tenant {
   dashboardDays                 DashboardDay[]
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
+  dashboardDataSources          DashboardDataSource[]
   dashboardViewers              DashboardViewer[]
   dashboardViewerSessions       DashboardViewerSession[]
   dashboardViewerVisits         DashboardViewerVisit[]
@@ -1615,6 +1616,31 @@ model DashboardPanel {
 
   @@index([tenantId, dashboardId, position])
   @@map("dashboard_panels")
+}
+
+// An HTTP endpoint answering JSON that panels read their figures from (docs/dashboards.md, "HTTP
+// sources"). The request runs on the server: `credentialRef` names a vault entry, never its secret.
+// `{since}`, `{until}` and `{tz}` in the URL and the body are the panel's window.
+model DashboardDataSource {
+  id            BigInt   @id @default(autoincrement())
+  tenantId      BigInt   @map("tenant_id")
+  name          String
+  url           String
+  // GET | POST
+  method        String   @default("GET")
+  // [{ name, value }], not secret: shown to the account's admins.
+  headers       Json     @default("[]")
+  body          String?
+  credentialRef String?  @map("credential_ref")
+  // 0 (off) to 300: one request per window inside it, whoever reads.
+  cacheSeconds  Int      @default(60) @map("cache_seconds")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@map("dashboard_data_sources")
 }
 
 // A person who reads a tenant's dashboards by their public address: its own principal, never a tenant

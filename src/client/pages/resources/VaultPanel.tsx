@@ -458,6 +458,7 @@ function RefList({ refs }: { refs: References | null }) {
     refs.agents.length === 0 &&
     refs.webhooks.length === 0 &&
     refs.alertChannels.length === 0 &&
+    refs.dashboardSources.length === 0 &&
     refs.tenantSettings.length === 0;
   return (
     <div className="flex flex-col gap-3 text-sm">
@@ -507,6 +508,14 @@ function RefList({ refs }: { refs: References | null }) {
           key: n,
           label: n,
           to: "/webhooks",
+        }))}
+      />
+      <RefGroup
+        label={t("vault.refDashboardSources", "Dashboard data sources")}
+        items={refs.dashboardSources.map((n) => ({
+          key: n,
+          label: n,
+          to: "/dashboards/_sources",
         }))}
       />
       <RefGroup

@@ -404,7 +404,8 @@
     "title": "Identidade visual"
   },
   "breadcrumbs": {
-    "dashboard": "Carregando…"
+    "dashboard": "Carregando…",
+    "dataSources": "Fontes de dados"
   },
   "channels": {
     "account": "Conta {{id}}",
@@ -4567,6 +4568,7 @@
     "paramNameRequired": "Nome do parâmetro é obrigatório.",
     "refAgents": "Agentes",
     "refAlertChannels": "Canais de alerta",
+    "refDashboardSources": "Fontes de dados dos dashboards",
     "references": "Uso",
     "refIntegrations": "Integrações",
     "refMcp": "Servidores MCP",

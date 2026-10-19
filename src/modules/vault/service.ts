@@ -1587,6 +1587,8 @@ export interface VaultReferences {
   // Alert channels sign their deliveries with a vault secret too; without this list the vault would
   // offer to delete a key an alert channel is using without a word about it.
   alertChannels: string[];
+  // Dashboards' HTTP sources, by name: the tables exist in every edition, and only Pro writes them.
+  dashboardSources: string[];
   // Agents carry their id so the UI can deep-link to the editor (/agents/:id); the others have no
   // per-item route and link to their closest panel.
   agents: { id: string; name: string }[];
@@ -1609,6 +1611,7 @@ export async function vaultReferences(
     integrations: [],
     webhooks: [],
     alertChannels: [],
+    dashboardSources: [],
     agents: [],
     tenantSettings: [],
   };
@@ -1620,7 +1623,7 @@ export async function vaultReferences(
     if (!entry) return empty;
     const idRef = formatVaultRef(entry.id);
 
-    const [tds, mcps, ints, whs, alerts, agentRows, tenantRow] =
+    const [tds, mcps, ints, whs, alerts, sources, agentRows, tenantRow] =
       await Promise.all([
         db.toolDefinition.findMany({
           where: { credentialRef: idRef },
@@ -1642,6 +1645,10 @@ export async function vaultReferences(
         }),
         db.alertChannel.findMany({
           where: { secretRef: idRef },
+          select: { name: true },
+        }),
+        db.dashboardDataSource.findMany({
+          where: { credentialRef: idRef },
           select: { name: true },
         }),
         db.agent.findMany({
@@ -1678,6 +1685,7 @@ export async function vaultReferences(
       integrations: ints.map((i) => i.name),
       webhooks: whs.map((w) => w.url),
       alertChannels: alerts.map((a) => a.name),
+      dashboardSources: sources.map((s) => s.name),
       agents: agentRows.map((a) => ({ id: String(a.id), name: a.name })),
       tenantSettings,
     };

@@ -215,15 +215,15 @@ describe("MCP tool descriptions", () => {
     }
     // Measured at 34_168 with the 15 dashboard tools (Pro only), conversation_decisions_test,
     // inbox_bind_voice, the voice kind on agent_create and agent_call_floor; 33_086 on the Free tree.
-    expect(desc).toBeLessThanOrEqual(34_240);
-    // Measured at 78_391 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
-    // blocks on agent_settings_set, the approval switch and validity on the document template writes,
-    // the next number on them, the search and cursor on issued_document_list, the three
-    // proactive_breaker tools, the voice binding and kind, both fallbacks' timeouts, the fallback voice,
-    // agent_call_floor's draft input, `guardrails.onFailure`, the guardrail endpoint check and the 15
-    // dashboard tools (Pro only), the last being dashboard_query_schema, whose input is empty and whose
-    // contract is served on demand, and the `calls` numbers ranged. 74_540 on the Free tree.
-    expect(schema).toBeLessThanOrEqual(78_470);
+    // 34_653 with the six dashboard_source tools (HTTP sources, Pro only).
+    expect(desc).toBeLessThanOrEqual(34_720);
+    // Measured at 80_446 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
+    // blocks on agent_settings_set, the document template writes' approval, validity and next number,
+    // issued_document_list's search and cursor, the three proactive_breaker tools, the voice binding
+    // and kind, the tts block's timeout and fallback voice, agent_call_floor's draft input, the
+    // guardrails' onFailure and endpoint check, the `calls` numbers ranged, the 15 dashboard tools and
+    // the six dashboard_source tools (Pro only; dashboard_query_schema's contract is served on demand).
+    expect(schema).toBeLessThanOrEqual(80_520);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

@@ -25,6 +25,7 @@ interface DynamicRoute {
 // new page here makes it appear automatically in the trail.
 // t('nav.agents', 'Agents')
 // t('nav.dashboards', 'Dashboards')
+// t('breadcrumbs.dataSources', 'Data sources')
 // t('breadcrumbs.dashboard', 'Loading…')
 // t('editor.tab.general', 'General')
 // t('editor.tab.model', 'Model')
@@ -57,6 +58,11 @@ const STATIC_ROUTES: StaticRoute[] = [
     path: "/dashboards",
     labelKey: "nav.dashboards",
     defaultLabel: "Dashboards",
+  },
+  {
+    path: "/dashboards/_sources",
+    labelKey: "breadcrumbs.dataSources",
+    defaultLabel: "Data sources",
   },
   { path: "/resources", labelKey: "nav.resources", defaultLabel: "Components" },
   {

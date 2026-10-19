@@ -60,6 +60,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "Experiment",
   "Dashboard",
   "DashboardPanel",
+  "DashboardDataSource",
   "DashboardViewer",
   "DashboardViewerSession",
   "DashboardViewerVisit",

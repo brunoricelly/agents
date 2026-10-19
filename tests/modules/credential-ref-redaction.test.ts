@@ -29,7 +29,7 @@ import {
 import { dbProbeFailed } from "@/tests/db-gate";
 import { outboundUrl } from "../utils/outbound";
 
-// FOUR REF COLUMNS HAND A READER ONLY A WELL-FORMED REFERENCE.
+// THESE REF COLUMNS HAND A READER ONLY A WELL-FORMED REFERENCE.
 //
 // A row written before `requireVaultRef` guarded its writer can hold text that names no vault
 // entry, most plausibly a secret VALUE. These DTOs go out over REST and over `mcp:read` (narrower
@@ -505,12 +505,12 @@ describe.skipIf(!dbUp)(
 
 // ── the family, counted from the generated client rather than from a checklist ──
 //
-// Each ref column below has its redaction driven through its own service: the three above in this
+// Each ref column below has its redaction driven through its own service: the ones above in this
 // file, and the alert channel's and the webhook subscription's in
-// tests/modules/alert-channel-secret-roundtrip.test.ts. A SEVENTH column arrives here as a failure,
+// tests/modules/alert-channel-secret-roundtrip.test.ts. A column not listed arrives here as a failure,
 // which is the moment to give it a test of its own, rather than as an omission nobody sees.
 describe("every ref column the models declare has a redaction test", () => {
-  test("the models still hold exactly the six covered", () => {
+  test("the models still hold exactly the ones covered", () => {
     const found: string[] = [];
     for (const [name, fields] of Object.entries(Prisma)) {
       if (!name.endsWith("ScalarFieldEnum")) continue;
@@ -522,6 +522,8 @@ describe("every ref column the models declare has a redaction test", () => {
     }
     expect(found.sort()).toEqual([
       "AlertChannel.secretRef",
+      // The Free edition keeps the table and has no reader of it, so no test of its own there.
+      "DashboardDataSource.credentialRef",
       "IntegrationInstance.credentialRef",
       "IntegrationInstance.inboundSecretRef",
       "McpServerConnection.credentialRef",

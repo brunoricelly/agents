@@ -12,6 +12,7 @@ interface SegmentedControlProps<T extends string> {
   value: T;
   options: SegmentedOption<T>[];
   onChange: (value: T) => void;
+  disabled?: boolean;
   "aria-label"?: string;
   "aria-labelledby"?: string;
 }
@@ -23,6 +24,7 @@ export function SegmentedControl<T extends string>({
   value,
   options,
   onChange,
+  disabled,
   ...aria
 }: SegmentedControlProps<T>) {
   const name = useId();
@@ -31,6 +33,7 @@ export function SegmentedControl<T extends string>({
       role="radiogroup"
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
+      aria-disabled={disabled || undefined}
       // NOTE: `w-fit`, not just `inline-flex`: inside a flex column (FormField, a card's stack) the
       // item is stretched to the column's width whatever its display, and the pill then ran to the
       // form's edge with empty track after its options. tests/client/segmented-control.test.tsx.
@@ -48,6 +51,7 @@ export function SegmentedControl<T extends string>({
               {
                 "bg-bg-hover font-medium text-text-primary": selected,
                 "text-text-muted hover:text-text-primary": !selected,
+                "pointer-events-none opacity-50": disabled === true,
               },
             )}
           >
@@ -56,6 +60,7 @@ export function SegmentedControl<T extends string>({
               name={name}
               value={option.value}
               checked={selected}
+              disabled={disabled}
               onChange={() => onChange(option.value)}
               className="sr-only"
             />
