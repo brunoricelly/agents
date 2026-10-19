@@ -11,11 +11,14 @@ import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 interface ProtectedRouteProps {
   children: ReactNode;
   requireAdmin?: boolean;
+  // Without the console's sidebar and header: a dashboard's TV mode fills the screen on its own.
+  bare?: boolean;
 }
 
 export function ProtectedRoute({
   children,
   requireAdmin = false,
+  bare = false,
 }: ProtectedRouteProps) {
   const { user, loading } = useAuth();
   const location = useLocation();
@@ -62,7 +65,7 @@ export function ProtectedRoute({
   // TenantDeepLink).
   return (
     <TenantDeepLink>
-      <Layout>{children}</Layout>
+      {bare ? children : <Layout>{children}</Layout>}
     </TenantDeepLink>
   );
 }

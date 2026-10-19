@@ -217,13 +217,14 @@ describe("MCP tool descriptions", () => {
     // inbox_bind_voice, the voice kind on agent_create and agent_call_floor; 33_086 on the Free tree.
     // 34_653 with the six dashboard_source tools (HTTP sources, Pro only).
     expect(desc).toBeLessThanOrEqual(34_720);
-    // Measured at 80_446 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
+    // Measured at 80_562 with `limits.maxProactivePerDay` and the `snoozedFollowUp` and `otherInboxes`
     // blocks on agent_settings_set, the document template writes' approval, validity and next number,
     // issued_document_list's search and cursor, the three proactive_breaker tools, the voice binding
     // and kind, the tts block's timeout and fallback voice, agent_call_floor's draft input, the
     // guardrails' onFailure and endpoint check, the `calls` numbers ranged, the 15 dashboard tools and
-    // the six dashboard_source tools (Pro only; dashboard_query_schema's contract is served on demand).
-    expect(schema).toBeLessThanOrEqual(80_520);
+    // the six dashboard_source tools (Pro only; dashboard_query_schema's contract is served on demand),
+    // and tv_rotation and tv_seconds (ranged) on dashboard_update.
+    expect(schema).toBeLessThanOrEqual(80_640);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

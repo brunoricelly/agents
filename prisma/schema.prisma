@@ -1579,6 +1579,10 @@ model Dashboard {
   defaultRange   String   @default("24h") @map("default_range")
   // 0 (off), 60 or 300.
   refreshSeconds Int      @default(0) @map("refresh_seconds")
+  // The TV mode's rotation: the dashboards it alternates, in order, by id, each for `tvSeconds`. Empty:
+  // the TV shows this dashboard alone. A removed id is skipped on read.
+  tvRotation     BigInt[] @default([]) @map("tv_rotation")
+  tvSeconds      Int      @default(30) @map("tv_seconds")
   // Who may open it by its public address without a console account: verified e-mails, lower-case,
   // and e-mail domains, lower-case, matched whole (docs/dashboards.md, "Viewer access").
   viewerEmails   String[] @default([]) @map("viewer_emails")

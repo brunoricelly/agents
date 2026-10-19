@@ -34,7 +34,12 @@ export function DashboardsRoutes() {
 }
 
 // The public address of a dashboard leads nowhere in the Free edition, which has no dashboards to open.
-// biome-ignore lint/plugin/require-page-container: a redirect, it renders no page.
-export function PublicDashboardRoute() {
+export function PublicDashboardRoute(_props: { tv?: boolean }) {
   return <Navigate to="/" replace />;
+}
+
+// The TV mode of a dashboard, which the Free edition has none of, opens the gate under /dashboards.
+// biome-ignore lint/plugin/require-page-container: a redirect, it renders no page.
+export function DashboardTvRoute() {
+  return <Navigate to="/dashboards" replace />;
 }

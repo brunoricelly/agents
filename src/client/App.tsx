@@ -37,6 +37,7 @@ import { ConversationsPage } from "@/client/pages/ConversationsPage";
 import { DashboardPage } from "@/client/pages/DashboardPage";
 import {
   DashboardsRoutes,
+  DashboardTvRoute,
   PublicDashboardRoute,
 } from "@/client/pages/DashboardsRoutes";
 import { DocumentApprovalPage } from "@/client/pages/DocumentApprovalPage";
@@ -84,6 +85,14 @@ export function App() {
                                   element={
                                     <ProtectedRoute requireAdmin>
                                       <DashboardPage />
+                                    </ProtectedRoute>
+                                  }
+                                />
+                                <Route
+                                  path="/dashboards/:slug/tv"
+                                  element={
+                                    <ProtectedRoute requireAdmin bare>
+                                      <DashboardTvRoute />
                                     </ProtectedRoute>
                                   }
                                 />
@@ -254,6 +263,10 @@ export function App() {
                                 <Route
                                   path="/d/:tenant/:slug"
                                   element={<PublicDashboardRoute />}
+                                />
+                                <Route
+                                  path="/d/:tenant/:slug/tv"
+                                  element={<PublicDashboardRoute tv />}
                                 />
                                 <Route
                                   path="/signup"
