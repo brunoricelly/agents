@@ -8913,16 +8913,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93151 },
       });
-      const warned = await flowLogRows(suDb, {
+      const generated = await flowLogRows(suDb, {
         where: {
           tenantId,
           conversationId: conv.id,
           stage: "generate",
-          level: "warn",
         },
         select: { detail: true },
       });
-      expect(JSON.stringify(warned)).not.toContain("superseded_after_action");
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     // The silence tool is the one call that does nothing, so a turn that called it and then wrote a
@@ -8980,6 +8981,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const channel = await threadChannel(checkpointer, 93155);
       // NOTE: positive control: the call and its result stayed, so the rollback ran on this turn.
       expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93155 },
+      });
+      const generated = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true },
+      });
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     test("taken-over: a human owning the conversation leaves no reply behind either", async () => {
@@ -9121,16 +9132,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93153 },
       });
-      const warned = await flowLogRows(suDb, {
+      const generated = await flowLogRows(suDb, {
         where: {
           tenantId,
           conversationId: conv.id,
           stage: "generate",
-          level: "warn",
         },
         select: { detail: true },
       });
-      expect(JSON.stringify(warned)).not.toContain("superseded_after_action");
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     test("a booking whose confirmation was superseded leaves the note where the confirmation stood", async () => {
@@ -9199,25 +9211,30 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["tool", expect.any(String)],
         ["human", UNDELIVERED_REPLY_NOTE],
       ]);
-      // The operator learns of it too, since the customer has not.
+      // The flow log records it at `info`: the next turn tells the customer, so no alert is owed.
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93160 },
       });
-      const warned = await flowLogRows(suDb, {
+      const lines = await flowLogRows(suDb, {
         where: {
           tenantId,
           conversationId: conv.id,
           stage: "generate",
-          level: "warn",
         },
-        select: { detail: true },
+        select: { level: true, detail: true },
       });
-      expect(warned.map((r) => r.detail)).toContainEqual(
-        expect.objectContaining({
+      expect(
+        lines.map((r) => ({ level: r.level, detail: r.detail })),
+      ).toContainEqual({
+        level: "info",
+        detail: expect.objectContaining({
           reason: "superseded_after_action",
           tools: ["calendar_create_event"],
         }),
-      );
+      });
+      expect(
+        JSON.stringify(lines.filter((r) => r.level === "warn")),
+      ).not.toContain("superseded_after_action");
 
       // The superseding flush reads the act, then the note, then the newer message, in that order,
       // and leaves a single note behind once it has answered.
@@ -9316,16 +9333,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93157 },
       });
-      const warned = await flowLogRows(suDb, {
+      const generated = await flowLogRows(suDb, {
         where: {
           tenantId,
           conversationId: conv.id,
           stage: "generate",
-          level: "warn",
         },
         select: { detail: true },
       });
-      expect(JSON.stringify(warned)).not.toContain("superseded_after_action");
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     // A takeover after an act is refused too, and the act stays, but no turn of ours comes next: the
@@ -9377,6 +9395,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("taken-over");
       const channel = await threadChannel(checkpointer, 93156);
       expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 93156 },
+      });
+      const generated = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true },
+      });
+      expect(JSON.stringify(generated)).not.toContain(
+        "superseded_after_action",
+      );
     });
 
     // The control the three above cannot give: a turn that was NOT refused keeps its reply, so the
