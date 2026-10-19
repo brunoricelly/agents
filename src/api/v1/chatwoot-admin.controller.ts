@@ -178,8 +178,11 @@ export const chatwootAdminController = new Elysia({
   // re-type the deployment domain AND confirm with their password (step-up). Irreversible.
   .delete(
     "/deployment",
-    async ({ tenantContext, body }) => {
+    async ({ tenantContext, body, request, server }) => {
       const ctx = ctxOrThrow(tenantContext);
+      // Every account is emptied in batches that outlast the server's idle timeout, as in the account
+      // removal below.
+      server?.timeout(request, 0);
       const b = body as { confirmDomain: string; password?: string };
       const { deployment } = await getChatwootDeployment(ctx);
       if (!deployment) {

@@ -217,8 +217,12 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   // Irreversible.
   .delete(
     "/tenants/:id",
-    async ({ tenantContext, params, body }) => {
+    async ({ tenantContext, params, body, request, server }) => {
       const ctx = ctxOrThrow(tenantContext);
+      // The tenant's accounts and logs are emptied in batches that outlast the server's idle timeout,
+      // and nothing is sent until they end; without lifting it the console shows a failure while the
+      // delete goes on.
+      server?.timeout(request, 0);
       const b = body as { confirmName: string; password?: string };
       const id = requireDbId(params.id);
       const tenant = await getTenant(ctx, id);

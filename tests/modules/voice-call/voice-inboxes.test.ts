@@ -950,6 +950,70 @@ describe.skipIf(!dbUp)("the voice agent bound to an inbox's calls", () => {
   // Reconnected while the removal switches its calls off: the removal stops at its next batch and the
   // account stays, so the calls it switched off are written again as the binding stands, never left
   // off on an inbox that still has a voice agent.
+  // A deployment disconnect switches every account's calls off before emptying the first one. When
+  // several accounts are reconnected meanwhile, the first one found stops the teardown, and every one
+  // that stays, not only that first, has its calls written back on.
+  test("a deployment disconnect stopped by reconnects writes every reconnected account's calls back on", async () => {
+    const t = (
+      await suDb.tenant.create({
+        data: {
+          name: "Desconexão desfeita",
+          slug: `voice-dep-back-${process.pid}`,
+        },
+      })
+    ).id;
+    const answering = await suDb.agent.create({
+      data: {
+        tenantId: t,
+        name: "Voz",
+        kind: "voice",
+        systemPrompt: "x",
+        mode: "production",
+      },
+    });
+    const accounts: bigint[] = [];
+    for (const n of [1, 2]) {
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId: t,
+        baseUrl: "https://chat.deployment-back.test",
+        accountId: n,
+        adminToken: encryptJson("admintok"),
+      });
+      accounts.push(BigInt(inst.id));
+      await suDb.inbox.create({
+        data: {
+          tenantId: t,
+          chatwootInstanceId: BigInt(inst.id),
+          chatwootInboxId: 900 + n,
+          name: `Inbox ${900 + n}`,
+          channelType: "Channel::Whatsapp",
+          voiceAgentId: answering.id,
+          voiceRouteToken: encryptJson(`rota-${900 + n}`),
+        },
+      });
+    }
+    const cw = fakeChatwoot({
+      duringAiVoice: async () => {
+        for (const id of accounts)
+          await reconnectChatwootInstance(ctx(t), id, appDb);
+      },
+    });
+    try {
+      await expect(
+        disconnectChatwootDeployment(ctx(t), appDb, cw),
+      ).rejects.toMatchObject({
+        translationKey: "errors.chatwootRemovalReconnected",
+      });
+      for (const inbox of [901, 902]) {
+        expect(
+          cw.writes.filter((w) => w.inbox_id === inbox).at(-1),
+        ).toMatchObject({ inbox_id: inbox, enabled: true });
+      }
+    } finally {
+      await suDb.tenant.delete({ where: { id: t } });
+    }
+  });
+
   test("a removal stopped by a reconnect writes the account's calls back on", async () => {
     const t = (
       await suDb.tenant.create({
