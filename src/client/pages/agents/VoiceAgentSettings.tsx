@@ -17,6 +17,7 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   Card,
+  ComboBox,
   CredentialPicker,
   FormField,
   Input,
@@ -402,6 +403,22 @@ export function VoiceCard({
         ),
       }[v]
     }`;
+  // What each offered conversation model is good for, as measured (see CALL_LLMS).
+  const llmHint: Record<(typeof CALL_LLMS)[number]["id"], string> = {
+    "deepseek-v41-flash": t("editor.voiceLlmDeepseek", "fast and accurate"),
+    "glm-52": t("editor.voiceLlmGlm", "the most accurate, costs more"),
+    "gemini-3.1-flash-lite": t(
+      "editor.voiceLlmGeminiLite",
+      "accurate and cheap, slower",
+    ),
+    "claude-haiku-5-5": t("editor.voiceLlmHaiku", "accurate, slower"),
+    "gpt-5.4-mini": t("editor.voiceLlmGpt54Mini", "accurate, slower"),
+    "gpt-4.1-mini": t("editor.voiceLlmGpt41Mini", "accurate, slower"),
+    "qwen36-35b-a3b": t(
+      "editor.voiceLlmQwen",
+      "fast, sometimes promises and does not act",
+    ),
+  };
   // Product names, the same in every language.
   const asrLabel = (v: CallAsrModel) =>
     ({
@@ -546,25 +563,30 @@ export function VoiceCard({
         </summary>
         <div className="grid gap-4 border-border-default border-t p-3 sm:grid-cols-3">
           <FormField
+            group
             label={t("editor.voiceModel", "Conversation model")}
             description={t(
               "editor.voiceModelHint",
               "Understands the person and decides what to say.",
             )}
           >
-            <Select
+            {/* Typing an id the list does not carry uses it as is; a saved model that left the list
+                still shows, by its id. */}
+            <ComboBox
               value={calls.llm}
-              onChange={(e) => set({ llm: e.target.value })}
-            >
-              {CALL_LLMS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-              {!CALL_LLMS.some((m) => m.id === calls.llm) && (
-                <option value={calls.llm}>{calls.llm}</option>
+              onChange={(v) => set({ llm: v })}
+              items={CALL_LLMS.map((m) => ({
+                id: m.id,
+                label: m.label,
+                hint: llmHint[m.id],
+              }))}
+              searchPlaceholder={t(
+                "editor.voiceModelSearch",
+                "Search or type a model id",
               )}
-            </Select>
+              aria-label={t("editor.voiceModel", "Conversation model")}
+              menuMinWidth="30rem"
+            />
           </FormField>
           <FormField
             label={t("editor.voiceTtsModel", "Voice model")}
