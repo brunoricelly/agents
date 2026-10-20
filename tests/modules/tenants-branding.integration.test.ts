@@ -1,12 +1,20 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
-import { updateBrandingColors } from "@/api/features/branding/branding.admin.service";
+import {
+  clearBrandingAsset,
+  setBrandingAsset,
+  updateBrandingColors,
+} from "@/api/features/branding/branding.admin.service";
 import {
   createTenant,
   deleteTenant,
   updateTenant,
 } from "@/api/v1/tenants.admin.service";
+import config from "@/config";
 import { ConflictError, NotFoundError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 
@@ -38,6 +46,20 @@ const SUPER_ID = 9_812_001n;
 const TENANT_ADMIN_ID = 9_812_002n;
 const ROLLBACK_ID = 9_812_003n;
 const createdTenantIds = new Set<bigint>();
+const assetColumns = [
+  "logoDarkKey",
+  "logoLightKey",
+  "faviconDarkKey",
+  "faviconLightKey",
+  "markDarkKey",
+  "markLightKey",
+] as const;
+const png = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00,
+]);
+const replacementPng = new Uint8Array([...png, 0x01]);
+const previousStorageDir = config.brandingStorageDir;
+let storageDir = "";
 let brandingBefore: Awaited<
   ReturnType<PrismaClient["appBranding"]["findUnique"]>
 >;
@@ -63,7 +85,61 @@ async function seedTenant(suffix: string) {
   return tenant;
 }
 
+function upload(bytes: Uint8Array) {
+  return {
+    type: "image/png",
+    size: bytes.byteLength,
+    arrayBuffer: async () => bytes.slice().buffer,
+  };
+}
+
+function gateTransactions(base: PrismaClient) {
+  let markStarted: () => void = () => {};
+  let releaseTransaction: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  const transaction = base.$transaction.bind(base) as (
+    ...args: unknown[]
+  ) => Promise<unknown>;
+  const client = {
+    $transaction: async (...args: unknown[]) => {
+      markStarted();
+      await released;
+      return transaction(...args);
+    },
+  } as unknown as PrismaClient;
+  return { client, started, release: releaseTransaction };
+}
+
+async function resetAssetKeys(): Promise<void> {
+  const cleared = Object.fromEntries(
+    assetColumns.map((column) => [column, null]),
+  );
+  await suDb.appBranding.upsert({
+    where: { id: 1 },
+    create: { id: 1, ...cleared },
+    update: cleared,
+  });
+}
+
+async function expectEveryStoredAssetKeyExists(): Promise<void> {
+  const row = await suDb.appBranding.findUnique({ where: { id: 1 } });
+  expect(row).not.toBeNull();
+  for (const column of assetColumns) {
+    const filename = row?.[column];
+    if (filename) {
+      expect(await Bun.file(join(storageDir, filename)).exists()).toBe(true);
+    }
+  }
+}
+
 beforeAll(async () => {
+  storageDir = await mkdtemp(join(tmpdir(), "branding-postgres-test-"));
+  config.brandingStorageDir = storageDir;
   if (!dbUp) return;
   brandingBefore = await suDb.appBranding.findUnique({ where: { id: 1 } });
 });
@@ -101,9 +177,63 @@ afterAll(async () => {
   }
   await su?.$disconnect();
   await app?.$disconnect();
+  config.brandingStorageDir = previousStorageDir;
+  await rm(storageDir, { recursive: true, force: true });
 });
 
 describe.skipIf(!dbUp)("tenant and branding mutations on PostgreSQL", () => {
+  test("concurrent clear cannot remove bytes before the same digest is committed", async () => {
+    await resetAssetKeys();
+    await setBrandingAsset(superAdmin(), "logo", "dark", upload(png), appDb);
+    const gate = gateTransactions(appDb);
+    const pendingSet = setBrandingAsset(
+      superAdmin(),
+      "logo",
+      "dark",
+      upload(png),
+      gate.client,
+    );
+    await gate.started;
+
+    try {
+      await clearBrandingAsset(superAdmin(), "logo", "dark", appDb);
+    } finally {
+      gate.release();
+    }
+    await pendingSet;
+
+    await expectEveryStoredAssetKeyExists();
+  });
+
+  test("concurrent replacement cannot remove bytes before the same digest is committed", async () => {
+    await resetAssetKeys();
+    await setBrandingAsset(superAdmin(), "logo", "dark", upload(png), appDb);
+    const gate = gateTransactions(appDb);
+    const pendingSet = setBrandingAsset(
+      superAdmin(),
+      "logo",
+      "dark",
+      upload(png),
+      gate.client,
+    );
+    await gate.started;
+
+    try {
+      await setBrandingAsset(
+        superAdmin(),
+        "logo",
+        "dark",
+        upload(replacementPng),
+        appDb,
+      );
+    } finally {
+      gate.release();
+    }
+    await pendingSet;
+
+    await expectEveryStoredAssetKeyExists();
+  });
+
   test("tenant-scoped updates rely on RLS and cannot cross tenants", async () => {
     const own = await seedTenant("IsolationOwn");
     const other = await seedTenant("IsolationOther");

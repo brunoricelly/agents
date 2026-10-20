@@ -375,7 +375,7 @@ describe("branding admin mutations", () => {
     }
   });
 
-  test("rolls back the reference and removes new bytes when audit fails", async () => {
+  test("rolls back the reference and removes temporary bytes when audit fails", async () => {
     const db = fakeDb();
     db.failAudit();
     await expect(
@@ -388,12 +388,17 @@ describe("branding admin mutations", () => {
       ),
     ).rejects.toThrow("audit unavailable");
     expect(db.row()).toBeNull();
-    expect(
-      (await readdir(storageDir)).filter((name) => name.startsWith("mark-")),
-    ).toEqual([]);
+    const stored = (await readdir(storageDir)).filter((name) =>
+      name.startsWith("mark-"),
+    );
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).not.toContain(".tmp-");
+    expect(await Bun.file(join(storageDir, stored[0] as string)).exists()).toBe(
+      true,
+    );
   });
 
-  test("replacement and clear remove old bytes only after they are unreferenced", async () => {
+  test("replacement and clear retain immutable finalized bytes", async () => {
     const oldKey = "logo-light.png";
     await writeFile(join(storageDir, oldKey), png);
     const seeded = {
@@ -410,10 +415,10 @@ describe("branding admin mutations", () => {
       upload("image/png", png),
       db.client,
     );
-    expect(await Bun.file(join(storageDir, oldKey)).exists()).toBe(true);
+    expect(await readdir(storageDir)).toContain(oldKey);
 
     await clearBrandingAsset(superAdmin, "mark", "light", db.client);
-    expect(await Bun.file(join(storageDir, oldKey)).exists()).toBe(false);
+    expect(await Bun.file(join(storageDir, oldKey)).exists()).toBe(true);
     await clearBrandingAsset(superAdmin, "mark", "light", db.client);
     expect(db.audits().at(-1)).toMatchObject({
       tenantId: null,
@@ -421,7 +426,7 @@ describe("branding admin mutations", () => {
     });
   });
 
-  test("post-commit cleanup failure does not fail a successful clear", async () => {
+  test("clear does not inspect or remove a finalized asset after commit", async () => {
     const oldKey = "logo-dark.png";
     await mkdir(join(storageDir, oldKey));
     const db = fakeDb({ ...defaultRow(), logoDarkKey: oldKey });
@@ -433,6 +438,7 @@ describe("branding admin mutations", () => {
     expect(db.audits().at(-1)).toMatchObject({
       action: "branding.asset_clear",
     });
+    expect(await readdir(storageDir)).toContain(oldKey);
     await rm(join(storageDir, oldKey), { recursive: true, force: true });
   });
 });

@@ -1,11 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, resolve, sep } from "node:path";
+import { dirname } from "node:path";
 import { DOMParser } from "@xmldom/xmldom";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
-import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import config from "@/config";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import { asSuperAdminOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
@@ -28,14 +26,6 @@ import {
 
 const ASSET_KINDS: readonly AssetKind[] = ["logo", "favicon", "mark"];
 const ASSET_VARIANTS: readonly AssetVariant[] = ["dark", "light"];
-const ASSET_COLUMNS = [
-  "logoDarkKey",
-  "logoLightKey",
-  "faviconDarkKey",
-  "faviconLightKey",
-  "markDarkKey",
-  "markLightKey",
-] as const;
 
 function assertFleetAdmin(ctx: TenantContext): void {
   if (ctx.role !== "SUPER_ADMIN") throw new ForbiddenError();
@@ -250,51 +240,6 @@ function hasSignature(type: string, bytes: Uint8Array): boolean {
   return false;
 }
 
-function safeStoredPath(filename: string): string | null {
-  if (basename(filename) !== filename) return null;
-  if (
-    !/^(?:logo|favicon|mark)-(?:dark|light)(?:-[a-f0-9]{64})?\.(?:png|jpg|webp|svg|ico)$/.test(
-      filename,
-    )
-  ) {
-    return null;
-  }
-  const root = resolve(config.brandingStorageDir);
-  const candidate = resolve(root, filename);
-  return candidate.startsWith(`${root}${sep}`) ? candidate : null;
-}
-
-async function referenced(
-  filename: string,
-  base: PrismaClient,
-): Promise<boolean> {
-  const row = await base.appBranding.findUnique({
-    where: { id: SINGLETON_ID },
-    select: Object.fromEntries(ASSET_COLUMNS.map((column) => [column, true])),
-  });
-  return row
-    ? ASSET_COLUMNS.some(
-        (column) => (row as Record<string, string | null>)[column] === filename,
-      )
-    : false;
-}
-
-async function deleteIfUnreferenced(
-  filename: string | null,
-  base: PrismaClient,
-): Promise<void> {
-  if (!filename) return;
-  try {
-    if (await referenced(filename, base)) return;
-    const path = safeStoredPath(filename);
-    if (!path) return;
-    await unlink(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    logger.warn({ error, filename }, "branding asset cleanup failed");
-  }
-}
-
 function updateProjection(row: BrandingRow) {
   const dto = toDto(row);
   return {
@@ -389,40 +334,35 @@ export async function setBrandingAsset(
     throw error;
   }
 
+  // Final digest files are immutable and retained: request-time deletion can race
+  // a database commit in another process. Only unpublished temporary files are removed.
+
   const column = keyColumn(kind, variant);
-  let oldKey: string | null = null;
-  try {
-    const dto = await asSuperAdminOn(base, async (db) => {
-      const before = await db.appBranding.findUnique({
-        where: { id: SINGLETON_ID },
-      });
-      oldKey = before ? (before[column] as string | null) : null;
-      const row = await db.appBranding.upsert({
-        where: { id: SINGLETON_ID },
-        create: { id: SINGLETON_ID, [column]: filename },
-        update: { [column]: filename },
-      });
-      await auditMutationOn(db, ctx, null, {
-        action: "branding.asset_set",
-        target: `branding_asset:${kind}:${variant}`,
-        before: { kind, variant, configured: oldKey !== null },
-        after: {
-          kind,
-          variant,
-          configured: true,
-          contentType,
-          size: bytes.byteLength,
-          digest,
-        },
-      });
-      return toDto(row);
+  return asSuperAdminOn(base, async (db) => {
+    const before = await db.appBranding.findUnique({
+      where: { id: SINGLETON_ID },
     });
-    if (oldKey !== filename) await deleteIfUnreferenced(oldKey, base);
-    return dto;
-  } catch (error) {
-    await deleteIfUnreferenced(filename, base);
-    throw error;
-  }
+    const oldKey = before ? (before[column] as string | null) : null;
+    const row = await db.appBranding.upsert({
+      where: { id: SINGLETON_ID },
+      create: { id: SINGLETON_ID, [column]: filename },
+      update: { [column]: filename },
+    });
+    await auditMutationOn(db, ctx, null, {
+      action: "branding.asset_set",
+      target: `branding_asset:${kind}:${variant}`,
+      before: { kind, variant, configured: oldKey !== null },
+      after: {
+        kind,
+        variant,
+        configured: true,
+        contentType,
+        size: bytes.byteLength,
+        digest,
+      },
+    });
+    return toDto(row);
+  });
 }
 
 export async function clearBrandingAsset(
@@ -434,12 +374,11 @@ export async function clearBrandingAsset(
   assertFleetAdmin(ctx);
   assertAssetTarget(kind, variant);
   const column = keyColumn(kind, variant);
-  let oldKey: string | null = null;
-  const dto = await asSuperAdminOn(base, async (db) => {
+  return asSuperAdminOn(base, async (db) => {
     const before = await db.appBranding.findUnique({
       where: { id: SINGLETON_ID },
     });
-    oldKey = before ? (before[column] as string | null) : null;
+    const oldKey = before ? (before[column] as string | null) : null;
     const row = await db.appBranding.upsert({
       where: { id: SINGLETON_ID },
       create: { id: SINGLETON_ID, [column]: null },
@@ -453,6 +392,4 @@ export async function clearBrandingAsset(
     });
     return toDto(row);
   });
-  await deleteIfUnreferenced(oldKey, base);
-  return dto;
 }
