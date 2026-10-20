@@ -41,8 +41,8 @@ RUN bun run build
 # uv's default dir under root's HOME so the spawned MCP process finds it without extra env vars (the
 # MCP stdio transport only forwards a safe env subset such as HOME/PATH, so UV_* dirs would not
 # propagate). NOTE: musl Python builds are x86_64-only today (aarch64-musl cannot yet install Python
-# via uv). Pin uv by tag; bump deliberately.
-COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /uvx /usr/local/bin/
+# via uv). Pin uv by digest; bump deliberately.
+COPY --from=ghcr.io/astral-sh/uv:0.11.26@sha256:3d868e555f8f1dbc324afa005066cd11e1053fc4743b9808ca8025283e65efa5 /uv /uvx /usr/local/bin/
 RUN uv python install 3.12
 
 RUN mkdir -p /app/logs && chown -R bun:bun /app/logs
