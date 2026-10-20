@@ -342,3 +342,37 @@ describe("every provider key shape is redacted", () => {
     expect(sanitizeErrorMessage(text)).toBe(text);
   });
 });
+
+describe("a key right after a percent-encoded separator is still a key", () => {
+  const LEGACY = "sk-FAKEaaaaBBBBcccc1234";
+  const PREFIXED = "sk-proj-FAKE_aaaa-BBBB_cccc-DDDD_1234";
+  const SEPARATORS = ["%3D", "%3A", "%20", "%22", "%2C", "%3d"];
+  const CASES = SEPARATORS.flatMap((sep) => [
+    [sep, LEGACY],
+    [sep, PREFIXED],
+  ]);
+
+  test.each(CASES)("api_key%s<key> is redacted (%s)", (sep, key) => {
+    const text = `GET /v1?api_key${sep}${key}&x=1`;
+    const out = sanitizeErrorMessage(text);
+    expect(out).toBe(`GET /v1?api_key${sep}‹redacted›&x=1`);
+    expect((redactSecretsDeep({ v: text }) as { v: string }).v).toBe(out);
+  });
+
+  test("several encoded keys in one string, the first one at the start", () => {
+    const text = `%22${PREFIXED}%22%2C${LEGACY}%2Cend`;
+    expect(sanitizeErrorMessage(text)).toBe(
+      "%22‹redacted›%22%2C‹redacted›%2Cend",
+    );
+  });
+
+  test("prose after an encoded separator is left alone", () => {
+    for (const text of [
+      "%20risk-admin-dashboard_settings_v2",
+      "%2Chelpdesk-FAKEaaaaBBBBcccc1234",
+      "x%3Dsk-learn-and-numpy-together",
+    ]) {
+      expect(sanitizeErrorMessage(text)).toBe(text);
+    }
+  });
+});

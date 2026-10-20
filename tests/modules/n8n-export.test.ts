@@ -13,6 +13,32 @@ import { dbProbeFailed } from "@/tests/db-gate";
 // Built at run time so the repo holds no literal that reads as a credential.
 const FAKE_TOKEN = ["abcd", "EFGH", "1234", "5678"].join("");
 
+describe("assertNoSecrets: a key right after a percent-encoded separator", () => {
+  const LEGACY = ["sk-", FAKE_TOKEN, FAKE_TOKEN].join("");
+  const PREFIXED = ["sk-proj-", FAKE_TOKEN, "_", FAKE_TOKEN].join("");
+
+  test.each(["%3D", "%3A", "%20", "%22", "%2C"])(
+    "is refused after %s",
+    (sep) => {
+      for (const key of [LEGACY, PREFIXED]) {
+        expect(() =>
+          assertNoSecrets({ u: `https://x.test/v1?q${sep}${key}` }),
+        ).toThrow(SecretLeakError);
+      }
+    },
+  );
+
+  test("prose after an encoded separator is accepted", () => {
+    for (const text of [
+      "%20risk-admin-dashboard_settings_v2",
+      "%2Chelpdesk-FAKEaaaaBBBBcccc1234",
+      "x%3Dsk-learn-and-numpy-together",
+    ]) {
+      expect(() => assertNoSecrets({ u: text })).not.toThrow();
+    }
+  });
+});
+
 describe("assertNoSecrets (value scan)", () => {
   test("passes clean content", () => {
     expect(() =>
