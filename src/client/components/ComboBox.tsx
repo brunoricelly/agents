@@ -1,8 +1,9 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, Loader2, Search, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
+import { Tooltip } from "./Tooltip";
 
 // One selectable option. `label` is the human name (falls back to `id`); `hint` is a subtler trailing
 // note (e.g. the raw id when it differs from the label; an explicit "" suppresses it everywhere,
@@ -12,6 +13,17 @@ export interface ComboItem {
   label?: string;
   hint?: string;
   color?: string;
+}
+
+// A toggle drawn at the end of an option's row (the voice picker's "play sample"). It is a menu item of
+// its own, so the arrow keys reach it and Enter presses it, and pressing it never selects the option.
+export interface ComboItemAction {
+  label: string;
+  // A hover/focus hint for an icon-only control.
+  hint?: string;
+  pressed: boolean;
+  icon: ReactNode;
+  onPress: () => void;
 }
 
 type LoadState =
@@ -38,6 +50,7 @@ type CommonProps = {
   needsCredential?: boolean;
   // A floor for the open menu's width, for a narrow field whose options carry a line of description.
   menuMinWidth?: string;
+  itemAction?: (item: ComboItem) => ComboItemAction | null;
   "aria-label"?: string;
 };
 
@@ -81,6 +94,7 @@ export function ComboBox(props: ComboBoxProps) {
     disabled,
     needsCredential,
     menuMinWidth,
+    itemAction,
     "aria-label": ariaLabel,
   } = props;
   const multiple = props.multiple === true;
@@ -346,10 +360,11 @@ export function ComboBox(props: ComboBoxProps) {
 
               {filtered.map((m) => {
                 const checked = selectedSet.has(m.id);
-                return (
+                const action = itemAction?.(m);
+                const item = (
                   <DropdownMenuPrimitive.Item
                     key={m.id}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary"
                     onSelect={(e) => {
                       if (multiple) e.preventDefault();
                       pick(m.id);
@@ -373,6 +388,25 @@ export function ComboBox(props: ComboBoxProps) {
                       </span>
                     )}
                   </DropdownMenuPrimitive.Item>
+                );
+                if (!action) return item;
+                return (
+                  <div key={m.id} className="flex items-center gap-1">
+                    {item}
+                    <Tooltip content={action.hint ?? action.label}>
+                      <DropdownMenuPrimitive.CheckboxItem
+                        checked={action.pressed}
+                        aria-label={action.label}
+                        onSelect={(e) => {
+                          e.preventDefault();
+                          action.onPress();
+                        }}
+                        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary data-[state=checked]:text-accent"
+                      >
+                        {action.icon}
+                      </DropdownMenuPrimitive.CheckboxItem>
+                    </Tooltip>
+                  </div>
                 );
               })}
             </div>

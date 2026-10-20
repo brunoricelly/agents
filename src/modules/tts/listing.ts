@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { isElevenLabsMediaUrl } from "@/lib/elevenlabs-media";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl as defaultAssertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -15,6 +16,19 @@ import { TTS_PROVIDER_NAMES } from "./providers";
 export interface TtsListItem {
   id: string;
   label?: string;
+  // A short sample of the voice the console can play beside the option (ElevenLabs' `preview_url`).
+  previewUrl?: string;
+  // The same voice speaking each language it is verified in, so the console can play the sample in
+  // the operator's language instead of the general one (usually English).
+  languageSamples?: TtsLanguageSample[];
+}
+
+export interface TtsLanguageSample {
+  // ISO 639-1, as ElevenLabs reports it ("pt").
+  language: string;
+  // BCP 47 when ElevenLabs gives one ("pt-BR"), so Brazilian and European Portuguese stay apart.
+  locale?: string;
+  url: string;
 }
 
 export type TtsListKind = "voices" | "models";
@@ -165,10 +179,20 @@ export async function listTtsOptions(
         );
       }
       return voices
-        .map((v) => v as { voice_id?: unknown; name?: unknown } | null)
+        .map(
+          (v) =>
+            v as {
+              voice_id?: unknown;
+              name?: unknown;
+              preview_url?: unknown;
+              verified_languages?: unknown;
+            } | null,
+        )
         .map((v) => ({
           id: typeof v?.voice_id === "string" ? v.voice_id : "",
           label: typeof v?.name === "string" ? v.name : undefined,
+          previewUrl: playableSampleOrUndefined(v?.preview_url),
+          languageSamples: languageSamplesOf(v?.verified_languages),
         }))
         .filter((v) => v.id.length > 0);
     }
@@ -211,4 +235,36 @@ export async function listTtsOptions(
       { provider },
     );
   }
+}
+
+// The console hands this URL straight to an <audio> element, so only a sample the page's CSP lets it
+// load passes: anything else (null on a cloned voice, a relative path that would resolve against the
+// console, another host) would leave a control that can never play.
+function playableSampleOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && isElevenLabsMediaUrl(value)
+    ? value
+    : undefined;
+}
+
+function languageSamplesOf(value: unknown): TtsLanguageSample[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const samples = value.flatMap((entry): TtsLanguageSample[] => {
+    const e = entry as {
+      language?: unknown;
+      locale?: unknown;
+      preview_url?: unknown;
+    } | null;
+    const url = playableSampleOrUndefined(e?.preview_url);
+    if (!url || typeof e?.language !== "string" || !e.language) return [];
+    return [
+      {
+        language: e.language,
+        ...(typeof e.locale === "string" && e.locale
+          ? { locale: e.locale }
+          : {}),
+        url,
+      },
+    ];
+  });
+  return samples.length > 0 ? samples : undefined;
 }

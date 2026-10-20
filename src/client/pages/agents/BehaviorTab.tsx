@@ -14,10 +14,12 @@ import {
   Megaphone,
   Mic,
   PenLine,
+  Play,
   Plus,
   Scissors,
   ScrollText,
   ShieldCheck,
+  Square,
   Trash2,
   UserRoundCheck,
   Volume2,
@@ -42,6 +44,7 @@ import {
 } from "@/client/components";
 import { Markdown } from "@/client/components/Markdown";
 import { useTtsCheckInfo } from "@/client/contexts/AuthContext";
+import { stopSampleOf, useSamplePlayer } from "@/client/hooks/useSamplePlayer";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { AGENTS_REPO_URL } from "@/client/lib/navigation";
@@ -56,6 +59,7 @@ import { providerLabel } from "@/client/lib/providerLabels";
 import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { pickVoiceSample, type VoiceSamples } from "@/client/lib/voiceSample";
 import { MODEL_FALLBACK_TIMEOUT_DEFAULT_MS } from "@/graph/fallback-settings";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
@@ -639,7 +643,8 @@ function ServiceWindowTemplateField({
 // TTS voice/model picker backed by the live listing endpoint: OpenAI returns a curated set,
 // ElevenLabs is fetched with the vault credential so the operator picks a real per-account voice by
 // name. Eager-loads (when it won't error for lack of a credential) so the trigger shows the human
-// label; typing a custom value still works.
+// label; typing a custom value still works. A voice the provider ships a sample for gets a play
+// control beside the field (the chosen voice) and on its row in the list.
 export function TtsOptionPicker({
   kind,
   provider,
@@ -659,9 +664,14 @@ export function TtsOptionPicker({
   placeholder?: string;
   ariaLabel: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  // The samples each listed voice ships, and the name to announce on its control.
+  const [samples, setSamples] = useState<
+    ReadonlyMap<string, VoiceSamples & { name: string }>
+  >(() => new Map());
   const loaderKey = `${kind}||${provider}||${credentialRef ?? ""}||${baseURL ?? ""}`;
   const loader = useCallback(async (): Promise<ComboItem[]> => {
+    setSamples(new Map());
     const { data, error } = await api.api.v1.agents.tts.list.post({
       provider,
       kind,
@@ -669,24 +679,110 @@ export function TtsOptionPicker({
       baseURL,
     });
     if (error || !data) throw new Error("tts list failed");
+    setSamples(
+      new Map(
+        data.items.map(
+          (i) =>
+            [
+              i.id,
+              {
+                previewUrl: i.previewUrl,
+                languageSamples: i.languageSamples,
+                name: i.label ?? i.id,
+              },
+            ] as const,
+        ),
+      ),
+    );
     return data.items.map((i) => ({
       id: i.id,
       label: i.label ?? undefined,
       hint: i.label && i.label !== i.id ? i.id : undefined,
     }));
   }, [provider, kind, credentialRef, baseURL]);
+  const player = useSamplePlayer();
+  // The sample to play for a voice, in the console's language when the voice has one.
+  const sampleOf = (id: string) => {
+    const voice = samples.get(id);
+    const url = voice && pickVoiceSample(voice, i18n.language);
+    return url && voice ? { url, name: voice.name } : undefined;
+  };
+  const chosenSample = sampleOf(value);
+  // This picker, as the owner of the samples it starts. A new listing (another key, provider or
+  // language) and leaving the page stop its sample, so it never plays on with no control left to stop
+  // it; a sample another picker started is left alone, even when it is the same voice.
+  const me = useRef(Symbol("voice picker")).current;
+  const play = (url: string) => player.toggle(url, me);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each listing or language change is the trigger.
+  useEffect(() => () => stopSampleOf(me), [loaderKey, i18n.language]);
+  // Choosing another voice stops this picker's sample of the old one, whose control is gone from the
+  // field; a sample of the voice just chosen (heard on its row, then picked) plays on under its Stop.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the chosen voice is the trigger.
+  useEffect(() => stopSampleOf(me, chosenSample?.url), [value]);
+  const sampleLabel = (name: string, on: boolean) =>
+    on
+      ? t("editor.voiceSampleStop", "Stop the sample of {{name}}", { name })
+      : t("editor.voiceSamplePlay", "Play a sample of {{name}}", { name });
+  const sampleTitle = (on: boolean) =>
+    on
+      ? t("editor.voiceSampleStopShort", "Stop sample")
+      : t("editor.voiceSamplePlayShort", "Play sample");
+  const sampleIcon = (on: boolean) =>
+    on ? (
+      <Square className="h-3.5 w-3.5" aria-hidden="true" />
+    ) : (
+      <Play className="h-3.5 w-3.5" aria-hidden="true" />
+    );
+  const chosenOn =
+    chosenSample !== undefined && player.playing === chosenSample.url;
   return (
-    <ComboBox
-      value={value}
-      onChange={onChange}
-      loader={loader}
-      loaderKey={loaderKey}
-      eager
-      needsCredential={provider === "elevenlabs" && !credentialRef}
-      placeholder={placeholder}
-      searchPlaceholder={t("common.search", "Search")}
-      aria-label={ariaLabel}
-    />
+    <div className="flex w-full items-center gap-1.5">
+      <div className="min-w-0 flex-1">
+        <ComboBox
+          value={value}
+          onChange={onChange}
+          loader={loader}
+          loaderKey={loaderKey}
+          eager
+          needsCredential={provider === "elevenlabs" && !credentialRef}
+          placeholder={placeholder}
+          searchPlaceholder={t("common.search", "Search")}
+          aria-label={ariaLabel}
+          itemAction={(item) => {
+            const sample = sampleOf(item.id);
+            if (!sample) return null;
+            const on = player.playing === sample.url;
+            return {
+              label: sampleLabel(sample.name, on),
+              hint: sampleTitle(on),
+              pressed: on,
+              icon: sampleIcon(on),
+              onPress: () => play(sample.url),
+            };
+          }}
+        />
+      </div>
+      {chosenSample && (
+        // Beside the field the control says what it does in words; on a row of the list the icon is enough.
+        <button
+          type="button"
+          aria-pressed={chosenOn}
+          aria-label={sampleLabel(chosenSample.name, chosenOn)}
+          onClick={() => play(chosenSample.url)}
+          className={cn(
+            "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-border-hover px-2.5 text-sm text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft",
+            { "text-accent": chosenOn },
+          )}
+        >
+          {sampleIcon(chosenOn)}
+          <span>
+            {chosenOn
+              ? t("editor.voiceSampleStopText", "Stop")
+              : t("editor.voiceSamplePlayText", "Listen")}
+          </span>
+        </button>
+      )}
+    </div>
   );
 }
 
