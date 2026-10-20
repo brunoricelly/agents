@@ -3,6 +3,7 @@ import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
 import { DOMParser } from "@xmldom/xmldom";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { AppError, ForbiddenError } from "@/lib/errors";
@@ -282,13 +283,15 @@ async function deleteIfUnreferenced(
   filename: string | null,
   base: PrismaClient,
 ): Promise<void> {
-  if (!filename || (await referenced(filename, base))) return;
-  const path = safeStoredPath(filename);
-  if (!path) return;
+  if (!filename) return;
   try {
+    if (await referenced(filename, base)) return;
+    const path = safeStoredPath(filename);
+    if (!path) return;
     await unlink(path);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    logger.warn({ error, filename }, "branding asset cleanup failed");
   }
 }
 

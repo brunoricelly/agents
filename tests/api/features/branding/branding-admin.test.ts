@@ -1,5 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -8,7 +15,10 @@ import {
   setBrandingAsset,
   updateBrandingColors,
 } from "@/api/features/branding/branding.admin.service";
-import type { BrandingRow } from "@/api/features/branding/branding.service";
+import {
+  type BrandingRow,
+  readBrandingAsset,
+} from "@/api/features/branding/branding.service";
 import config from "@/config";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
@@ -266,6 +276,36 @@ describe("branding admin mutations", () => {
     expect(db.row()).toBeNull();
   });
 
+  test("refuses poisoned stored filenames and symlinks without reading their targets", async () => {
+    const marker = `branding-unit-secret-${process.pid}`;
+    const secretPath = join(tmpdir(), `${marker}.svg`);
+    const symlinkName = `logo-dark-${"b".repeat(64)}.svg`;
+    await writeFile(secretPath, marker);
+    await symlink(secretPath, join(storageDir, symlinkName));
+
+    try {
+      for (const filename of [`../../${marker}.svg`, secretPath, symlinkName]) {
+        const db = fakeDb({ ...defaultRow(), logoDarkKey: filename });
+        expect(await readBrandingAsset("logo", "dark", db.client)).toBeNull();
+      }
+    } finally {
+      await rm(secretPath, { force: true });
+      await rm(join(storageDir, symlinkName), { force: true });
+    }
+  });
+
+  test("reads a regular generated asset from the branding directory", async () => {
+    const filename = `logo-dark-${"c".repeat(64)}.png`;
+    await writeFile(join(storageDir, filename), png);
+    const db = fakeDb({ ...defaultRow(), logoDarkKey: filename });
+
+    const asset = await readBrandingAsset("logo", "dark", db.client);
+
+    expect(asset?.contentType).toBe("image/png");
+    expect(new Uint8Array(asset?.bytes ?? new ArrayBuffer(0))).toEqual(png);
+    await rm(join(storageDir, filename), { force: true });
+  });
+
   test("accepts benign SVG features with local fragment references", async () => {
     const db = fakeDb();
     const bytes = svg(`<?xml version="1.0"?>
@@ -379,5 +419,20 @@ describe("branding admin mutations", () => {
       tenantId: null,
       action: "branding.asset_clear",
     });
+  });
+
+  test("post-commit cleanup failure does not fail a successful clear", async () => {
+    const oldKey = "logo-dark.png";
+    await mkdir(join(storageDir, oldKey));
+    const db = fakeDb({ ...defaultRow(), logoDarkKey: oldKey });
+
+    const dto = await clearBrandingAsset(superAdmin, "logo", "dark", db.client);
+
+    expect(dto.logo.dark).toBe(false);
+    expect(db.row()?.logoDarkKey).toBeNull();
+    expect(db.audits().at(-1)).toMatchObject({
+      action: "branding.asset_clear",
+    });
+    await rm(join(storageDir, oldKey), { recursive: true, force: true });
   });
 });

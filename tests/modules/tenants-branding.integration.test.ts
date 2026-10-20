@@ -230,7 +230,7 @@ describe.skipIf(!dbUp)("tenant and branding mutations on PostgreSQL", () => {
       },
     });
 
-    await deleteTenant(superAdmin(), tenant.id, appDb);
+    await deleteTenant(superAdmin(), tenant.id, tenant.name, appDb);
     createdTenantIds.delete(tenant.id);
     expect(await suDb.tenant.count({ where: { id: tenant.id } })).toBe(0);
     expect(await suDb.apiKey.count({ where: { id: key.id } })).toBe(0);

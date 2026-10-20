@@ -1,6 +1,15 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import {
+  type CreatedInvite,
+  createInviteInTransaction,
+} from "@/api/features/invitations/invitation.service";
 import basePrisma from "@/api/lib/prisma";
-import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
+import {
+  AppError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/lib/errors";
 import {
   asSuperAdminOn,
   runScopedOn,
@@ -88,11 +97,11 @@ export async function updateTenant(
 
 export async function createTenant(
   ctx: TenantContext,
-  input: TenantCreate,
+  input: TenantCreate & { adminEmail?: string },
   base: PrismaClient = basePrisma,
-): Promise<TenantDto> {
+): Promise<TenantDto & { initialAdminInvite?: CreatedInvite }> {
   assertFleetAdmin(ctx);
-  const parsed = assertTenantCreatable(input);
+  const parsed = assertTenantCreatable({ name: input.name, slug: input.slug });
   try {
     return await asSuperAdminOn(base, async (db) => {
       const row = await db.tenant.create({
@@ -104,7 +113,14 @@ export async function createTenant(
         target: `tenant:${row.id}`,
         after: tenantProjection(row),
       });
-      return toDto(row);
+      const tenant = toDto(row);
+      if (!input.adminEmail) return tenant;
+      const initialAdminInvite = await createInviteInTransaction(db, ctx, {
+        tenantId: row.id,
+        email: input.adminEmail,
+        role: "TENANT_ADMIN",
+      });
+      return { ...tenant, initialAdminInvite };
     });
   } catch (error) {
     if (
@@ -124,6 +140,7 @@ export async function createTenant(
 export async function deleteTenant(
   ctx: TenantContext,
   id: bigint,
+  confirmName: string,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   assertFleetAdmin(ctx);
@@ -133,6 +150,13 @@ export async function deleteTenant(
       select: TENANT_SELECT,
     });
     if (!before) throw tenantNotFound();
+    if (confirmName.trim() !== before.name) {
+      throw new AppError(
+        "tenant name confirmation does not match",
+        400,
+        "errors.tenantConfirmMismatch",
+      );
+    }
 
     await db.tenant.delete({ where: { id } });
     await auditMutationOn(db, ctx, null, {

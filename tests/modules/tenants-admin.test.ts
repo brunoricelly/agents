@@ -34,14 +34,24 @@ interface AuditRow {
 function fakeDb(seed: TenantRow[] = []) {
   let tenants = new Map(seed.map((row) => [row.id, structuredClone(row)]));
   let audits: AuditRow[] = [];
+  let invites: Array<{
+    id: bigint;
+    tenantId: bigint;
+    email: string;
+    role: "TENANT_ADMIN";
+    expiresAt: Date;
+  }> = [];
   let nextId = 100n;
+  let nextInviteId = 500n;
   let failAudit = false;
+  let failInvite = false;
 
   const client = {
     $extends: () => client,
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
       const tenantSnapshot = structuredClone(tenants);
       const auditSnapshot = structuredClone(audits);
+      const inviteSnapshot = structuredClone(invites);
       let scopedTenantId: bigint | null = null;
       const tx = {
         $executeRaw: async (
@@ -118,6 +128,32 @@ function fakeDb(seed: TenantRow[] = []) {
             return structuredClone(row);
           },
         },
+        tenantUser: {
+          findFirst: async () => null,
+        },
+        invitation: {
+          upsert: async ({
+            create,
+          }: {
+            create: {
+              tenantId: bigint;
+              email: string;
+              role: "TENANT_ADMIN";
+              expiresAt: Date;
+            };
+          }) => {
+            if (failInvite) throw new Error("invite unavailable");
+            const row = {
+              id: nextInviteId++,
+              tenantId: create.tenantId,
+              email: create.email,
+              role: create.role,
+              expiresAt: create.expiresAt,
+            };
+            invites.push(row);
+            return structuredClone(row);
+          },
+        },
         auditLog: {
           create: async ({ data }: { data: AuditRow }) => {
             if (failAudit) throw new Error("audit unavailable");
@@ -131,6 +167,7 @@ function fakeDb(seed: TenantRow[] = []) {
       } catch (error) {
         tenants = tenantSnapshot;
         audits = auditSnapshot;
+        invites = inviteSnapshot;
         throw error;
       }
     },
@@ -140,8 +177,12 @@ function fakeDb(seed: TenantRow[] = []) {
     client: client as unknown as PrismaClient,
     tenants: () => [...tenants.values()],
     audits: () => audits,
+    invites: () => invites,
     failAudit: () => {
       failAudit = true;
+    },
+    failInvite: () => {
+      failInvite = true;
     },
   };
 }
@@ -216,6 +257,26 @@ describe("tenant admin mutations", () => {
     expect(db.tenants()).toEqual([]);
   });
 
+  test("create rolls back the tenant and fleet audit when the initial invite fails", async () => {
+    const db = fakeDb();
+    db.failInvite();
+
+    await expect(
+      createTenant(
+        superAdmin,
+        {
+          name: "No orphan",
+          slug: "no-orphan",
+          adminEmail: "admin@example.com",
+        },
+        db.client,
+      ),
+    ).rejects.toThrow("invite unavailable");
+    expect(db.tenants()).toEqual([]);
+    expect(db.invites()).toEqual([]);
+    expect(db.audits()).toEqual([]);
+  });
+
   test("update lets a tenant admin change only its own tenant and audits the changed field", async () => {
     const db = fakeDb([
       {
@@ -283,7 +344,7 @@ describe("tenant admin mutations", () => {
       createdAt: new Date(0),
     };
     const db = fakeDb([row]);
-    await deleteTenant(superAdmin, 1n, db.client);
+    await deleteTenant(superAdmin, 1n, "Delete me", db.client);
     expect(db.tenants()).toEqual([]);
     expect(db.audits()).toMatchObject([
       {
@@ -296,10 +357,30 @@ describe("tenant admin mutations", () => {
 
     const rollback = fakeDb([row]);
     rollback.failAudit();
-    await expect(deleteTenant(superAdmin, 1n, rollback.client)).rejects.toThrow(
-      "audit unavailable",
-    );
+    await expect(
+      deleteTenant(superAdmin, 1n, "Delete me", rollback.client),
+    ).rejects.toThrow("audit unavailable");
     expect(rollback.tenants()).toHaveLength(1);
     expect(rollback.audits()).toEqual([]);
+  });
+
+  test("delete rechecks the confirmed name inside its transaction", async () => {
+    const db = fakeDb([
+      {
+        id: 1n,
+        name: "Original",
+        slug: "original",
+        demoMode: false,
+        createdAt: new Date(0),
+      },
+    ]);
+    const lookedUpName = db.tenants()[0]?.name ?? "";
+    await updateTenant(superAdmin, 1n, { name: "Changed" }, db.client);
+
+    await expect(
+      deleteTenant(superAdmin, 1n, lookedUpName, db.client),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(db.tenants()).toHaveLength(1);
+    expect(db.tenants()[0]?.name).toBe("Changed");
   });
 });

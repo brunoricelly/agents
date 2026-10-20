@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -52,20 +52,26 @@ const tenantRead = await import("@/api/v1/tenants.service");
 const brandingAdmin = await import(
   "@/api/features/branding/branding.admin.service"
 );
+const brandingService = await import(
+  "@/api/features/branding/branding.service"
+);
 const auth = await import("@/api/features/auth/auth.service");
 const authLib = await import("@/api/lib/auth");
 const realTenantAdmin = { ...tenantAdmin };
 const realTenantRead = { ...tenantRead };
 const realBrandingAdmin = { ...brandingAdmin };
+const realBrandingService = { ...brandingService };
 
 mock.module("@/api/v1/tenants.admin.service", () => ({
   ...realTenantAdmin,
-  createTenant: (ctx: TenantContext, input: TenantCreate) =>
-    realTenantAdmin.createTenant(ctx, input, app),
+  createTenant: (
+    ctx: TenantContext,
+    input: TenantCreate & { adminEmail?: string },
+  ) => realTenantAdmin.createTenant(ctx, input, app),
   updateTenant: (ctx: TenantContext, id: bigint, input: TenantUpdate) =>
     realTenantAdmin.updateTenant(ctx, id, input, app),
-  deleteTenant: (ctx: TenantContext, id: bigint) =>
-    realTenantAdmin.deleteTenant(ctx, id, app),
+  deleteTenant: (ctx: TenantContext, id: bigint, confirmName: string) =>
+    realTenantAdmin.deleteTenant(ctx, id, confirmName, app),
 }));
 mock.module("@/api/v1/tenants.service", () => ({
   ...realTenantRead,
@@ -89,6 +95,13 @@ mock.module("@/api/features/branding/branding.admin.service", () => ({
     kind: Parameters<typeof brandingAdmin.clearBrandingAsset>[1],
     variant: Parameters<typeof brandingAdmin.clearBrandingAsset>[2],
   ) => realBrandingAdmin.clearBrandingAsset(ctx, kind, variant, app),
+}));
+mock.module("@/api/features/branding/branding.service", () => ({
+  ...realBrandingService,
+  readBrandingAsset: (
+    kind: Parameters<typeof brandingService.readBrandingAsset>[0],
+    variant: Parameters<typeof brandingService.readBrandingAsset>[1],
+  ) => realBrandingService.readBrandingAsset(kind, variant, app),
 }));
 
 const server = (await import("@/app")).default;
@@ -204,6 +217,10 @@ afterAll(async () => {
   mock.module(
     "@/api/features/branding/branding.admin.service",
     () => realBrandingAdmin,
+  );
+  mock.module(
+    "@/api/features/branding/branding.service",
+    () => realBrandingService,
   );
   config.brandingStorageDir = previousStorageDir;
   await rm(storageDir, { recursive: true, force: true });
@@ -453,6 +470,44 @@ describe.skipIf(!dbUp)(
         assetRequest("/v1/branding/asset/banner/dark", benign),
       );
       expect(invalidTarget.status).toBe(422);
+    });
+
+    test("poisoned branding asset keys return 404 without leaking local files", async () => {
+      const marker = `branding-secret-${process.pid}`;
+      const secretPath = join(tmpdir(), `${marker}.svg`);
+      await writeFile(secretPath, marker);
+      const symlinkName = `logo-dark-${"a".repeat(64)}.svg`;
+      await symlink(secretPath, join(storageDir, symlinkName));
+
+      try {
+        for (const filename of [
+          `../../${marker}.svg`,
+          secretPath,
+          symlinkName,
+        ]) {
+          await su?.appBranding.upsert({
+            where: { id: 1 },
+            create: { id: 1, logoDarkKey: filename },
+            update: { logoDarkKey: filename },
+          });
+          const response = await send(
+            jsonRequest(
+              "GET",
+              "/v1/branding/asset/logo/dark",
+              undefined,
+              false,
+            ),
+          );
+          expect(response.status).toBe(404);
+          expect(await response.text()).not.toContain(marker);
+        }
+      } finally {
+        await su?.appBranding.update({
+          where: { id: 1 },
+          data: { logoDarkKey: null },
+        });
+        await rm(secretPath, { force: true });
+      }
     });
   },
 );

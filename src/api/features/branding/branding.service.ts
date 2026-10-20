@@ -1,3 +1,6 @@
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
@@ -311,17 +314,59 @@ export interface ServedAsset {
 export async function readBrandingAsset(
   kind: AssetKind,
   variant: AssetVariant,
+  base: PrismaClient = prisma,
 ): Promise<ServedAsset | null> {
-  const row = await prisma.appBranding.findUnique({
+  const row = await base.appBranding.findUnique({
     where: { id: SINGLETON_ID },
   });
   if (!row) return null;
   const filename = row[keyColumn(kind, variant)] as string | null;
   if (!filename) return null;
-  const ext = filename.slice(filename.lastIndexOf(".") + 1);
-  const contentType = TYPE_BY_EXT[ext];
-  if (!contentType) return null;
-  const file = Bun.file(assetPath(filename));
-  if (!(await file.exists())) return null;
-  return { bytes: await file.arrayBuffer(), contentType };
+
+  const expectedName = new RegExp(
+    `^${kind}-${variant}-[a-f0-9]{64}\\.(png|jpg|jpeg|webp|ico|svg)$`,
+  );
+  if (
+    basename(filename) !== filename ||
+    filename.includes("/") ||
+    filename.includes("\\") ||
+    !expectedName.test(filename)
+  ) {
+    return null;
+  }
+
+  const root = resolve(config.brandingStorageDir);
+  const path = resolve(root, filename);
+  if (dirname(path) !== root) return null;
+
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    const [rootPath, filePath, stat] = await Promise.all([
+      realpath(root),
+      realpath(path),
+      lstat(path),
+    ]);
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isFile() ||
+      dirname(filePath) !== rootPath
+    ) {
+      return null;
+    }
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) return null;
+
+    const ext = filename.slice(filename.lastIndexOf(".") + 1);
+    const contentType = TYPE_BY_EXT[ext];
+    if (!contentType) return null;
+    const bytes = await handle.readFile();
+    return { bytes: Uint8Array.from(bytes).buffer, contentType };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (["ENOENT", "ELOOP", "ENOTDIR"].includes(code ?? "")) return null;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
 }
