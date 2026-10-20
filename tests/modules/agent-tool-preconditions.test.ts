@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { AppError } from "@/lib/errors";
+import { agentUpdateAudit } from "@/modules/agents/audit-projection";
 import { assertSettingsToolPreconditions } from "@/modules/agents/service";
+import { settingsForStorage } from "@/modules/agents/settings-storage";
 import {
   evaluatePrecondition,
   invalidToolPreconditions,
@@ -30,11 +32,13 @@ describe("readToolPreconditions", () => {
         },
       }),
     ).toEqual({
-      handoff_to_human: {
-        kind: "attribute",
-        scope: "conversation",
-        key: "article_url",
-      },
+      handoff_to_human: [
+        {
+          kind: "attribute",
+          scope: "conversation",
+          key: "article_url",
+        },
+      ],
     });
   });
 
@@ -48,11 +52,13 @@ describe("readToolPreconditions", () => {
         create_invoice: { kind: "attribute", scope: "contact", key: "cpf" },
       },
     });
-    expect(read.create_invoice).toEqual({
-      kind: "attribute",
-      scope: "contact",
-      key: "cpf",
-    });
+    expect(read.create_invoice).toEqual([
+      {
+        kind: "attribute",
+        scope: "contact",
+        key: "cpf",
+      },
+    ]);
   });
 
   test.each([
@@ -177,23 +183,27 @@ describe("evaluatePrecondition: attribute", () => {
 
 describe("unmetPreconditionMessage", () => {
   test("names the tool, the attribute and its scope, for the model to act on", () => {
-    const msg = unmetPreconditionMessage("create_invoice", {
-      kind: "attribute",
-      scope: "contact",
-      key: "cpf",
-    });
+    const msg = unmetPreconditionMessage("create_invoice", [
+      {
+        kind: "attribute",
+        scope: "contact",
+        key: "cpf",
+      },
+    ]);
     expect(msg).toContain("create_invoice");
     expect(msg).toContain("cpf");
     expect(msg).toContain("contact");
   });
 
   test("names the required value when the condition has one", () => {
-    const msg = unmetPreconditionMessage("create_invoice", {
-      kind: "attribute",
-      scope: "conversation",
-      key: "plan",
-      equals: "gold",
-    });
+    const msg = unmetPreconditionMessage("create_invoice", [
+      {
+        kind: "attribute",
+        scope: "conversation",
+        key: "plan",
+        equals: "gold",
+      },
+    ]);
     expect(msg).toContain("gold");
   });
 });
@@ -461,5 +471,125 @@ describe("round 2: a malformed BAG is refused at the write boundary", () => {
         { toolPreconditions: "nope" },
       ),
     ).toThrow();
+  });
+});
+
+describe("a rule with several conditions", () => {
+  const A = { kind: "attribute", scope: "conversation", key: "guardian_name" };
+  const B = { kind: "attribute", scope: "conversation", key: "child_name" };
+  const C = {
+    kind: "attribute",
+    scope: "contact",
+    key: "plan",
+    equals: "gold",
+  };
+
+  test("a list is read as every condition, in the order written", () => {
+    expect(
+      readToolPreconditions({
+        toolPreconditions: { calendar_create_event: [A, B, C] },
+      }).calendar_create_event,
+    ).toEqual([A, B, C] as never);
+  });
+
+  test.each([
+    ["an empty list", []],
+    ["a list with one condition that does not parse", [A, { kind: "nope" }]],
+    ["a list over the bound", Array.from({ length: 11 }, () => A)],
+  ])(
+    "drops %s whole, since a partial list guards less than was written",
+    (_l, list) => {
+      expect(readToolPreconditions({ toolPreconditions: { t: list } })).toEqual(
+        {},
+      );
+      expect(
+        invalidToolPreconditions({ toolPreconditions: { t: list } }),
+      ).toEqual(["t"]);
+    },
+  );
+
+  test("ten conditions is the bound, and passes", () => {
+    const list = Array.from({ length: 10 }, (_, i) => ({ ...A, key: `k${i}` }));
+    expect(
+      readToolPreconditions({ toolPreconditions: { t: list } }).t,
+    ).toHaveLength(10);
+    expect(
+      invalidToolPreconditions({ toolPreconditions: { t: list } }),
+    ).toEqual([]);
+  });
+
+  test("a stored object written back as a list of itself is no change", () => {
+    const stored = { toolPreconditions: { t: { kind: "nope" }, u: A } };
+    expect(() =>
+      assertSettingsToolPreconditions(
+        { toolPreconditions: { t: { kind: "nope" }, u: [A] } },
+        stored,
+      ),
+    ).not.toThrow();
+  });
+
+  test("a bad condition added to a stored list is refused, naming the tool", () => {
+    const stored = { toolPreconditions: { t: [A, B] } };
+    expect(() =>
+      assertSettingsToolPreconditions(
+        {
+          toolPreconditions: {
+            t: [A, B, { kind: "attribute", scope: "moon", key: "k" }],
+          },
+        },
+        stored,
+      ),
+    ).toThrow(/t/);
+  });
+
+  test("the refusal names every unmet condition, with the required value", () => {
+    const msg = unmetPreconditionMessage("calendar_create_event", [
+      A as never,
+      C as never,
+    ]);
+    expect(msg).toContain("`guardian_name`");
+    expect(msg).toContain("`plan`");
+    expect(msg).toContain("`gold`");
+    expect(msg).toContain("all of them");
+  });
+});
+
+// A list of one written by REST or MCP and the same rule saved back by the console are one stored
+// value, so a save that changed nothing records nothing.
+describe("a rule of one condition", () => {
+  const cond = { kind: "attribute", scope: "conversation", key: "cpf" };
+
+  test("is stored as that condition, keeping a field the reader does not know", () => {
+    const stored = settingsForStorage({
+      toolPreconditions: {
+        busca_por_cpf: [{ ...cond, note: "x" }],
+        agendar: [cond, { ...cond, key: "dia" }],
+        quebrada: [{ kind: "attribute" }],
+      },
+    });
+    expect(stored?.toolPreconditions).toEqual({
+      busca_por_cpf: { ...cond, note: "x" },
+      agendar: [cond, { ...cond, key: "dia" }],
+      quebrada: [{ kind: "attribute" }],
+    });
+  });
+
+  test("a list of one saved back as an object is no change in the audit", () => {
+    expect(
+      agentUpdateAudit(
+        { settings: { toolPreconditions: { busca_por_cpf: [cond] } } },
+        { settings: { toolPreconditions: { busca_por_cpf: cond } } },
+      ),
+    ).toBeNull();
+    expect(
+      agentUpdateAudit(
+        {
+          settings: {
+            toolPreconditions: { busca_por_cpf: [{ ...cond, note: "x" }] },
+          },
+        },
+        { settings: { toolPreconditions: { busca_por_cpf: cond } } },
+      ),
+    ).not.toBeNull();
   });
 });
