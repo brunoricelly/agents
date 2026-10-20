@@ -14,6 +14,7 @@ import {
   localDayKey,
   previousWindow,
   readFilters,
+  readUpTo,
   trendPointHref,
   windowOf,
   writeFilters,
@@ -138,11 +139,60 @@ describe("the window and the period before it", () => {
     expect(readFilters(new URLSearchParams("range=12m")).range).toBe("12m");
   });
 
-  test("the previous period is as long and ends where this one starts", () => {
+  test("a running period is compared up to the same time of day, as many days back", () => {
     const w = windowOf({ ...DEFAULT_FILTERS, range: "7d" }, now);
-    const p = previousWindow(w);
+    const p = previousWindow(w, now);
     expect(p?.firstDay).toBe("2026-09-23");
     expect(p?.lastDay).toBe("2026-09-29");
+    expect(p?.since?.getTime()).toBe(new Date(2026, 8, 23).getTime());
+    expect(p?.until.getTime()).toBe(new Date(2026, 8, 29, 15, 30).getTime());
+  });
+
+  test("a period that has not started is compared with whole days, ending where it starts", () => {
+    const w = windowOf(
+      {
+        ...DEFAULT_FILTERS,
+        range: "custom",
+        from: "2026-10-25",
+        to: "2026-10-30",
+      },
+      now,
+    );
+    const p = previousWindow(w, now);
+    expect(p?.firstDay).toBe("2026-10-19");
+    expect(p?.until.getTime()).toBe(w.since?.getTime());
+  });
+
+  test("a running period is read up to the instant its previous period is cut at", () => {
+    const w = windowOf({ ...DEFAULT_FILTERS, range: "7d" }, now);
+    expect(readUpTo(w, now).until.getTime()).toBe(now.getTime());
+    expect(readUpTo(w, now).lastDay).toBe(w.lastDay);
+    const all = windowOf({ ...DEFAULT_FILTERS, range: "all" }, now);
+    expect(readUpTo(all, now).until.getTime()).toBe(now.getTime());
+    const over = windowOf(
+      {
+        ...DEFAULT_FILTERS,
+        range: "custom",
+        from: "2026-09-23",
+        to: "2026-09-29",
+      },
+      now,
+    );
+    expect(readUpTo(over, now)).toBe(over);
+  });
+
+  test("a period already over is compared with whole days, ending where it starts", () => {
+    const w = windowOf(
+      {
+        ...DEFAULT_FILTERS,
+        range: "custom",
+        from: "2026-09-23",
+        to: "2026-09-29",
+      },
+      now,
+    );
+    const p = previousWindow(w, now);
+    expect(p?.firstDay).toBe("2026-09-16");
     expect(p?.until.getTime()).toBe(w.since?.getTime());
   });
 

@@ -34,6 +34,7 @@ import {
   previousWindow,
   type Range,
   readFilters,
+  readUpTo,
   type Source,
   type Window,
   windowOf,
@@ -271,6 +272,19 @@ function DashboardBlocks({
   );
 }
 
+// The instant a view was opened, which its window and the previous period's are computed at, and
+// what opens it again. Held while the view stays the same: a fresh instant on every render would
+// restart the previous period's stream, which ends at that time of day. A new view, a new local day
+// (a page left open past midnight) or a retry opens it again, so both periods end at the same time.
+export function useOpenedAt(viewKey: string): [Date, () => void] {
+  const today = localDayKey(new Date());
+  const [retries, setRetries] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view, a new day or a retry is a new opening.
+  const at = useMemo(() => new Date(), [viewKey, today, retries]);
+  const reopen = useCallback(() => setRetries((n) => n + 1), []);
+  return [at, reopen];
+}
+
 export function DashboardPage() {
   const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
@@ -331,10 +345,10 @@ export function DashboardPage() {
       setParams(writeFilters({ ...filters, ...patch }), { replace: true });
   }, [agents, inboxes, filters, setParams]);
 
-  // The window is recomputed per render from the filters; its day keys are stable within a day.
-  const win = windowOf(filters);
-  const prev = previousWindow(win);
-  const query = apiQuery(filters, win);
+  const [openedAt, reopen] = useOpenedAt(writeFilters(filters).toString());
+  const win = windowOf(filters, openedAt);
+  const prev = previousWindow(win, openedAt);
+  const query = apiQuery(filters, readUpTo(win, openedAt));
   const prevQuery = prev ? apiQuery(filters, prev) : null;
 
   const sections = [
@@ -397,7 +411,12 @@ export function DashboardPage() {
         <SectionNav sections={sections} layout="bar" />
       </div>
 
-      <DashboardStreamProvider query={query} prevQuery={prevQuery}>
+      <DashboardStreamProvider
+        query={query}
+        prevQuery={prevQuery}
+        openedAt={openedAt}
+        onReload={reopen}
+      >
         <StreamProgress />
         <DashboardBlocks
           filters={filters}

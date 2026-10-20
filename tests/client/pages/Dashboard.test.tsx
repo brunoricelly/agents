@@ -5,12 +5,15 @@ import {
   beforeEach,
   describe,
   expect,
+  setSystemTime,
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   waitFor,
 } from "@testing-library/react";
@@ -21,7 +24,7 @@ import {
   getActiveTenantId,
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
-import { DashboardPage } from "@/client/pages/DashboardPage";
+import { DashboardPage, useOpenedAt } from "@/client/pages/DashboardPage";
 import { streamGrace } from "@/client/pages/dashboard/useStream";
 import { withI18n } from "@/tests/utils/i18n";
 
@@ -574,8 +577,8 @@ describe("one filter, in the URL, for every block", () => {
       expect(u.searchParams.get("source")).toBe("playground");
       expect(Boolean(u.searchParams.get("until"))).toBe(true);
     }
-    // One stream carries every block of the view; the previous period's, as long as this one and
-    // ending where it starts, carries what the comparisons need.
+    // One stream carries every block of the view; the previous period's, the same days a week
+    // earlier and cut at the time of day the view was opened, carries what the comparisons need.
     const [current, prev] = [...asks("/metrics/stream")].sort((a, b) =>
       String(b.searchParams.get("until")).localeCompare(
         String(a.searchParams.get("until")),
@@ -592,8 +595,29 @@ describe("one filter, in the URL, for every block", () => {
       "labels",
       "outcomes",
     ]);
-    expect(prev?.searchParams.get("until")).toBe(
-      current?.searchParams.get("since"),
+    const since = new Date(String(current?.searchParams.get("since")));
+    const prevSince = new Date(String(prev?.searchParams.get("since")));
+    const cut = new Date(String(prev?.searchParams.get("until")));
+    expect(prevSince.getTime()).toBe(
+      new Date(
+        since.getFullYear(),
+        since.getMonth(),
+        since.getDate() - 7,
+      ).getTime(),
+    );
+    const weekLater = new Date(
+      cut.getFullYear(),
+      cut.getMonth(),
+      cut.getDate() + 7,
+      cut.getHours(),
+      cut.getMinutes(),
+      cut.getSeconds(),
+      cut.getMilliseconds(),
+    );
+    expect(Math.abs(Date.now() - weekLater.getTime())).toBeLessThan(60_000);
+    // The view's own period is read up to that same opening instant.
+    expect(new Date(String(current?.searchParams.get("until"))).getTime()).toBe(
+      weekLater.getTime(),
     );
     expect(prev?.searchParams.get("blocks")).toBe("kpis,outcomes,costs");
   });
@@ -856,6 +880,12 @@ describe("a block whose request fails", () => {
       expect(asks("/metrics/stream").length).toBeGreaterThan(before);
       expect(has("No warnings or errors in this period.")).toBe(true);
     });
+    // The retry reaches a later instant than the opening, and so does the previous period's end.
+    const cuts = asks("/metrics/stream")
+      .filter((u) => u.searchParams.get("blocks") === "kpis,outcomes,costs")
+      .map((u) => Date.parse(String(u.searchParams.get("until"))));
+    expect(cuts.length).toBeGreaterThan(1);
+    expect(cuts[cuts.length - 1]).toBeGreaterThan(cuts[0] as number);
   });
 });
 
@@ -1467,5 +1497,64 @@ describe("a view refused while it fills", () => {
     expect(
       screen.queryAllByRole("button", { name: "Try again" }).length,
     ).toBeGreaterThan(1);
+  });
+});
+
+describe("switching to the preset a custom range matches", () => {
+  test("restarts the current period's stream too, so both reach the new opening", async () => {
+    const d = (n: number) => {
+      const x = new Date();
+      x.setDate(x.getDate() + n);
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    };
+    await renderDash(`/?range=custom&from=${d(-29)}&to=${d(0)}`);
+    const current = () =>
+      asks("/metrics/stream").filter(
+        (u) => u.searchParams.get("blocks") !== "kpis,outcomes,costs",
+      );
+    await waitFor(() => expect(current().length).toBe(1));
+    const [first] = current();
+    fireEvent.click(screen.getByRole("radio", { name: "30d" }));
+    await waitFor(() => expect(current().length).toBe(2));
+    const [, second] = current();
+    expect(second?.searchParams.get("since")).toBe(
+      first?.searchParams.get("since") ?? null,
+    );
+  });
+});
+
+describe("the instant a view is opened at", () => {
+  afterEach(() => setSystemTime());
+
+  test("holds while the view is the same, and moves with a new view, a new local day or a retry", () => {
+    setSystemTime(new Date(2026, 9, 6, 23, 59, 0));
+    const hook = renderHook(({ view }) => useOpenedAt(view)[0], {
+      initialProps: { view: "range=7d" },
+    });
+    const opened = hook.result.current;
+    setSystemTime(new Date(2026, 9, 6, 23, 59, 30));
+    hook.rerender({ view: "range=7d" });
+    expect(hook.result.current).toBe(opened);
+    hook.rerender({ view: "range=30d" });
+    expect(hook.result.current.getTime()).toBe(
+      new Date(2026, 9, 6, 23, 59, 30).getTime(),
+    );
+    setSystemTime(new Date(2026, 9, 7, 0, 0, 5));
+    hook.rerender({ view: "range=30d" });
+    expect(hook.result.current.getTime()).toBe(
+      new Date(2026, 9, 7, 0, 0, 5).getTime(),
+    );
+  });
+
+  test("a retry opens the view again, at the retry's instant", () => {
+    setSystemTime(new Date(2026, 9, 6, 9, 0, 0));
+    const hook = renderHook(() => useOpenedAt("range=7d"));
+    setSystemTime(new Date(2026, 9, 6, 11, 0, 0));
+    hook.rerender();
+    expect(hook.result.current[0].getHours()).toBe(9);
+    act(() => hook.result.current[1]());
+    expect(hook.result.current[0].getTime()).toBe(
+      new Date(2026, 9, 6, 11, 0, 0).getTime(),
+    );
   });
 });
