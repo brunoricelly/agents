@@ -330,10 +330,20 @@
   },
   "branding": {
     "advanced": "Advanced",
+    "assetKind": {
+      "favicon": "favicon",
+      "logo": "logo",
+      "mark": "mark"
+    },
+    "assetLabel": "{{kind}} ({{variant}})",
     "assetRemoveFailed": "Could not remove the asset.",
     "assets": "Assets",
     "assetsHint": "Provide dark and light variants. PNG, JPEG, WebP, SVG and ICO are accepted.",
     "assetUploadFailed": "Could not upload the asset.",
+    "assetVariant": {
+      "dark": "dark",
+      "light": "light"
+    },
     "brandColor": "Brand color",
     "brandColorPicker": "Brand color picker",
     "brandName": "Brand name",
@@ -354,7 +364,16 @@
     "siteUrl": "Website URL",
     "subtitle": "Customize the app's global appearance (name, colors, logo, favicon).",
     "supportEmail": "Support email",
+    "themeTokenLabel": "{{token}} ({{theme}})",
     "title": "Branding",
+    "token": {
+      "accent": "accent",
+      "accentForeground": "accent foreground",
+      "accentHover": "accent hover",
+      "accentSoft": "soft accent",
+      "accentSolid": "solid accent",
+      "accentSolidHover": "solid accent hover"
+    },
     "uploadAsset": "Upload {{label}}"
   },
   "channels": {

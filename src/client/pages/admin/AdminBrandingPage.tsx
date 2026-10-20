@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { Image, Palette, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -88,8 +89,38 @@ function emptyForm(): FormState {
   };
 }
 
-function tokenLabel(token: BrandableKey): string {
-  return token.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`);
+function tokenLabel(t: TFunction, token: BrandableKey): string {
+  switch (token) {
+    case "accent":
+      return t("branding.token.accent", "accent");
+    case "accentHover":
+      return t("branding.token.accentHover", "accent hover");
+    case "accentSoft":
+      return t("branding.token.accentSoft", "soft accent");
+    case "accentSolid":
+      return t("branding.token.accentSolid", "solid accent");
+    case "accentSolidHover":
+      return t("branding.token.accentSolidHover", "solid accent hover");
+    case "accentForeground":
+      return t("branding.token.accentForeground", "accent foreground");
+  }
+}
+
+function assetKindLabel(t: TFunction, kind: AssetKind): string {
+  switch (kind) {
+    case "logo":
+      return t("branding.assetKind.logo", "logo");
+    case "favicon":
+      return t("branding.assetKind.favicon", "favicon");
+    case "mark":
+      return t("branding.assetKind.mark", "mark");
+  }
+}
+
+function assetVariantLabel(t: TFunction, variant: AssetVariant): string {
+  return variant === "dark"
+    ? t("branding.assetVariant.dark", "dark")
+    : t("branding.assetVariant.light", "light");
 }
 
 function AssetControl({
@@ -110,7 +141,10 @@ function AssetControl({
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
-  const label = `${variant} ${kind}`;
+  const label = t("branding.assetLabel", "{{kind}} ({{variant}})", {
+    kind: assetKindLabel(t, kind),
+    variant: assetVariantLabel(t, variant),
+  });
   const uploadLabel = t("branding.uploadAsset", "Upload {{label}}", { label });
   const removeLabel = t("branding.removeAsset", "Remove {{label}}", { label });
   return (
@@ -560,7 +594,14 @@ export function AdminBrandingEditor({
                       {BRANDABLE_KEYS.map((token) => (
                         <FormField
                           key={token}
-                          label={`Light ${tokenLabel(token)}`}
+                          label={t(
+                            "branding.themeTokenLabel",
+                            "{{token}} ({{theme}})",
+                            {
+                              token: tokenLabel(t, token),
+                              theme: t("branding.lightTheme", "Light theme"),
+                            },
+                          )}
                         >
                           <Input
                             value={form.tokensLight[token] ?? ""}
@@ -584,7 +625,14 @@ export function AdminBrandingEditor({
                       {BRANDABLE_KEYS.map((token) => (
                         <FormField
                           key={token}
-                          label={`Dark ${tokenLabel(token)}`}
+                          label={t(
+                            "branding.themeTokenLabel",
+                            "{{token}} ({{theme}})",
+                            {
+                              token: tokenLabel(t, token),
+                              theme: t("branding.darkTheme", "Dark theme"),
+                            },
+                          )}
                         >
                           <Input
                             value={form.tokensDark[token] ?? ""}

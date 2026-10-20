@@ -342,10 +342,20 @@
   },
   "branding": {
     "advanced": "Avançado",
+    "assetKind": {
+      "favicon": "favicon",
+      "logo": "logo",
+      "mark": "símbolo"
+    },
+    "assetLabel": "{{kind}} ({{variant}})",
     "assetRemoveFailed": "Não foi possível remover o arquivo.",
     "assets": "Arquivos visuais",
     "assetsHint": "Forneça versões clara e escura. São aceitos PNG, JPEG, WebP, SVG e ICO.",
     "assetUploadFailed": "Não foi possível enviar o arquivo.",
+    "assetVariant": {
+      "dark": "escuro",
+      "light": "claro"
+    },
     "brandColor": "Cor da marca",
     "brandColorPicker": "Seletor de cor da marca",
     "brandName": "Nome da marca",
@@ -366,7 +376,16 @@
     "siteUrl": "URL do site",
     "subtitle": "Personalize a aparência global do app (nome, cores, logo, favicon).",
     "supportEmail": "E-mail de suporte",
+    "themeTokenLabel": "{{token}} ({{theme}})",
     "title": "Identidade visual",
+    "token": {
+      "accent": "destaque",
+      "accentForeground": "texto sobre destaque",
+      "accentHover": "destaque ao passar o mouse",
+      "accentSoft": "destaque suave",
+      "accentSolid": "destaque sólido",
+      "accentSolidHover": "destaque sólido ao passar o mouse"
+    },
     "uploadAsset": "Enviar {{label}}"
   },
   "channels": {

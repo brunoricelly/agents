@@ -18,7 +18,9 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
-import { withI18n } from "@/tests/utils/i18n";
+import en from "@/client/locales/en.json";
+import ptBR from "@/client/locales/pt-BR.json";
+import { createTestI18n, withI18n } from "@/tests/utils/i18n";
 
 const refresh = mock(async () => {});
 mock.module("@/client/contexts/AuthContext", () => ({
@@ -110,7 +112,16 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 
-function mount() {
+function mount(language = "en", realCatalogs = false) {
+  const i18n = createTestI18n(
+    language,
+    realCatalogs
+      ? {
+          en: { translation: en },
+          "pt-BR": { translation: ptBR },
+        }
+      : undefined,
+  );
   return render(
     withI18n(
       <MemoryRouter>
@@ -118,6 +129,7 @@ function mount() {
           <AdminBrandingEditor refreshBranding={refresh} />
         </ToastProvider>
       </MemoryRouter>,
+      i18n,
     ),
   );
 }
@@ -131,7 +143,7 @@ describe("AdminBrandingPage", () => {
     expect(name.value).toBe("Acme");
     fireEvent.change(name, { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("radio", { name: "Advanced" }));
-    fireEvent.change(screen.getByLabelText("Light accent"), {
+    fireEvent.change(screen.getByLabelText("accent (Light theme)"), {
       target: { value: "#e11d48" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save branding" }));
@@ -151,7 +163,7 @@ describe("AdminBrandingPage", () => {
   test("uploads and removes a dark logo, refreshing after each mutation", async () => {
     mount();
     const input = (await screen.findByLabelText(
-      "Upload dark logo",
+      "Upload logo (dark)",
     )) as HTMLInputElement;
     const file = new File(
       [new Uint8Array([0x89, 0x50, 0x4e, 0x47])],
@@ -163,15 +175,27 @@ describe("AdminBrandingPage", () => {
     fireEvent.change(input, { target: { files: [file] } });
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Remove dark logo" }),
+        screen.getByRole("button", { name: "Remove logo (dark)" }),
       ).toBeDefined(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Remove dark logo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove logo (dark)" }));
     await waitFor(() =>
       expect(
         calls.filter((call) => call.path.includes("/asset/logo/dark")).length,
       ).toBe(2),
     );
     expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  test("renders Portuguese token and asset labels without generated English", async () => {
+    const { container } = mount("pt-BR", true);
+    await screen.findByLabelText("Nome da marca");
+    fireEvent.click(screen.getByRole("radio", { name: "Avançado" }));
+
+    expect(screen.getByLabelText("destaque (Tema claro)")).toBeDefined();
+    expect(screen.getByLabelText("Enviar logo (escuro)")).toBeDefined();
+    expect(screen.getByLabelText("Enviar favicon (claro)")).toBeDefined();
+    expect(container.textContent).not.toMatch(/\b(?:Light|Dark)\b/);
+    expect(container.innerHTML).not.toMatch(/(?:dark logo|light favicon)/i);
   });
 });
