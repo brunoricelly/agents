@@ -92,6 +92,9 @@ export const AUDIT_ACTIONS = [
   "mcp_oauth_consent.deny",
   "mcp_oauth_consent.grant",
   "mcp_token.revoke",
+  "tenant.create",
+  "tenant.delete",
+  "tenant.update",
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
   "tenant_settings.langfuse_set",
@@ -130,6 +133,8 @@ export function canonicalAuditAction(action: string): string {
 // "no entries match". `api_key.*` and `mcp_oauth_consent.*` are absent on purpose: they write `null`
 // only for a fleet-scoped key or consent, so on a tenant trail they do match.
 export const FLEET_LEVEL_ACTIONS: readonly AuditAction[] = [
+  "tenant.create",
+  "tenant.delete",
   "mcp_approval.revoke",
   "mcp_client.create",
   "mcp_client.delete",

@@ -1,32 +1,144 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { ProEditionError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
-import type { TenantCreate, TenantDto, TenantUpdate } from "./tenants.service";
+import basePrisma from "@/api/lib/prisma";
+import { ConflictError, ForbiddenError, NotFoundError } from "@/lib/errors";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
+import { auditMutationOn } from "@/modules/audit/service";
+import {
+  assertTenantCreatable,
+  assertTenantUpdatable,
+  TENANT_SELECT,
+  type TenantCreate,
+  type TenantDto,
+  type TenantUpdate,
+  toDto,
+} from "./tenants.service";
 
-// Tenant mutation stub: create/update/delete require the Pro edition and refuse with a 403 that the
-// client turns into an upgrade prompt. The single tenant is created at /setup.
+function assertAdmin(ctx: TenantContext): void {
+  if (ctx.role !== "TENANT_ADMIN" && ctx.role !== "SUPER_ADMIN") {
+    throw new ForbiddenError();
+  }
+}
+
+function assertFleetAdmin(ctx: TenantContext): void {
+  if (ctx.role !== "SUPER_ADMIN") throw new ForbiddenError();
+}
+
+function tenantNotFound(): NotFoundError {
+  return new NotFoundError("Tenant not found", "errors.tenantNotFound");
+}
+
+function tenantProjection(row: {
+  id: bigint;
+  name: string;
+  slug: string;
+  demoMode: boolean;
+}) {
+  return {
+    id: row.id.toString(),
+    name: row.name,
+    slug: row.slug,
+    demoMode: row.demoMode,
+  };
+}
+
+async function updateIn(
+  db: ScopedDb,
+  ctx: TenantContext,
+  id: bigint,
+  patch: TenantUpdate,
+): Promise<TenantDto> {
+  const before = await db.tenant.findFirst({
+    where: { id },
+    select: TENANT_SELECT,
+  });
+  if (!before) throw tenantNotFound();
+  if (before.name === patch.name) return toDto(before);
+
+  const after = await db.tenant.update({
+    where: { id },
+    data: { name: patch.name },
+    select: TENANT_SELECT,
+  });
+  await auditMutationOn(db, ctx, id, {
+    action: "tenant.update",
+    target: `tenant:${id}`,
+    before: { name: before.name },
+    after: { name: after.name },
+  });
+  return toDto(after);
+}
 
 export async function updateTenant(
-  _ctx: TenantContext,
-  _id: bigint,
-  _patch: TenantUpdate,
-  _base?: PrismaClient,
+  ctx: TenantContext,
+  id: bigint,
+  patch: TenantUpdate,
+  base: PrismaClient = basePrisma,
 ): Promise<TenantDto> {
-  throw new ProEditionError();
+  assertAdmin(ctx);
+  const parsed = assertTenantUpdatable(patch);
+  return ctx.role === "SUPER_ADMIN"
+    ? asSuperAdminOn(base, (db) => updateIn(db, ctx, id, parsed))
+    : runScopedOn(base, ctx, (db) => updateIn(db, ctx, id, parsed));
 }
 
 export async function createTenant(
-  _ctx: TenantContext,
-  _input: TenantCreate,
-  _base?: PrismaClient,
+  ctx: TenantContext,
+  input: TenantCreate,
+  base: PrismaClient = basePrisma,
 ): Promise<TenantDto> {
-  throw new ProEditionError();
+  assertFleetAdmin(ctx);
+  const parsed = assertTenantCreatable(input);
+  try {
+    return await asSuperAdminOn(base, async (db) => {
+      const row = await db.tenant.create({
+        data: parsed,
+        select: TENANT_SELECT,
+      });
+      await auditMutationOn(db, ctx, null, {
+        action: "tenant.create",
+        target: `tenant:${row.id}`,
+        after: tenantProjection(row),
+      });
+      return toDto(row);
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error as { code?: string }).code === "P2002"
+    ) {
+      throw new ConflictError(
+        "tenant slug already in use",
+        "errors.tenantSlugInUse",
+        "slug",
+      );
+    }
+    throw error;
+  }
 }
 
 export async function deleteTenant(
-  _ctx: TenantContext,
-  _id: bigint,
-  _base?: PrismaClient,
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient = basePrisma,
 ): Promise<void> {
-  throw new ProEditionError();
+  assertFleetAdmin(ctx);
+  await asSuperAdminOn(base, async (db) => {
+    const before = await db.tenant.findFirst({
+      where: { id },
+      select: TENANT_SELECT,
+    });
+    if (!before) throw tenantNotFound();
+
+    await db.tenant.delete({ where: { id } });
+    await auditMutationOn(db, ctx, null, {
+      action: "tenant.delete",
+      target: `tenant:${id}`,
+      before: tenantProjection(before),
+    });
+  });
 }
