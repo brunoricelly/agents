@@ -192,9 +192,11 @@ describe("AdminBrandingPage", () => {
     await screen.findByLabelText("Nome da marca");
     fireEvent.click(screen.getByRole("radio", { name: "Avançado" }));
 
-    expect(screen.getByLabelText("destaque (Tema claro)")).toBeDefined();
-    expect(screen.getByLabelText("Enviar logo (escuro)")).toBeDefined();
-    expect(screen.getByLabelText("Enviar favicon (claro)")).toBeDefined();
+    expect(screen.getByLabelText("destaque — Tema claro")).toBeDefined();
+    expect(screen.getByLabelText("Enviar logotipo — escuro")).toBeDefined();
+    expect(
+      screen.getByLabelText("Enviar ícone do site — claro"),
+    ).toBeDefined();
     expect(container.textContent).not.toMatch(/\b(?:Light|Dark)\b/);
     expect(container.innerHTML).not.toMatch(/(?:dark logo|light favicon)/i);
   });

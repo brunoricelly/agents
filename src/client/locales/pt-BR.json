@@ -343,11 +343,11 @@
   "branding": {
     "advanced": "Avançado",
     "assetKind": {
-      "favicon": "favicon",
-      "logo": "logo",
+      "favicon": "ícone do site",
+      "logo": "logotipo",
       "mark": "símbolo"
     },
-    "assetLabel": "{{kind}} ({{variant}})",
+    "assetLabel": "{{kind}} — {{variant}}",
     "assetRemoveFailed": "Não foi possível remover o arquivo.",
     "assets": "Arquivos visuais",
     "assetsHint": "Forneça versões clara e escura. São aceitos PNG, JPEG, WebP, SVG e ICO.",
@@ -374,9 +374,9 @@
     "saveFailed": "Não foi possível salvar a identidade visual.",
     "simple": "Simples",
     "siteUrl": "URL do site",
-    "subtitle": "Personalize a aparência global do app (nome, cores, logo, favicon).",
+    "subtitle": "Personalize a aparência global do app (nome, cores, logotipo e ícone do site).",
     "supportEmail": "E-mail de suporte",
-    "themeTokenLabel": "{{token}} ({{theme}})",
+    "themeTokenLabel": "{{token}} — {{theme}}",
     "title": "Identidade visual",
     "token": {
       "accent": "destaque",
