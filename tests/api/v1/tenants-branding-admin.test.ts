@@ -163,11 +163,19 @@ function assetRequest(
     "file",
     new File([source], "brand.svg", { type: "image/svg+xml" }),
   );
-  return new BunRequest(`http://localhost/api${path}`, {
+  const request = new Request(`http://localhost/api${path}`, {
     method: "PUT",
-    headers: authenticated ? { cookie, "accept-language": "en" } : {},
+    headers: { "accept-language": "en" },
     body: form,
   });
+  const contentType = request.headers.get("content-type");
+  if (!contentType) throw new Error("multipart serializer omitted boundary");
+  // Elysia's compiled header map preserves happy-dom's original casing, so normalize the
+  // serializer-added name while retaining happy-dom's File implementation for t.File.
+  request.headers.delete("content-type");
+  request.headers.set("content-type", contentType);
+  if (authenticated) request.headers.set("cookie", cookie);
+  return request;
 }
 
 async function send(request: Request): Promise<Response> {
@@ -245,6 +253,17 @@ describe.skipIf(!dbUp)(
               "PATCH",
               "/v1/branding",
               { brandName: "No session" },
+              false,
+            ),
+          )
+        ).status,
+      ).toBe(401);
+      expect(
+        (
+          await send(
+            assetRequest(
+              "/v1/branding/asset/logo/dark",
+              `<svg xmlns="http://www.w3.org/2000/svg" />`,
               false,
             ),
           )
@@ -411,7 +430,7 @@ describe.skipIf(!dbUp)(
       const hostile = await send(
         assetRequest(
           "/v1/branding/asset/logo/dark",
-          `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><iframe xmlns="http://www.w3.org/1999/xhtml" src="https://evil.example" /></foreignObject></svg>`,
+          `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:u/**/Rl('DaTa:image/svg+xml;base64,PHN2Zy8+')" /></svg>`,
         ),
       );
       expect(hostile.status).toBe(400);
