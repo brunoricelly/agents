@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve, sep } from "node:path";
+import { DOMParser } from "@xmldom/xmldom";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
@@ -54,6 +55,147 @@ function unsupportedType(): AppError {
   );
 }
 
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+const ACTIVE_SVG_ELEMENTS = new Set([
+  "audio",
+  "canvas",
+  "discard",
+  "embed",
+  "foreignobject",
+  "handler",
+  "iframe",
+  "listener",
+  "object",
+  "script",
+  "set",
+  "video",
+  "animate",
+  "animatecolor",
+  "animatemotion",
+  "animatetransform",
+]);
+const LINK_ATTRIBUTES = new Set([
+  "action",
+  "formaction",
+  "href",
+  "poster",
+  "src",
+]);
+
+function safeLocalUrlFunctions(value: string): boolean {
+  if (value.includes("\\")) return false;
+  const withoutLocalUrls = value.replace(
+    /url\s*\(\s*(['"]?)#[^\s)'"<>]+\1\s*\)/gi,
+    "",
+  );
+  return !/url\s*\(/i.test(withoutLocalUrls);
+}
+
+function safeStyle(value: string): boolean {
+  return (
+    safeLocalUrlFunctions(value) &&
+    !/@import|expression\s*\(|(?:^|[;\s])behavior\s*:|-moz-binding|javascript\s*:|data\s*:|vbscript\s*:|https?\s*:|\/\//i.test(
+      value,
+    )
+  );
+}
+
+function safeLink(value: string): boolean {
+  const normalized = value.trim();
+  return (
+    normalized === "" ||
+    (/^#[^\s<>]+$/.test(normalized) && !normalized.includes("\\"))
+  );
+}
+
+function isSafeSvg(bytes: Uint8Array): boolean {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  if (text.includes("\0")) return false;
+
+  let xml = text.replace(/^\uFEFF/, "").trimStart();
+  if (xml.startsWith("<?xml")) {
+    const declaration = /^<\?xml\s+[^?]*\?>/i.exec(xml);
+    if (!declaration) return false;
+    xml = xml.slice(declaration[0].length);
+  }
+  if (/<\?|<!\s*(?!-{2})/i.test(xml)) return false;
+
+  const parseErrors: string[] = [];
+  const document = new DOMParser({
+    errorHandler: {
+      warning: (message) => parseErrors.push(message),
+      error: (message) => parseErrors.push(message),
+      fatalError: (message) => parseErrors.push(message),
+    },
+  }).parseFromString(xml, "image/svg+xml");
+  if (parseErrors.length > 0) return false;
+
+  const root = document.documentElement;
+  if (
+    root?.localName.toLowerCase() !== "svg" ||
+    (root.namespaceURI !== null && root.namespaceURI !== SVG_NAMESPACE)
+  ) {
+    return false;
+  }
+  for (let index = 0; index < document.childNodes.length; index += 1) {
+    const node = document.childNodes.item(index);
+    if (!node) continue;
+    if (node.nodeType === 1 && node !== root) return false;
+    if (node.nodeType === 3 && node.nodeValue?.trim()) return false;
+    if (![1, 3, 8].includes(node.nodeType)) return false;
+  }
+
+  const visit = (element: Element): boolean => {
+    const elementName = element.localName.toLowerCase();
+    if (
+      ACTIVE_SVG_ELEMENTS.has(elementName) ||
+      element.namespaceURI === HTML_NAMESPACE
+    ) {
+      return false;
+    }
+
+    for (let index = 0; index < element.attributes.length; index += 1) {
+      const attribute = element.attributes.item(index);
+      if (!attribute) continue;
+      const name = attribute.localName.toLowerCase();
+      const qualifiedName = attribute.name.toLowerCase();
+      const value = attribute.value;
+      if (
+        name.startsWith("on") ||
+        qualifiedName === "xml:base" ||
+        /javascript\s*:|data\s*:|vbscript\s*:/i.test(value)
+      ) {
+        return false;
+      }
+      if (
+        (LINK_ATTRIBUTES.has(name) || qualifiedName.endsWith(":href")) &&
+        !safeLink(value)
+      ) {
+        return false;
+      }
+      if (!safeLocalUrlFunctions(value)) return false;
+      if (name === "style" && !safeStyle(value)) return false;
+    }
+
+    if (elementName === "style" && !safeStyle(element.textContent ?? "")) {
+      return false;
+    }
+    for (let child = element.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === 1 && !visit(child as Element)) return false;
+      if (![1, 3, 4, 8].includes(child.nodeType)) return false;
+    }
+    return true;
+  };
+
+  return visit(root as unknown as Element);
+}
+
 function hasSignature(type: string, bytes: Uint8Array): boolean {
   if (type === "image/png") {
     return [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every(
@@ -78,19 +220,7 @@ function hasSignature(type: string, bytes: Uint8Array): boolean {
     );
   }
   if (type === "image/svg+xml") {
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      return false;
-    }
-    if (text.includes("\0") || /<!DOCTYPE/i.test(text)) return false;
-    const start = text
-      .replace(/^\uFEFF/, "")
-      .trimStart()
-      .replace(/^<\?xml[\s\S]*?\?>\s*/i, "")
-      .replace(/^(?:<!--[\s\S]*?-->\s*)+/, "");
-    return /^<svg(?:\s|>)/i.test(start) && /<\/svg>\s*$/i.test(start);
+    return isSafeSvg(bytes);
   }
   return false;
 }

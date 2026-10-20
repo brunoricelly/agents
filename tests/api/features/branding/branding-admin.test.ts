@@ -117,6 +117,7 @@ const superAdmin: TenantContext = {
 const png = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00,
 ]);
+const svg = (source: string) => new TextEncoder().encode(source);
 
 function upload(type: string, bytes: Uint8Array, size = bytes.byteLength) {
   return {
@@ -263,6 +264,64 @@ describe("branding admin mutations", () => {
       ),
     ).rejects.toBeInstanceOf(AppError);
     expect(db.row()).toBeNull();
+  });
+
+  test("accepts benign SVG features with local fragment references", async () => {
+    const db = fakeDb();
+    const bytes = svg(`<?xml version="1.0"?>
+      <!-- exported logo -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+        <defs>
+          <linearGradient id="brand"><stop offset="0" stop-color="#06b6d4" /></linearGradient>
+          <path id="shape" d="M2 2h28v28H2z" />
+        </defs>
+        <style>.mark { fill: url(#brand); stroke: #0f172a; }</style>
+        <use class="mark" href="#shape" />
+      </svg>`);
+
+    const dto = await setBrandingAsset(
+      superAdmin,
+      "favicon",
+      "dark",
+      upload("image/svg+xml; charset=utf-8", bytes),
+      db.client,
+    );
+
+    expect(dto.favicon.dark).toBe(true);
+    expect(
+      (await readdir(storageDir)).some((name) => name.endsWith(".svg")),
+    ).toBe(true);
+  });
+
+  test("rejects SVG active content, remote links and unsafe XML", async () => {
+    const hostile = [
+      `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><path /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><a href="javascript:alert(1)"><path /></a></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,AAAA" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><use href="https://evil.example/x.svg#p" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(https://evil.example/p.svg#x)" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://evil.example/x.css)</style></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">x</div></foreignObject></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><iframe src="https://evil.example" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><animate attributeName="href" values="#safe;javascript:alert(1)" /></svg>`,
+      `<!DOCTYPE svg [<!ENTITY payload SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg">&payload;</svg>`,
+      `<?xml version="1.0"?><?xml-stylesheet href="https://evil.example/x.css"?><svg xmlns="http://www.w3.org/2000/svg" />`,
+    ];
+
+    for (const source of hostile) {
+      const db = fakeDb();
+      await expect(
+        setBrandingAsset(
+          superAdmin,
+          "logo",
+          "light",
+          upload("image/svg+xml", svg(source)),
+          db.client,
+        ),
+      ).rejects.toBeInstanceOf(AppError);
+      expect(db.row()).toBeNull();
+    }
   });
 
   test("rolls back the reference and removes new bytes when audit fails", async () => {

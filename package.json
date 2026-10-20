@@ -70,6 +70,7 @@
     "@radix-ui/react-toast": "^1.2.23",
     "@radix-ui/react-tooltip": "^1.2.16",
     "@react-pdf/renderer": "^4",
+    "@xmldom/xmldom": "0.8.15",
     "acorn": "8.18.0",
     "bun-plugin-tailwind": "^0.1.2",
     "elysia": "^1.4.30",
