@@ -31,6 +31,8 @@ import {
   readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
+  readWritableAttributes,
+  type WritableAttribute,
 } from "@/modules/agents/tool-guidance";
 import {
   readToolPreconditions,
@@ -43,6 +45,10 @@ import {
 import { appointmentSideEffects } from "@/modules/appointments/side-effect";
 import { parseSchedule, type Schedule } from "@/modules/business-hours/hours";
 import { readSchedule } from "@/modules/business-hours/service";
+import type {
+  AttributeRefusal,
+  AttributeRefusalReporter,
+} from "@/modules/chatwoot/attribute-rules";
 import {
   ATTRIBUTE_SCOPES,
   attributeBagsFrom,
@@ -367,6 +373,8 @@ export interface AgentConfig {
   // readAllowedLabels.
   allowedLabels: string[];
   outsideAllowedLabels: "refuse" | "accept";
+  // The attributes set_custom_attribute may write. Empty ⇒ any key. See readWritableAttributes.
+  writableAttributes: WritableAttribute[];
   // Operator-declared preconditions, keyed by TOOL NAME. Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
   toolPreconditions: Record<string, ToolPrecondition[]>;
@@ -1067,6 +1075,7 @@ export async function loadAgentConfig(
     resolveCaseHold: resolveCaseHoldFor(crossInboxCaseConfig),
     allowedLabels: readAllowedLabels(effSettings),
     outsideAllowedLabels: readOutsideAllowedLabels(effSettings),
+    writableAttributes: readWritableAttributes(effSettings),
     toolPreconditions: readToolPreconditions(effSettings),
     httpToolContext: {
       ...(conv?.contact?.chatwootContactId != null
@@ -1323,6 +1332,8 @@ export interface ToolBuildDeps {
       resolveCaseHold?: CaseInbox | null;
       allowedLabels?: string[];
       outsideAllowedLabels?: "refuse" | "accept";
+      writableAttributes?: WritableAttribute[];
+      onAttributeRefused?: AttributeRefusalReporter;
       expiresOn?: AbortSignal;
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
@@ -1714,6 +1725,26 @@ export async function buildToolset(
       ),
       allowedLabels: cfg.allowedLabels,
       outsideAllowedLabels: cfg.outsideAllowedLabels,
+      writableAttributes: cfg.writableAttributes,
+      // NOTE: A refused attribute write is its own `tool` line at info: the model is told and asks
+      // again, and the operator sees which rule held the value back. The rule, never the value.
+      ...(flow
+        ? {
+            onAttributeRefused: (r: AttributeRefusal) =>
+              emitFlowEvent(flow, {
+                stage: "tool",
+                level: "info",
+                status: "skipped",
+                detail: {
+                  tool: "set_custom_attribute",
+                  phase: "attribute_refused",
+                  scope: r.scope,
+                  rule: r.rule,
+                  ...(r.key ? { key: r.key } : {}),
+                },
+              }),
+          }
+        : {}),
       // NOTE: The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,

@@ -2834,7 +2834,21 @@
     "voiceWarningPermission": "The agent cannot take calls because the key is not allowed to run agents on {{provider}}.",
     "voiceWarningReviewKey": "Review the key",
     "voiceWarningReviewVoice": "Review the voice",
-    "voiceWarningSync": "The agent cannot take calls because {{provider}} refused its settings."
+    "voiceWarningSync": "The agent cannot take calls because {{provider}} refused its settings.",
+    "writableAttributes": {
+      "editInChatwoot": "Edit options and patterns in Chatwoot",
+      "hint": "Optional. The only attributes this agent may write or clear. Empty: any attribute. Either way, a value that breaks the attribute's definition in Chatwoot (its options, type or pattern) is not saved, and the agent is told to ask again.",
+      "label": "Attributes it may write",
+      "ruleCheckbox": "true or false",
+      "ruleDate": "A date (YYYY-MM-DD)",
+      "ruleLink": "A URL starting with http:// or https://",
+      "ruleList": "One of: {{values}}",
+      "ruleNumber": "A number",
+      "rulePattern": "Must match the pattern",
+      "rules": "What each attribute accepts",
+      "ruleText": "Any text",
+      "ruleUndefined": "No definition in Chatwoot: any text that is not empty"
+    }
   },
   "experiments": {
     "comingSoonDesc": "Run prompt variants side by side and compare outcomes. This feature is under construction.",

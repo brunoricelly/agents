@@ -25,6 +25,7 @@ import type {
   ToolRefusals,
 } from "./types";
 import { voiceToolCatalog } from "./voiceToolCatalog";
+import type { WritableAttributesState } from "./WritableAttributesFields";
 
 interface ToolsTabProps {
   agentId: string;
@@ -64,6 +65,8 @@ interface ToolsTabProps {
   setAllowedLabels: (v: string) => void;
   outsideAllowedLabels: "refuse" | "accept";
   setOutsideAllowedLabels: (v: "refuse" | "accept") => void;
+  writableAttributes: WritableAttributesState;
+  setWritableAttributes: (v: WritableAttributesState) => void;
   updateKanbanTaskInstructions: string;
   setUpdateKanbanTaskInstructions: (v: string) => void;
   // Per-tool preconditions. Owned by AgentEditorPage like the guidance above, and saved
@@ -130,6 +133,8 @@ export function ToolsTab({
   setAllowedLabels,
   outsideAllowedLabels,
   setOutsideAllowedLabels,
+  writableAttributes,
+  setWritableAttributes,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
   toolPreconditions,
@@ -255,6 +260,8 @@ export function ToolsTab({
             setAllowedLabels={setAllowedLabels}
             outsideAllowedLabels={outsideAllowedLabels}
             setOutsideAllowedLabels={setOutsideAllowedLabels}
+            writableAttributes={writableAttributes}
+            setWritableAttributes={setWritableAttributes}
             updateKanbanTaskInstructions={updateKanbanTaskInstructions}
             setUpdateKanbanTaskInstructions={setUpdateKanbanTaskInstructions}
             mcpTools={mcpTools}

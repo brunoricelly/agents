@@ -112,9 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 36_126
-// with the fallbacks' timeouts and voice, the voice agent's `calls`, and one-or-many preconditions.
-const SETTINGS_SCHEMA_CEILING = 36_200;
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 36_691
+// with the fallbacks, `calls`, one-or-many preconditions and set_custom_attribute's writable list.
+const SETTINGS_SCHEMA_CEILING = 36_800;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -227,8 +227,8 @@ describe("MCP tool descriptions", () => {
     // ranged, the dashboard and dashboard_source tools (Pro only), tv_rotation and tv_seconds
     // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter.
     // 74_540 on the Free tree before the SDK. 82_753 with the three dashboard_embed_link tools
-    // (Pro only), 83_226 with a tool precondition as one condition or a list.
-    expect(schema).toBeLessThanOrEqual(83_300);
+    // (Pro only), 83_791 with one-or-many preconditions and set_custom_attribute's writable list.
+    expect(schema).toBeLessThanOrEqual(83_900);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

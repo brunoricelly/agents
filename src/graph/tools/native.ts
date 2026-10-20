@@ -28,6 +28,11 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import {
+  type AttributeRefusal,
+  type AttributeRefusalReporter,
+  checkAttributeValue,
+} from "@/modules/chatwoot/attribute-rules";
+import {
   ChatwootApiError,
   ChatwootCalledOffError,
   type ChatwootClient,
@@ -445,6 +450,12 @@ export interface ToolCtx {
   // title outside the list meets: `refuse` (default) or `accept`. See applyLabelDelta.
   allowedLabels?: string[];
   outsideAllowedLabels?: "refuse" | "accept";
+  // THE ATTRIBUTES `set_custom_attribute` MAY WRITE, from `settings.setCustomAttribute.allowed`;
+  // empty or absent ⇒ any key. Each key is also held to its Chatwoot definition (attribute-rules.ts).
+  writableAttributes?: Array<{
+    scope: "conversation" | "contact" | "task";
+    key: string;
+  }>;
   // THE CALLER'S FENCE, asked again by set_labels from inside the conversation's label queue. The
   // graph already asks it at the tool boundary; waiting for that queue is a wait AFTER the ask, and
   // `/reset` clears the episode's labels in this very queue, so a write admitted at the boundary can
@@ -536,6 +547,9 @@ export interface ToolCtx {
   // Threaded beside `onNoEffect` because it is the same kind of fact arriving from the same place:
   // what the call did, told by the handler that knows, rather than parsed out of its sentence.
   onLabelsWritten?: LabelWriteReporter;
+  // Called by `set_custom_attribute` when it refused a write, before anything reached Chatwoot.
+  // prepare.ts binds it to an info `tool` line; the value never travels, only the rule it broke.
+  onAttributeRefused?: AttributeRefusalReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,
@@ -812,10 +826,58 @@ function attributeElements(defs: CustomAttributeDef[]): string {
       d.displayType === "list" && d.values.length > 0
         ? xmlAttr("values", d.values.slice(0, 12).join("|"))
         : "";
-    return `    <attribute${xmlAttr("key", d.key)}${values}/>`;
+    const type = TYPED_ATTRIBUTE_FORMAT[d.displayType]
+      ? xmlAttr("format", TYPED_ATTRIBUTE_FORMAT[d.displayType] ?? "")
+      : "";
+    const cue = d.regexPattern && d.regexCue ? xmlAttr("rule", d.regexCue) : "";
+    return `    <attribute${xmlAttr("key", d.key)}${values}${type}${cue}/>`;
   });
   if (defs.length > CAP) els.push(`    <more count="${defs.length - CAP}"/>`);
   return els.join("\n");
+}
+
+// What a typed definition accepts, as the model is told it up front and again when a value is refused.
+const TYPED_ATTRIBUTE_FORMAT: Record<string, string> = {
+  number: "a number, digits with an optional decimal point (e.g. 1500 or 12.5)",
+  currency:
+    "a number, digits with an optional decimal point (e.g. 1500 or 12.5)",
+  percent:
+    "a number, digits with an optional decimal point (e.g. 1500 or 12.5)",
+  date: "a date as YYYY-MM-DD",
+  checkbox: "true or false",
+  link: "a full URL starting with http:// or https://",
+};
+
+// The sentence a refused attribute write returns to the model: the rule it broke, then what to do.
+// Never the value: the model has it, and the line is read back on the trail.
+function attributeRefusalText(
+  scopeName: string,
+  key: string,
+  rule: AttributeRefusal["rule"],
+  def: CustomAttributeDef | undefined,
+  writable: ReadonlyArray<{ scope: string; key: string }>,
+): string {
+  const what = `the ${scopeName} attribute \`${key}\``;
+  const ask = " Nothing was saved. Ask the customer again instead of guessing.";
+  switch (rule) {
+    case "not_allowed": {
+      const shown = writable
+        .slice(0, 20)
+        .map((w) => `${w.key} (${w.scope})`)
+        .join(", ");
+      return `Not written: this agent may not write ${what}. It may write only: ${shown}.`;
+    }
+    case "clear_with_value":
+      return `Not written: clear=true empties ${what}, so it takes no value. Call again with clear=true and an empty value to clear it, or without clear to set it.`;
+    case "empty":
+      return `Not written: the value for ${what} is empty. To clear it on purpose, call again with clear=true; otherwise ask the customer for it.`;
+    case "list":
+      return `Not written: ${what} only takes one of these options, spelled exactly: ${(def?.values ?? []).slice(0, 20).join(" | ")}.${ask}`;
+    case "pattern":
+      return `Not written: the value does not match the format the operator set for ${what}${def?.regexCue ? `: ${def.regexCue}` : ""}.${ask}`;
+    default:
+      return `Not written: ${what} takes ${TYPED_ATTRIBUTE_FORMAT[def?.displayType ?? ""] ?? "a different value"}.${ask}`;
+  }
 }
 
 // The known attributes per scope as an XML block (containers mirror the `scope` arg). A scope with no
@@ -932,9 +994,26 @@ const CALLED_OFF_ATTRIBUTE =
 // model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
 // from our mirror. Every scope merges: the client read-merge-writes, so the other keys are kept.
 function setCustomAttributeTool(ctx: ToolCtx) {
-  const convDefs = attributesForModel(ctx.vocab, "conversation_attribute");
-  const contactDefs = attributesForModel(ctx.vocab, "contact_attribute");
-  const taskDefs = attributesForModel(ctx.vocab, "task_attribute");
+  const writable = ctx.writableAttributes ?? [];
+  const writableHas = (scope: string, key: string) =>
+    writable.some((w) => w.scope === scope && w.key === key);
+  // With a list, the model is shown only the keys it may write: a key it can never write is a key it
+  // would be refused on.
+  const shown = (defs: CustomAttributeDef[], scope: string) =>
+    writable.length === 0
+      ? defs
+      : defs.filter((d) => writableHas(scope, d.key));
+  const allConvDefs = attributesForModel(ctx.vocab, "conversation_attribute");
+  const allContactDefs = attributesForModel(ctx.vocab, "contact_attribute");
+  const allTaskDefs = attributesForModel(ctx.vocab, "task_attribute");
+  const convDefs = shown(allConvDefs, "conversation");
+  const contactDefs = shown(allContactDefs, "contact");
+  const taskDefs = shown(allTaskDefs, "task");
+  const defsOf = {
+    conversation: allConvDefs,
+    contact: allContactDefs,
+    task: allTaskDefs,
+  };
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
   const scopeSchema = taskScope
@@ -949,13 +1028,15 @@ function setCustomAttributeTool(ctx: ToolCtx) {
   return tool(
     async (
       {
-        key,
-        value,
+        key: rawKey,
+        value: rawValue,
         scope,
+        clear,
       }: {
         key: string;
         value: string;
         scope?: "conversation" | "contact" | "task";
+        clear?: boolean;
       },
       config?: ToolRunnableConfig,
     ) => {
@@ -963,6 +1044,32 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         ctx.onNoEffect?.("set_custom_attribute");
         fenceReporterOf(config)?.({ noEffect: true });
       };
+      const key = rawKey.trim();
+      const target = scope ?? "conversation";
+      const def = defsOf[target].find((d) => d.key === key);
+      // Every refusal is decided here, before any lookup or write: a refused value never reaches
+      // Chatwoot or the mirror, so a precondition on the same key keeps reading the previous state.
+      const refuse = (rule: AttributeRefusal["rule"]): string => {
+        noEffect();
+        const known = def !== undefined || writableHas(target, key);
+        ctx.onAttributeRefused?.({
+          scope: target,
+          rule,
+          ...(known ? { key } : {}),
+        });
+        return attributeRefusalText(target, key, rule, def, writable);
+      };
+      if (writable.length > 0 && !writableHas(target, key))
+        return refuse("not_allowed");
+      let value: string;
+      if (clear) {
+        if (rawValue.trim() !== "") return refuse("clear_with_value");
+        value = "";
+      } else {
+        const checked = checkAttributeValue(def, rawValue);
+        if (!checked.ok) return refuse(checked.rule);
+        value = checked.value;
+      }
       if (scope === "task") {
         if (!ctx.kanban) {
           noEffect();
@@ -1074,6 +1181,12 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           .optional()
           .describe(
             `Where to store it: 'conversation' (default), 'contact'${taskScope ? ", or 'task'" : ""}.`,
+          ),
+        clear: z
+          .boolean()
+          .optional()
+          .describe(
+            "true empties the attribute (pass an empty value). An empty value without it is refused.",
           ),
       }),
     },

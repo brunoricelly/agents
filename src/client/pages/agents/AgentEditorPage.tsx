@@ -307,6 +307,12 @@ import { VoiceChannelsTab } from "./VoiceChannelsTab";
 import { VoicePlayground } from "./VoicePlayground";
 import { visionToForm, visionToStored } from "./visionFormState";
 import { voiceToolCatalog } from "./voiceToolCatalog";
+import {
+  EMPTY_WRITABLE_ATTRIBUTES,
+  readWritableAttributesState,
+  serializeWritableAttributes,
+  type WritableAttributesState,
+} from "./WritableAttributesFields";
 
 // The Schedule a saved businessHoursId points at, built field by field rather than passed through:
 // rows can come back without windows/exceptions (the sibling picker guards them the same way), and
@@ -580,6 +586,7 @@ function readBehaviorState(a: Agent) {
       ?.outsideAllowed === "accept"
       ? "accept"
       : "refuse") as "refuse" | "accept",
+    writableAttributes: readWritableAttributesState(s.setCustomAttribute),
     updateKanbanTaskInstructions: str(tg.update_kanban_task),
     toolPreconditions: parseToolPreconditionRows(s.toolPreconditions),
     businessHoursId: a.businessHoursId ?? "",
@@ -1196,6 +1203,8 @@ function AgentEditor() {
   const [outsideAllowedLabels, setOutsideAllowedLabels] = useState<
     "refuse" | "accept"
   >("refuse");
+  const [writableAttributes, setWritableAttributes] =
+    useState<WritableAttributesState>(EMPTY_WRITABLE_ATTRIBUTES);
   // Per-tool preconditions (Tools tab, same lifecycle as the guidance above). Held as a LIST
   // while editing and stored as a map keyed by tool name: see ToolPreconditionsEditor.
   const [toolPreconditions, setToolPreconditions] = useState<
@@ -1633,6 +1642,7 @@ function AgentEditor() {
     setProtectedLabels(b.protectedLabels);
     setAllowedLabels(b.allowedLabels);
     setOutsideAllowedLabels(b.outsideAllowedLabels);
+    setWritableAttributes(b.writableAttributes);
     setToolPreconditions(b.toolPreconditions);
     if (!keepGuidance) {
       setCrossInboxCase(b.crossInboxCase);
@@ -2241,6 +2251,7 @@ function AgentEditor() {
     protectedLabels: string;
     allowedLabels: string;
     outsideAllowedLabels: typeof outsideAllowedLabels;
+    writableAttributes: WritableAttributesState;
     toolPreconditions: typeof toolPreconditions;
     grants: GrantState[];
     review: SuggestionReviewState;
@@ -2282,6 +2293,7 @@ function AgentEditor() {
     protectedLabels,
     allowedLabels,
     outsideAllowedLabels,
+    writableAttributes,
     toolPreconditions,
     grants,
     review,
@@ -2329,6 +2341,7 @@ function AgentEditor() {
       protectedLabels: b.protectedLabels,
       allowedLabels: b.allowedLabels,
       outsideAllowedLabels: b.outsideAllowedLabels,
+      writableAttributes: b.writableAttributes,
       toolPreconditions: b.toolPreconditions,
       grants: mapGrants(syncedGrants),
       review: suggestionReviewToForm(a.settings),
@@ -2411,6 +2424,7 @@ function AgentEditor() {
         protectedLabels: f.protectedLabels,
         allowedLabels: f.allowedLabels,
         outsideAllowedLabels: f.outsideAllowedLabels,
+        writableAttributes: serializeWritableAttributes(f.writableAttributes),
         updateKanbanTaskInstructions: guidance.updateKanbanTaskInstructions,
         toolPreconditions: f.toolPreconditions,
         crossInboxCase: guidance.crossInboxCase,
@@ -3678,6 +3692,13 @@ function AgentEditor() {
         allowed: allowedList,
         outsideAllowed: outsideAllowedLabels,
       },
+      setCustomAttribute: {
+        ...((syncedSettings.setCustomAttribute ?? {}) as Record<
+          string,
+          unknown
+        >),
+        allowed: serializeWritableAttributes(writableAttributes),
+      },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
       resolveConversation: resolveConversationJson,
@@ -3780,6 +3801,13 @@ function AgentEditor() {
         protected: protectedList,
         allowed: allowedList,
         outsideAllowed: outsideAllowedLabels,
+      },
+      setCustomAttribute: {
+        ...((syncedSettings.setCustomAttribute ?? {}) as Record<
+          string,
+          unknown
+        >),
+        allowed: serializeWritableAttributes(writableAttributes),
       },
       crossInboxCase: crossInboxCaseJson,
       sendImage: sendImageJson,
@@ -5346,6 +5374,8 @@ function AgentEditor() {
                   setAllowedLabels={setAllowedLabels}
                   outsideAllowedLabels={outsideAllowedLabels}
                   setOutsideAllowedLabels={setOutsideAllowedLabels}
+                  writableAttributes={writableAttributes}
+                  setWritableAttributes={setWritableAttributes}
                   updateKanbanTaskInstructions={updateKanbanTaskInstructions}
                   toolPreconditions={toolPreconditions}
                   setToolPreconditions={setToolPreconditions}

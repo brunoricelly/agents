@@ -431,6 +431,8 @@ function renderPinned(targetInstanceId: number | null): {
         setAllowedLabels={noop}
         outsideAllowedLabels="refuse"
         setOutsideAllowedLabels={noop}
+        writableAttributes={{ conversation: [], contact: [], task: [] }}
+        setWritableAttributes={noop}
         setLabelInstructions={noop}
         updateKanbanTaskInstructions=""
         setUpdateKanbanTaskInstructions={noop}
