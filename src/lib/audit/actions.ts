@@ -23,6 +23,9 @@ export const AUDIT_ACTIONS = [
   "business_hours.create",
   "business_hours.delete",
   "business_hours.update",
+  "branding.asset_clear",
+  "branding.asset_set",
+  "branding.update",
   "code_tool.create",
   "code_tool.delete",
   "code_tool.update",
@@ -133,6 +136,9 @@ export function canonicalAuditAction(action: string): string {
 // "no entries match". `api_key.*` and `mcp_oauth_consent.*` are absent on purpose: they write `null`
 // only for a fleet-scoped key or consent, so on a tenant trail they do match.
 export const FLEET_LEVEL_ACTIONS: readonly AuditAction[] = [
+  "branding.asset_clear",
+  "branding.asset_set",
+  "branding.update",
   "tenant.create",
   "tenant.delete",
   "mcp_approval.revoke",
