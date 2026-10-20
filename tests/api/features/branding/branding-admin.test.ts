@@ -273,10 +273,11 @@ describe("branding admin mutations", () => {
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
         <defs>
           <linearGradient id="brand"><stop offset="0" stop-color="#06b6d4" /></linearGradient>
+          <filter id="shadow"><feDropShadow dx="1" dy="1" /></filter>
           <path id="shape" d="M2 2h28v28H2z" />
         </defs>
-        <style>.mark { fill: url(#brand); stroke: #0f172a; }</style>
-        <use class="mark" href="#shape" />
+        <style>.mark { fill: URL( '#brand' ); stroke: #0f172a; }</style>
+        <use class="mark" href="#shape" style="filter: u/**/rl(&quot;#shadow&quot;)" />
       </svg>`);
 
     const dto = await setBrandingAsset(
@@ -301,9 +302,19 @@ describe("branding admin mutations", () => {
       `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/png;base64,AAAA" /></svg>`,
       `<svg xmlns="http://www.w3.org/2000/svg"><use href="https://evil.example/x.svg#p" /></svg>`,
       `<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(https://evil.example/p.svg#x)" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:URL('HTTPS://evil.example/p.svg#x')" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:url(//evil.example/p.svg#x)" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:UrL('JaVaScRiPt:alert(1)')" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:u/**/Rl('DaTa:image/svg+xml;base64,PHN2Zy8+')" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:u\\72l('https://evil.example/p.svg')" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:u&#114;l('h&#116;tps://evil.example/p.svg')" /></svg>`,
       `<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://evil.example/x.css)</style></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><style>@IMPORT "//evil.example/x.css";</style></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><style>@im/**/port "/branding.css";</style></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><path style="fill:u/**/rl(/tracking.svg#paint)" /></svg>`,
       `<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">x</div></foreignObject></svg>`,
       `<svg xmlns="http://www.w3.org/2000/svg"><iframe src="https://evil.example" /></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg"><animation href="#safe" /></svg>`,
       `<svg xmlns="http://www.w3.org/2000/svg"><animate attributeName="href" values="#safe;javascript:alert(1)" /></svg>`,
       `<!DOCTYPE svg [<!ENTITY payload SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg">&payload;</svg>`,
       `<?xml version="1.0"?><?xml-stylesheet href="https://evil.example/x.css"?><svg xmlns="http://www.w3.org/2000/svg" />`,

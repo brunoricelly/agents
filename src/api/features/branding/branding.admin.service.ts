@@ -58,6 +58,7 @@ function unsupportedType(): AppError {
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
 const ACTIVE_SVG_ELEMENTS = new Set([
+  "animation",
   "audio",
   "canvas",
   "discard",
@@ -83,8 +84,24 @@ const LINK_ATTRIBUTES = new Set([
   "src",
 ]);
 
-function safeLocalUrlFunctions(value: string): boolean {
-  if (value.includes("\\")) return false;
+function cssWithoutComments(value: string): string | null {
+  if (value.includes("\\")) return null;
+  let output = "";
+  let cursor = 0;
+  while (cursor < value.length) {
+    const start = value.indexOf("/*", cursor);
+    const strayEnd = value.indexOf("*/", cursor);
+    if (strayEnd !== -1 && (start === -1 || strayEnd < start)) return null;
+    if (start === -1) return output + value.slice(cursor);
+    output += value.slice(cursor, start);
+    const end = value.indexOf("*/", start + 2);
+    if (end === -1) return null;
+    cursor = end + 2;
+  }
+  return output;
+}
+
+function hasOnlyLocalUrlFunctions(value: string): boolean {
   const withoutLocalUrls = value.replace(
     /url\s*\(\s*(['"]?)#[^\s)'"<>]+\1\s*\)/gi,
     "",
@@ -92,11 +109,18 @@ function safeLocalUrlFunctions(value: string): boolean {
   return !/url\s*\(/i.test(withoutLocalUrls);
 }
 
+function safeLocalUrlFunctions(value: string): boolean {
+  const normalized = cssWithoutComments(value);
+  return normalized !== null && hasOnlyLocalUrlFunctions(normalized);
+}
+
 function safeStyle(value: string): boolean {
+  const normalized = cssWithoutComments(value);
   return (
-    safeLocalUrlFunctions(value) &&
+    normalized !== null &&
+    hasOnlyLocalUrlFunctions(normalized) &&
     !/@import|expression\s*\(|(?:^|[;\s])behavior\s*:|-moz-binding|javascript\s*:|data\s*:|vbscript\s*:|https?\s*:|\/\//i.test(
-      value,
+      normalized,
     )
   );
 }
