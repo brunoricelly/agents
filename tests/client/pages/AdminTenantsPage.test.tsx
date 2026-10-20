@@ -218,6 +218,15 @@ describe("AdminTenantsPage", () => {
     fireEvent.click(
       within(confirm).getByRole("button", { name: "Delete tenant" }),
     );
+    await waitFor(() =>
+      expect(
+        requests.some(
+          (request) =>
+            request.method === "DELETE" &&
+            request.path === "/api/v1/tenants/10",
+        ),
+      ).toBe(true),
+    );
     await waitFor(() => expect(screen.queryByText("Renamed")).toBeNull());
-  }, 20_000);
+  });
 });

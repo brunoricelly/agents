@@ -41,15 +41,18 @@ type FormState = Pick<
   | "hideGithubLink"
 >;
 
-const FORM_FIELDS = [
+const SHARED_FORM_FIELDS = [
   "brandName",
   "colorMode",
-  "brandColor",
-  "tokensLight",
-  "tokensDark",
   "siteUrl",
   "supportEmail",
   "hideGithubLink",
+] as const;
+const SIMPLE_FORM_FIELDS = [...SHARED_FORM_FIELDS, "brandColor"] as const;
+const ADVANCED_FORM_FIELDS = [
+  ...SHARED_FORM_FIELDS,
+  "tokensLight",
+  "tokensDark",
 ] as const;
 const ACCEPTED_TYPES = [
   "image/png",
@@ -59,12 +62,6 @@ const ACCEPTED_TYPES = [
   "image/x-icon",
   "image/vnd.microsoft.icon",
 ];
-const MAX_BYTES: Record<AssetKind, number> = {
-  logo: 1_048_576,
-  favicon: 524_288,
-  mark: 524_288,
-};
-
 function formOf(data: BrandingData): FormState {
   return {
     brandName: data.brandName,
@@ -172,9 +169,17 @@ function AssetControl({
 }
 
 export function AdminBrandingPage() {
+  const { refresh } = useBranding();
+  return <AdminBrandingEditor refreshBranding={refresh} />;
+}
+
+export function AdminBrandingEditor({
+  refreshBranding,
+}: {
+  refreshBranding: () => Promise<void>;
+}) {
   const { t } = useTranslation();
   const { user } = useAuth();
-  const { refresh } = useBranding();
   const { showToast } = useToast();
   const [data, setData] = useState<BrandingData | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -183,7 +188,9 @@ export function AdminBrandingPage() {
   const [saving, setSaving] = useState(false);
   const [assetBusy, setAssetBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const refusal = useFieldRefusal(FORM_FIELDS);
+  const refusal = useFieldRefusal(
+    form.colorMode === "SIMPLE" ? SIMPLE_FORM_FIELDS : ADVANCED_FORM_FIELDS,
+  );
   const formRef = useRef(form);
   formRef.current = form;
 
@@ -249,7 +256,7 @@ export function AdminBrandingPage() {
       setData(saved);
       setForm(next);
       setBaseline(next);
-      await refresh();
+      await refreshBranding();
       showToast(t("branding.saved", "Branding saved."), "success");
     } catch (caught) {
       setError(
@@ -271,16 +278,6 @@ export function AdminBrandingPage() {
 
   async function upload(kind: AssetKind, variant: AssetVariant, file: File) {
     const key = `${kind}:${variant}`;
-    if (!ACCEPTED_TYPES.includes(file.type) || file.size > MAX_BYTES[kind]) {
-      showToast(
-        t(
-          "branding.assetInvalid",
-          "Choose a supported image within the size limit.",
-        ),
-        "error",
-      );
-      return;
-    }
     setAssetBusy(key);
     try {
       const { data: saved, error: apiError } = await api.api.v1.branding
@@ -295,7 +292,7 @@ export function AdminBrandingPage() {
         return;
       }
       applyAssetResponse(saved);
-      await refresh();
+      await refreshBranding();
     } catch (caught) {
       showToast(
         apiErrorMessage(caught) ||
@@ -323,7 +320,7 @@ export function AdminBrandingPage() {
         return;
       }
       applyAssetResponse(saved);
-      await refresh();
+      await refreshBranding();
     } catch (caught) {
       showToast(
         apiErrorMessage(caught) ||
@@ -455,6 +452,10 @@ export function AdminBrandingPage() {
                   </FormField>
                   <FormField
                     label={t("branding.hideGithub", "Hide GitHub link")}
+                    error={
+                      refusal.at("hideGithubLink", form.hideGithubLink) ??
+                      undefined
+                    }
                     group
                   >
                     <div className="flex h-8 items-center">
@@ -486,21 +487,27 @@ export function AdminBrandingPage() {
                       )}
                     </p>
                   </div>
-                  <SegmentedControl
-                    value={form.colorMode}
-                    onChange={(colorMode) => setForm({ ...form, colorMode })}
-                    aria-label={t("branding.colorMode", "Color mode")}
-                    options={[
-                      {
-                        value: "SIMPLE",
-                        label: t("branding.simple", "Simple"),
-                      },
-                      {
-                        value: "ADVANCED",
-                        label: t("branding.advanced", "Advanced"),
-                      },
-                    ]}
-                  />
+                  <FormField
+                    label={t("branding.colorMode", "Color mode")}
+                    error={refusal.at("colorMode", form.colorMode) ?? undefined}
+                    group
+                  >
+                    <SegmentedControl
+                      value={form.colorMode}
+                      onChange={(colorMode) => setForm({ ...form, colorMode })}
+                      aria-label={t("branding.colorMode", "Color mode")}
+                      options={[
+                        {
+                          value: "SIMPLE",
+                          label: t("branding.simple", "Simple"),
+                        },
+                        {
+                          value: "ADVANCED",
+                          label: t("branding.advanced", "Advanced"),
+                        },
+                      ]}
+                    />
+                  </FormField>
                 </div>
                 {form.colorMode === "SIMPLE" ? (
                   <FormField
@@ -541,32 +548,54 @@ export function AdminBrandingPage() {
                   </FormField>
                 ) : (
                   <div className="grid gap-5 lg:grid-cols-2">
-                    {(["tokensLight", "tokensDark"] as const).map((theme) => (
-                      <div
-                        key={theme}
-                        className="space-y-3 rounded-lg border border-border bg-bg-tertiary/30 p-4"
-                      >
-                        <h3 className="font-medium text-text-primary">
-                          {theme === "tokensLight"
-                            ? t("branding.lightTheme", "Light theme")
-                            : t("branding.darkTheme", "Dark theme")}
-                        </h3>
-                        {BRANDABLE_KEYS.map((token) => (
-                          <FormField
-                            key={token}
-                            label={`${theme === "tokensLight" ? "Light" : "Dark"} ${tokenLabel(token)}`}
-                          >
-                            <Input
-                              value={form[theme][token] ?? ""}
-                              onChange={(event) =>
-                                setToken(theme, token, event.target.value)
-                              }
-                              placeholder="#2563eb"
-                            />
-                          </FormField>
-                        ))}
-                      </div>
-                    ))}
+                    <div className="space-y-3 rounded-lg border border-border bg-bg-tertiary/30 p-4">
+                      <h3 className="font-medium text-text-primary">
+                        {t("branding.lightTheme", "Light theme")}
+                      </h3>
+                      {refusal.at("tokensLight", form.tokensLight) && (
+                        <p className="text-error text-xs" role="alert">
+                          {refusal.at("tokensLight", form.tokensLight)}
+                        </p>
+                      )}
+                      {BRANDABLE_KEYS.map((token) => (
+                        <FormField
+                          key={token}
+                          label={`Light ${tokenLabel(token)}`}
+                        >
+                          <Input
+                            value={form.tokensLight[token] ?? ""}
+                            onChange={(event) =>
+                              setToken("tokensLight", token, event.target.value)
+                            }
+                            placeholder="#2563eb"
+                          />
+                        </FormField>
+                      ))}
+                    </div>
+                    <div className="space-y-3 rounded-lg border border-border bg-bg-tertiary/30 p-4">
+                      <h3 className="font-medium text-text-primary">
+                        {t("branding.darkTheme", "Dark theme")}
+                      </h3>
+                      {refusal.at("tokensDark", form.tokensDark) && (
+                        <p className="text-error text-xs" role="alert">
+                          {refusal.at("tokensDark", form.tokensDark)}
+                        </p>
+                      )}
+                      {BRANDABLE_KEYS.map((token) => (
+                        <FormField
+                          key={token}
+                          label={`Dark ${tokenLabel(token)}`}
+                        >
+                          <Input
+                            value={form.tokensDark[token] ?? ""}
+                            onChange={(event) =>
+                              setToken("tokensDark", token, event.target.value)
+                            }
+                            placeholder="#2563eb"
+                          />
+                        </FormField>
+                      ))}
+                    </div>
                   </div>
                 )}
               </Card>

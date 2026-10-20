@@ -25,12 +25,9 @@ mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({ user: { id: "1", role: "SUPER_ADMIN" }, loading: false }),
   AuthProvider: ({ children }: { children: ReactNode }) => children,
 }));
-mock.module("@/client/contexts/BrandingContext", () => ({
-  useBranding: () => ({ refresh }),
-}));
 
 const { ToastProvider } = await import("@/client/components/Toast");
-const { AdminBrandingPage } = await import(
+const { AdminBrandingEditor } = await import(
   "@/client/pages/admin/AdminBrandingPage"
 );
 
@@ -118,7 +115,7 @@ function mount() {
     withI18n(
       <MemoryRouter>
         <ToastProvider>
-          <AdminBrandingPage />
+          <AdminBrandingEditor refreshBranding={refresh} />
         </ToastProvider>
       </MemoryRouter>,
     ),

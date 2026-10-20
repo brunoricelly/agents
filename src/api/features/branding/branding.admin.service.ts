@@ -65,8 +65,8 @@ function hasSignature(type: string, bytes: Uint8Array): boolean {
   }
   if (type === "image/webp") {
     return (
-      new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF" &&
-      new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP"
+      new TextDecoder().decode(bytes.subarray(0, 4)) === "RIFF" &&
+      new TextDecoder().decode(bytes.subarray(8, 12)) === "WEBP"
     );
   }
   if (type === "image/x-icon" || type === "image/vnd.microsoft.icon") {
@@ -204,12 +204,12 @@ export async function setBrandingAsset(
     file.size < 1 ||
     file.size > ASSET_MAX_BYTES[kind]
   ) {
-    throw new AppError("image is too large", 400, "errors.imageTooLarge");
+    throw new AppError("image too large", 400, "errors.imageTooLarge");
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (bytes.byteLength < 1 || bytes.byteLength > ASSET_MAX_BYTES[kind]) {
-    throw new AppError("image is too large", 400, "errors.imageTooLarge");
+    throw new AppError("image too large", 400, "errors.imageTooLarge");
   }
   if (file.size !== bytes.byteLength) {
     throw new AppError("image size does not match uploaded bytes", 400);
