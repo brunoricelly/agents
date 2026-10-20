@@ -194,9 +194,7 @@ describe("AdminBrandingPage", () => {
 
     expect(screen.getByLabelText("destaque — Tema claro")).toBeDefined();
     expect(screen.getByLabelText("Enviar logotipo — escuro")).toBeDefined();
-    expect(
-      screen.getByLabelText("Enviar ícone do site — claro"),
-    ).toBeDefined();
+    expect(screen.getByLabelText("Enviar ícone do site — claro")).toBeDefined();
     expect(container.textContent).not.toMatch(/\b(?:Light|Dark)\b/);
     expect(container.innerHTML).not.toMatch(/(?:dark logo|light favicon)/i);
   });
