@@ -60,7 +60,12 @@ COPY --from=build --chown=bun:bun /app/generated ./generated
 COPY --from=build --chown=bun:bun /app/dist ./dist
 COPY --from=build --chown=bun:bun /app/src ./src
 COPY --from=build --chown=bun:bun /app/scripts/db-bootstrap.ts ./scripts/db-bootstrap.ts
+COPY --from=build --chown=bun:bun /app/scripts/runtime-dependency-check.ts ./scripts/runtime-dependency-check.ts
 COPY --from=build /app/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Import and exercise the real production app with only the pruned runtime dependency tree. This
+# catches required peers omitted by `--omit peer` while also pinning the build-only exclusions.
+RUN su-exec bun:bun bun run check:runtime-deps
 
 # stdio MCP launchers (gated by MCP_STDIO_ENABLED). `bunx` is native to the Bun base image; `uvx`
 # runs Python MCP servers. Install CPython under the runtime user's HOME because the MCP transport
