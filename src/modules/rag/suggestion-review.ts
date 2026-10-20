@@ -10,6 +10,7 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { isAnonUserId } from "@/graph/detached-thread";
 import { contentToText } from "@/graph/message-text";
 import type { ModelConfig } from "@/graph/model-config";
 import { resolveModelOverride } from "@/graph/model-override";
@@ -18,7 +19,6 @@ import { buildCallbacks, loadAgentConfig } from "@/graph/prepare";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
-import { isAnonUserId } from "@/modules/client-apps/anonymous";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
   type JobResult,

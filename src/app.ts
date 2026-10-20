@@ -32,7 +32,6 @@ import {
   staticRateLimitMiddleware,
   webhookAuthFailureLimitMiddleware,
 } from "@/api/middlewares/rateLimit";
-import { sdkCors } from "@/api/v1/sdk.controller";
 import config from "@/config";
 import { AppError } from "@/lib/errors";
 import {
@@ -275,8 +274,6 @@ export async function buildApp({
         : { origin: parseOrigins(config.corsOrigin) },
     ),
   );
-  // The SDK turn's own CORS, after the instance-wide plugin so it replaces what that wrote (see sdkCors).
-  app.onRequest(sdkCors);
 
   return app;
 }

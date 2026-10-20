@@ -20,6 +20,7 @@ import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useClientChannelEnabled } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { IS_FREE } from "@/client/lib/env";
 import {
   foreignAgentBotRefusal,
   replaceForeignBotConfirm,
@@ -564,7 +565,9 @@ export function ChannelsTab({
         )}
       </DataBoundary>
 
-      {clientChannelEnabled && <ClientAppsSection agentId={agentId} />}
+      {(clientChannelEnabled || IS_FREE) && (
+        <ClientAppsSection agentId={agentId} />
+      )}
 
       <ConfirmDialog modal={confirm} />
       <ConfirmDialog modal={replaceBotConfirm} />

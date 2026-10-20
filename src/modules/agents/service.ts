@@ -8,6 +8,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { sweepCheckpoints } from "@/graph/checkpoint-sweep";
 import { getCheckpointer, getCheckpointPool } from "@/graph/checkpointer";
+import { EXPIRY_CLAIM } from "@/graph/detached-thread";
 import {
   DEFAULT_MODEL_CONFIG,
   modelConfigReason,
@@ -61,7 +62,6 @@ import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
-import { EXPIRY_CLAIM } from "@/modules/client-channel/identity";
 import { invalidContactAuthRule } from "@/modules/contact-auth/settings";
 import { sampleArgsUnfit } from "@/modules/decisions/arguments";
 import { isNativeDecisionTool } from "@/modules/decisions/config";

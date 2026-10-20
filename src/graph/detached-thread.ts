@@ -7,6 +7,16 @@ import { randomUUID } from "node:crypto";
 // thread (or another channel's) and read its history.
 export type DetachedThreadKind = "playground" | "client";
 
+// What a thread being expired is claimed with, for good (`leaseClientThread` only takes a claim that
+// ran out): such a thread is on its way out, so nothing else waits on it.
+export const EXPIRY_CLAIM = "expire";
+
+// Whether a client-channel user id is an anonymous session's: only the anonymous session module
+// mints the `anon:` prefix, and the routes that take an id from a host refuse it.
+export function isAnonUserId(id: string): boolean {
+  return id.startsWith("anon:");
+}
+
 export function newDetachedThreadId(
   kind: DetachedThreadKind,
   tenantId: bigint,

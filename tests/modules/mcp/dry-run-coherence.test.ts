@@ -11,7 +11,6 @@ import { buildMcpServer } from "@/modules/mcp/server";
 import * as writeRoot from "@/modules/mcp/write";
 import * as writeAgents from "@/modules/mcp/write-agents";
 import * as writeChannels from "@/modules/mcp/write-channels";
-import * as writeClientApps from "@/modules/mcp/write-client-apps";
 import * as writeCodeTools from "@/modules/mcp/write-code-tools";
 import * as writeConversations from "@/modules/mcp/write-conversations";
 import * as writeDocuments from "@/modules/mcp/write-documents";
@@ -114,30 +113,6 @@ const TABLE: Record<string, Row> = {
     why: "key does not exist",
     pastOwnership:
       "measured on a key that EXISTS: `assertApiKeyRevocable` is called by both halves (#492), and a key already revoked is refused by both.",
-  },
-  client_app_delete: {
-    args: { client_app_id: NOPE },
-    why: "app does not exist",
-    pastOwnership:
-      "measured on an app that EXISTS: a pure delete, its keys cascade.",
-  },
-  client_app_key_revoke: {
-    args: { client_app_id: NOPE, kid: "key_x" },
-    why: "app does not exist",
-    pastOwnership:
-      "measured on an app that EXISTS: a kid it does not hold, or one past its grace, is refused by both halves (the preview reads the app's valid keys, the core deletes only a valid key by app and kid and refuses zero rows).",
-  },
-  client_app_update: {
-    args: { client_app_id: NOPE, name: "x" },
-    why: "app does not exist",
-    also: [
-      {
-        args: { client_app_id: NOPE, allowed_origins: ["http://x.com"] },
-        why: "plain http outside localhost",
-      },
-    ],
-    pastOwnership:
-      "measured on an app that EXISTS: the preview parses the same schema the core parses, so an origin the core refuses is refused by the preview too; nothing else is decided past ownership.",
   },
   branding_asset_set: {
     args: {
@@ -626,7 +601,6 @@ type WriteFn = (
 const FNS = {
   ...writeAgents,
   ...writeChannels,
-  ...writeClientApps,
   ...writeCodeTools,
   ...writeConversations,
   ...writeDocuments,

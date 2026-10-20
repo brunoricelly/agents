@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { Elysia } from "elysia";
@@ -22,17 +22,7 @@ const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
 
 setupPrismaMock();
-// The SDK turn's CORS hook looks its app up before the body is validated; an unknown app leaves the
-// probe to reach the boundary like any other route's, with nothing read.
-const clientApps = { ...(await import("@/modules/client-apps/service")) };
-mock.module("@/modules/client-apps/service", () => ({
-  ...clientApps,
-  resolveClientApp: async () => null,
-}));
 const app = (await import("@/app")).default;
-afterAll(() => {
-  mock.module("@/modules/client-apps/service", () => clientApps);
-});
 
 // The probes carry a session: without one, a gated route answers the gate's 401 before anything
 // about its input (src/app.ts). The lowest role, so a probe the boundary let through would stop at

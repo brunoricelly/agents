@@ -160,7 +160,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSignupEnabled(data.signupEnabled);
         if (typeof data.mcpStdioEnabled === "boolean")
           setMcpStdioEnabled(data.mcpStdioEnabled);
-        if (typeof data.clientChannelEnabled === "boolean")
+        // NOTE: the Free edition's session answer has no such field, and the channel stays off there.
+        if (
+          "clientChannelEnabled" in data &&
+          typeof data.clientChannelEnabled === "boolean"
+        )
           setClientChannelEnabled(data.clientChannelEnabled);
         if (data.ttsCheck) setTtsCheck(data.ttsCheck);
         return true;

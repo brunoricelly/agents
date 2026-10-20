@@ -26,7 +26,6 @@ import {
   ranged,
 } from "@/modules/agents/settings-schema";
 import { exportAgent } from "@/modules/agents/transfer";
-import { CLIENT_APP_RANGES } from "@/modules/client-apps/ranges";
 import { listConversations } from "@/modules/conversations/service";
 import { NEXT_NUMBER_RANGE } from "@/modules/documents/numbering";
 import { APPROVAL_TTL_HOURS } from "@/modules/documents/templates";
@@ -203,12 +202,6 @@ import {
   PRICE_OVERRIDES_MAX,
 } from "@/modules/pricing/overrides";
 import { FIXED_LIMIT_RANGE } from "@/modules/proactive-breaker/settings";
-import {
-  clientAppDelete,
-  clientAppKeyRevoke,
-  clientAppList,
-  clientAppUpdate,
-} from "./write-client-apps";
 import {
   knowledgeApprove,
   knowledgeCreate,
@@ -1232,19 +1225,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await apiKeyList(eff)),
-    );
-
-    registerTenantTool(
-      server,
-      principal,
-      "client_app_list",
-      {
-        description:
-          "List an agent's embedding apps (client channel SDK): publicId (the JWT aud), origins, anonymous flag, valid key ids. Never a key.",
-        inputSchema: { agent_id: z.string() },
-      },
-      async (args: { agent_id: string }, eff) =>
-        writeContent(await clientAppList(eff, args)),
     );
 
     registerTenantTool(
@@ -3426,88 +3406,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { api_key_id: string; dry_run?: boolean }, eff) =>
         writeContent(await apiKeyRevoke(eff, args)),
-    );
-
-    // ── client apps (creating one and rotating its key mint a secret, so both stay in the console) ──
-
-    registerTenantTool(
-      server,
-      principal,
-      "client_app_update",
-      {
-        description:
-          "Rename a client app, replace its origins (exact https; http only on localhost), set anonymous sessions, their limits and expiry (days idle), the Turnstile check and its site key, or the monthly spend ceiling (USD, null for none). Acts ONLY when dry_run is false.",
-        inputSchema: {
-          client_app_id: z.string(),
-          name: z.string().optional(),
-          allowed_origins: z.array(z.string()).optional(),
-          anonymous_enabled: z.boolean().optional(),
-          anon_sessions_per_hour: ranged(
-            CLIENT_APP_RANGES.anonSessionsPerHour,
-          ).optional(),
-          anon_messages_per_min: ranged(
-            CLIENT_APP_RANGES.anonMessagesPerMin,
-          ).optional(),
-          anon_expiry_days: ranged(CLIENT_APP_RANGES.anonExpiryDays).optional(),
-          monthly_ceiling_usd: ranged(CLIENT_APP_RANGES.monthlyCeilingUsd)
-            .nullable()
-            .optional(),
-          turnstile_enabled: z.boolean().optional(),
-          turnstile_site_key: z.string().nullable().optional(),
-          dry_run: z.boolean().optional(),
-        },
-      },
-      async (
-        args: {
-          client_app_id: string;
-          name?: string;
-          allowed_origins?: string[];
-          anonymous_enabled?: boolean;
-          anon_sessions_per_hour?: number;
-          anon_messages_per_min?: number;
-          anon_expiry_days?: number;
-          monthly_ceiling_usd?: number | null;
-          turnstile_enabled?: boolean;
-          turnstile_site_key?: string | null;
-          dry_run?: boolean;
-        },
-        eff,
-      ) => writeContent(await clientAppUpdate(eff, args)),
-    );
-
-    registerTenantTool(
-      server,
-      principal,
-      "client_app_delete",
-      {
-        description:
-          "Delete a client app and its keys; its tokens stop verifying. Acts ONLY when dry_run is false.",
-        inputSchema: {
-          client_app_id: z.string(),
-          dry_run: z.boolean().optional(),
-        },
-      },
-      async (args: { client_app_id: string; dry_run?: boolean }, eff) =>
-        writeContent(await clientAppDelete(eff, args)),
-    );
-
-    registerTenantTool(
-      server,
-      principal,
-      "client_app_key_revoke",
-      {
-        description:
-          "Revoke a client app key (kid) now. Minting keys stays in the console. Acts ONLY when dry_run is false.",
-        inputSchema: {
-          client_app_id: z.string(),
-          kid: z.string(),
-          dry_run: z.boolean().optional(),
-        },
-      },
-      async (
-        args: { client_app_id: string; kid: string; dry_run?: boolean },
-        eff,
-      ) => writeContent(await clientAppKeyRevoke(eff, args)),
     );
 
     // ── conversation control (mcp:write; EXTERNAL effect — sends real messages / changes state) ──
