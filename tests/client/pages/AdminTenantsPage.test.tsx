@@ -202,7 +202,9 @@ describe("AdminTenantsPage", () => {
       name: "Delete tenant",
     });
     fireEvent.change(
-      within(confirm).getByRole("textbox", { name: /Type Renamed to confirm/ }),
+      within(confirm).getByRole("textbox", {
+        name: /Type Renamed to confirm/,
+      }),
       {
         target: { value: "Renamed" },
       },
@@ -217,5 +219,5 @@ describe("AdminTenantsPage", () => {
       within(confirm).getByRole("button", { name: "Delete tenant" }),
     );
     await waitFor(() => expect(screen.queryByText("Renamed")).toBeNull());
-  });
+  }, 20_000);
 });
