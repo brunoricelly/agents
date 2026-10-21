@@ -1006,12 +1006,26 @@ function setCustomAttributeTool(ctx: ToolCtx) {
   const writable = ctx.writableAttributes ?? [];
   const writableHas = (scope: string, key: string) =>
     writable.some((w) => w.scope === scope && w.key === key);
-  // With a list, the model is shown only the keys it may write: a key it can never write is a key it
-  // would be refused on.
+  // With a list, the model is shown exactly the keys it may write, each with its definition when the
+  // account has one: a key it can never write is a key it would be refused on, and a listed key with
+  // no definition (or an unreadable catalog) is still one it may write.
   const shown = (defs: CustomAttributeDef[], scope: string) =>
     writable.length === 0
       ? defs
-      : defs.filter((d) => writableHas(scope, d.key));
+      : writable
+          .filter((w) => w.scope === scope)
+          .map(
+            (w) =>
+              defs.find((d) => d.key === w.key) ?? {
+                key: w.key,
+                displayName: w.key,
+                model: "",
+                displayType: "",
+                values: [],
+                regexPattern: null,
+                regexCue: null,
+              },
+          );
   const allConvDefs = attributesForModel(ctx.vocab, "conversation_attribute");
   const allContactDefs = attributesForModel(ctx.vocab, "contact_attribute");
   const allTaskDefs = attributesForModel(ctx.vocab, "task_attribute");
@@ -1028,10 +1042,11 @@ function setCustomAttributeTool(ctx: ToolCtx) {
   const scopeSchema = taskScope
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
-  const description = ctx.vocab
+  const listed = !!ctx.vocab || writable.length > 0;
+  const description = listed
     ? `Set a custom attribute on the conversation, the contact${taskScope ? ", or this conversation's kanban card" : ""}. Use \`scope\` to choose; the known keys (and allowed values for list types) per scope are listed in \`<known_attributes>\` below.`
     : "Set a custom attribute on the conversation (scope='conversation', default) or the contact (scope='contact').";
-  const attributesXml = ctx.vocab
+  const attributesXml = listed
     ? knownAttributesXml(convDefs, contactDefs, taskScope ? taskDefs : null)
     : undefined;
   return tool(

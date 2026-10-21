@@ -1668,11 +1668,13 @@ export function DecisionsFields({
               onChange={(e) =>
                 setDecisions((prev) => ({
                   ...prev,
-                  rules: prev.rules.map((r, n) =>
-                    n === ri
-                      ? { ...r, args: { ...r.args, value: e.target.value } }
-                      : r,
-                  ),
+                  // NOTE: the field is the whole statement: an explicit `clear` stored by REST or
+                  // MCP goes, so an emptied field clears and a typed value is written.
+                  rules: prev.rules.map((r, n) => {
+                    if (n !== ri) return r;
+                    const { clear: _clear, ...args } = r.args;
+                    return { ...r, args: { ...args, value: e.target.value } };
+                  }),
                 }))
               }
             />

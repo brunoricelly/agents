@@ -208,7 +208,11 @@ describe("the agent's list of attributes it may write", () => {
     expect(desc).toContain(
       '<attribute key="serie" values="Infantil|Fundamental"/>',
     );
-    expect(desc).not.toContain('key="nome"');
+    // NOTE: the listed `nome` is the CONTACT's, which has no definition; the conversation's is not listed.
+    expect(desc).toContain(
+      '<contact>\n    <attribute key="nome"/>\n  </contact>',
+    );
+    expect(desc).not.toContain('rule="o nome da pessoa"');
     expect(desc).not.toContain('key="aceite"');
   });
 
@@ -275,5 +279,25 @@ describe("a decisions rule names its value as the operator wrote it", () => {
     expect(decisionCallArgs("private_note", { content: "" })).toEqual({
       content: "",
     });
+  });
+});
+
+describe("a listed key the account has no definition for", () => {
+  test("is shown in the description, as the list says the model may write it", async () => {
+    const { tool } = await setup({
+      writableAttributes: [{ scope: "contact", key: "lead_code" }],
+    });
+    expect(tool.description ?? "").toContain(
+      '<contact>\n    <attribute key="lead_code"/>\n  </contact>',
+    );
+  });
+
+  test("and so is the whole list when the catalog could not be read", async () => {
+    const { tool } = await setup({
+      vocab: undefined,
+      vocabUnavailable: true,
+      writableAttributes: [{ scope: "conversation", key: "serie" }],
+    });
+    expect(tool.description ?? "").toContain('<attribute key="serie"/>');
   });
 });
