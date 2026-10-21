@@ -2,6 +2,19 @@
 
 fazer.ai agents talks to a Chatwoot account through **two token profiles over one HTTP client**, receives Agent Bot webhooks on a **dedicated receiver**, and obeys the rule **attribution = source of truth** (the bot acts only while no human owns the conversation). The agent runtime that decides replies lives in [`graph.md`](graph.md); this doc covers the transport, auth, provisioning, and gate.
 
+## WhatsApp Channel Providers & Coexistence Architecture
+
+Chatwoot supports distinct WhatsApp providers with different architectural capabilities:
+- **WhatsApp Cloud API (`whatsapp_cloud`)**: Meta's official API for business messaging, template/HSM dispatch, and coexistence with companion apps.
+- **WhatsApp Native (`native`)**: High-performance Go connector communicating over Redis Streams (`session/backends/connector/backend.rb`), supporting WebRTC real-time voice calls (`calls`, `voice_calls`), group administration, typing presence, and bidirectional chat with zero per-message Meta fees.
+- **Baileys (`baileys`)**: Standard Node.js WebSocket emulation layer for text/media chat.
+
+### Cost Optimization with Coexistence & Native WhatsApp
+To minimize Meta Cloud API fees while preserving official template messaging:
+1. The phone number is provisioned on Meta Cloud API (`whatsapp_cloud`) with **Coexistence** enabled for outbound HSM templates and verified business presence.
+2. The exact same phone number is connected via **WhatsApp Native** (`native`) for inbound and conversational messaging, browser voice calls, and autonomous LangGraph agent handling.
+3. Chatwoot DB constraint on `channel_whatsapp` uses a composite unique index `(phone_number, provider)` (`index_channel_whatsapp_on_phone_number_provider`), enabling both channels to exist simultaneously under the same account.
+
 Payload shapes, the HMAC scheme, the bot-token capabilities, and the ack/timeout behavior below were confirmed by reading Chatwoot's Agent Bot webhook source, not guessed: `lib/webhooks/trigger.rb`, `app/listeners/agent_bot_listener.rb`, `app/jobs/agent_bots/webhook_job.rb`, `app/presenters/conversations/event_data_presenter.rb`, `app/models/{message,attachment,contact}.rb`, `app/controllers/concerns/access_token_auth_helper.rb` (the `BOT_ACCESSIBLE_ENDPOINTS` allowlist).
 
 ## Client — two profiles (`src/modules/chatwoot/client.ts`)
