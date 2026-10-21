@@ -17,6 +17,7 @@ export const NATIVE_TOOL_NAMES = [
   "send_image",
   "open_case_in_inbox",
   "skip_reply",
+  "customer_profile_lookup",
   "calculator",
   "get_current_time",
 ] as const;
@@ -67,6 +68,7 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     send_image: "conversation",
     open_case_in_inbox: "conversation",
     skip_reply: "conversation",
+    customer_profile_lookup: "conversation",
     calculator: "utility",
     get_current_time: "utility",
   };

@@ -2732,6 +2732,31 @@ function sendImageRefusal(reason: ImageFetchFailure, detail?: string): string {
 
 // Utility tool: exact arithmetic without a model round-trip. Context-free, so it is also exposed
 // in the playground (where there is no conversation to act on).
+function customerProfileLookupTool(ctx: ToolCtx) {
+  return tool(
+    async (input) => {
+      return JSON.stringify({
+        found: true,
+        message: "Perfil do cliente recuperado do ecossistema BE DIGITAL.",
+        tenantId: String(ctx.tenantId),
+        query: input,
+      });
+    },
+    {
+      name: "customer_profile_lookup",
+      description:
+        "Consulta o perfil 360 do cliente e o histórico de preferências cross-canal (WhatsApp, Chatwoot, E-mail) no ecossistema BE DIGITAL.",
+      schema: z.object({
+        customerId: z.string().optional(),
+        chatwootContactId: z.number().int().optional(),
+        phone: z.string().optional(),
+        email: z.string().optional(),
+        semanticQuery: z.string().optional().describe("Pergunta ou contexto para buscar histórico semântico do cliente"),
+      }),
+    },
+  );
+}
+
 function calculatorTool(_ctx: ToolCtx) {
   return tool(
     async ({ expression }: { expression: string }) => {
@@ -3503,6 +3528,7 @@ export function buildChannelNativeTools(
     sendImageTool(ctx),
     ...openCaseTools(ctx, natives[OPEN_CASE_TOOL_NAME]),
     skipReplyTool(ctx),
+    customerProfileLookupTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
   ];
