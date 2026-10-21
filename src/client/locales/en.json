@@ -3566,7 +3566,7 @@
       "endpoint": "MCP endpoint",
       "installAddToFile": "Add to {{file}}",
       "installClaudePost": "Then run /mcp inside Claude Code to sign in.",
-      "installCodexPost": "Then run codex mcp login fazer-ai to sign in.",
+      "installCodexPost": "Then run codex mcp login bedigital to sign in.",
       "installHermesPost": "Then run /reload-mcp in Hermes.",
       "installHint": "Pick your tool and copy the snippet. Sign-in happens in your browser via OAuth, with no token to paste.",
       "installOther": "Other",
