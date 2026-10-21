@@ -17,8 +17,8 @@ COPY . .
 ARG BUN_PUBLIC_CDN_URL=""
 ENV BUN_PUBLIC_CDN_URL=$BUN_PUBLIC_CDN_URL
 
-# @edition-arg
-ARG BUN_PUBLIC_EDITION="free"
+# @edition-arg — default "full" for self-hosted; only the open-source distribution sets "free".
+ARG BUN_PUBLIC_EDITION="full"
 ENV BUN_PUBLIC_EDITION=$BUN_PUBLIC_EDITION
 
 # Generate the Prisma client without persisting a dummy connection string, then build the frontend.
@@ -47,8 +47,8 @@ ENV NODE_ENV=production \
 ARG BUN_PUBLIC_CDN_URL=""
 ENV BUN_PUBLIC_CDN_URL=$BUN_PUBLIC_CDN_URL
 
-# @edition-arg
-ARG BUN_PUBLIC_EDITION="free"
+# @edition-arg — default "full" for self-hosted; only the open-source distribution sets "free".
+ARG BUN_PUBLIC_EDITION="full"
 ENV BUN_PUBLIC_EDITION=$BUN_PUBLIC_EDITION
 
 COPY --from=runtime-dependencies --chown=bun:bun /app/node_modules ./node_modules
