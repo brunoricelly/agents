@@ -14,6 +14,23 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 // checkpointer thread interoperates: what is written here is visible to the next real turn, and what
 // a turn wrote is visible here. `asNode` makes the update self-contained, so it does not depend on
 // the node that wrote the prior checkpoint (which belongs to the real graph's topology).
+export interface CustomerProfile {
+  id?: string;
+  tenantId: string;
+  chatwootContactId?: string | number | null;
+  phone?: string | null;
+  name?: string | null;
+  email?: string | null;
+  metadata?: Record<string, any> | null;
+  preferences?: Record<string, any> | null;
+  notes?: string | null;
+  summary?: string | null;
+  traits?: Record<string, any> | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  [key: string]: any;
+}
+
 export const THREAD_STATE_NODE = "noop";
 
 export function buildThreadStateGraph(checkpointer: BaseCheckpointSaver) {
