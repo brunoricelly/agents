@@ -78,6 +78,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ExternalUser",
   "DetachedThread",
   "ClientThreadMessage",
+  "ClientAllowanceUsage",
   "ClientApp",
   "ClientAppSecret",
   "DashboardDay",

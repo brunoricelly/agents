@@ -191,6 +191,7 @@ model Tenant {
   detachedThreads               DetachedThread[]
   clientThreadMessages          ClientThreadMessage[]
   clientApps                    ClientApp[]
+  clientAllowanceUsage          ClientAllowanceUsage[]
   clientAppSecrets              ClientAppSecret[]
   dashboardDays                 DashboardDay[]
   dashboards                    Dashboard[]
@@ -3312,13 +3313,33 @@ model ClientApp {
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  agent   Agent             @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  secrets ClientAppSecret[]
+  tenant         Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent          Agent                  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  secrets        ClientAppSecret[]
+  allowanceUsage ClientAllowanceUsage[]
 
   @@index([tenantId])
   @@index([agentId])
   @@map("client_apps")
+}
+
+// The messages one of an app's customers started in a calendar month, against the allowance the
+// app's server states in the token it signs. `customer` is `scope:<scope>` or `user:<sub>`.
+model ClientAllowanceUsage {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  clientAppId BigInt   @map("client_app_id")
+  customer    String
+  month       DateTime @db.Date
+  messages    Int      @default(0)
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  clientApp ClientApp @relation(fields: [clientAppId], references: [id], onDelete: Cascade)
+
+  @@unique([clientAppId, customer, month])
+  @@index([tenantId])
+  @@map("client_allowance_usage")
 }
 
 // A key the app's server signs its users' JWTs with (HS256). Kept encrypted rather than hashed,
