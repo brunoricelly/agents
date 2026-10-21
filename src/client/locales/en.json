@@ -3048,6 +3048,11 @@
         "hint": "Payment links and PIX charges; a paid charge wakes the agent.",
         "label": "Asaas"
       },
+      "CHATWOOT_ERP": {
+        "description": "Tenant-bound ERP context served by the connected Chatwoot account. Customer data is redacted, reads come from bounded local snapshots, and sync requests are idempotent.",
+        "hint": "Customer, order, inventory and sync context from Chatwoot's ERP snapshot.",
+        "label": "Chatwoot ERP"
+      },
       "GENERIC": {
         "description": "Your own system speaking back into a conversation. An HTTP tool hands it a reference to the conversation when the agent calls it; later your system sends an event with that reference to this webhook, and the agent passes it on to the customer (or leaves a private note when a person holds the conversation).",
         "hint": "Your own system sends events back into a conversation.",
@@ -3085,6 +3090,12 @@
       "calendarsHint": "The calendars the agent may read and write. The calendar tools stay disabled until at least one is picked.",
       "calendarsPickCredential": "Choose a connected Google credential above to list its calendars.",
       "calendarTabs": "Calendar settings",
+      "chatwootAccount": "Chatwoot account",
+      "chatwootAccountDisconnected": " (disconnected)",
+      "chatwootAccountHint": "The ERP tools only run in conversations from this connected account.",
+      "chatwootAccountPlaceholder": "Select an account",
+      "chatwootAccountsEmpty": "Connect a Chatwoot account under Channels first.",
+      "chatwootAccountsError": "Could not load Chatwoot accounts. Reopen this form after checking Channels.",
       "createCalendarLink": "Need a new calendar? Create one in Google Calendar",
       "createMeetLink": "Create a Google Meet room for each appointment",
       "createMeetLinkHint": "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
@@ -3093,6 +3104,8 @@
       "emailFromPlaceholder": "Name <email@yourdomain.com>",
       "emailReplyTo": "Reply-to (optional)",
       "environment": "Environment",
+      "erpConnectionId": "ERP connection ID",
+      "erpConnectionIdHint": "The connection identifier configured in Chatwoot. It is fixed for every tool call and is never supplied by the model.",
       "filterFolders": "Filter folders by name",
       "folder": "Folder",
       "folderByIdLabel": "Or paste a folder ID",
@@ -4243,6 +4256,30 @@
     "drive_send_file": {
       "desc": "Send a Drive file to the customer as an attachment.",
       "label": "Send file"
+    },
+    "erp_connection_status": {
+      "desc": "Check the configured ERP connection, snapshot freshness and available capabilities.",
+      "label": "ERP status"
+    },
+    "erp_customer_context": {
+      "desc": "Read this customer's redacted ERP profile from the local Chatwoot snapshot.",
+      "label": "ERP customer"
+    },
+    "erp_inventory_lookup": {
+      "desc": "Search the bounded local ERP inventory snapshot without inferring stock.",
+      "label": "ERP inventory"
+    },
+    "erp_orders_lookup": {
+      "desc": "List this customer's recent ERP orders with bounded pagination and dates.",
+      "label": "ERP orders"
+    },
+    "erp_sync_request": {
+      "desc": "Request one idempotent incremental sync for the configured ERP connection.",
+      "label": "Request ERP sync"
+    },
+    "erp_sync_status": {
+      "desc": "Check the status of an ERP sync requested by this agent.",
+      "label": "ERP sync status"
     },
     "resend_email_status": {
       "desc": "Check whether an email sent with Send email was delivered or bounced.",

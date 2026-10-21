@@ -3135,6 +3135,11 @@
         "hint": "Links de pagamento e cobranças PIX; a cobrança paga chama o agente de volta.",
         "label": "Asaas"
       },
+      "CHATWOOT_ERP": {
+        "description": "Contexto de ERP vinculado ao tenant e servido pela conta conectada do Chatwoot. Os dados do cliente são ocultados, as leituras vêm de snapshots locais limitados e os pedidos de sincronização são idempotentes.",
+        "hint": "Contexto de cliente, pedidos, estoque e sincronização pelo snapshot de ERP do Chatwoot.",
+        "label": "Chatwoot ERP"
+      },
       "GENERIC": {
         "description": "O seu próprio sistema falando de volta numa conversa. Uma ferramenta HTTP entrega a ele uma referência da conversa quando o agente a chama; depois o seu sistema envia um evento com essa referência para este webhook, e o agente o repassa ao cliente (ou deixa uma nota privada quando uma pessoa está com a conversa).",
         "hint": "O seu sistema devolve eventos para dentro de uma conversa.",
@@ -3172,6 +3177,12 @@
       "calendarsHint": "As agendas que o agente pode ler e escrever. As ferramentas de agenda ficam desabilitadas até pelo menos uma ser escolhida.",
       "calendarsPickCredential": "Escolha uma credencial do Google conectada acima para listar as agendas.",
       "calendarTabs": "Configurações do calendário",
+      "chatwootAccount": "Conta do Chatwoot",
+      "chatwootAccountDisconnected": " (desconectada)",
+      "chatwootAccountHint": "As ferramentas de ERP só funcionam em conversas desta conta conectada.",
+      "chatwootAccountPlaceholder": "Selecione uma conta",
+      "chatwootAccountsEmpty": "Conecte primeiro uma conta do Chatwoot em Canais.",
+      "chatwootAccountsError": "Não foi possível carregar as contas do Chatwoot. Reabra este formulário depois de verificar Canais.",
       "createCalendarLink": "Precisa de uma agenda nova? Criar no Google Calendar",
       "createMeetLink": "Criar uma sala do Google Meet para cada agendamento",
       "createMeetLinkHint": "O agente compartilha o link do Meet com o cliente. Desligue se esta agenda serve apenas para bloquear horários.",
@@ -3180,6 +3191,8 @@
       "emailFromPlaceholder": "Nome <email@seudominio.com.br>",
       "emailReplyTo": "Responder para (opcional)",
       "environment": "Ambiente",
+      "erpConnectionId": "ID da conexão ERP",
+      "erpConnectionIdHint": "O identificador da conexão configurada no Chatwoot. Ele é fixo em todas as chamadas e nunca é fornecido pelo modelo.",
       "filterFolders": "Filtrar pastas por nome",
       "folder": "Pasta",
       "folderByIdLabel": "Ou cole um ID de pasta",
@@ -4361,6 +4374,30 @@
     "drive_send_file": {
       "desc": "Envia um arquivo do Drive ao cliente como anexo.",
       "label": "Enviar arquivo"
+    },
+    "erp_connection_status": {
+      "desc": "Verifica a conexão ERP configurada, a atualização do snapshot e os recursos disponíveis.",
+      "label": "Status do ERP"
+    },
+    "erp_customer_context": {
+      "desc": "Lê o perfil ocultado deste cliente no ERP pelo snapshot local do Chatwoot.",
+      "label": "Cliente no ERP"
+    },
+    "erp_inventory_lookup": {
+      "desc": "Pesquisa o snapshot local e limitado do estoque do ERP sem inferir disponibilidade.",
+      "label": "Estoque do ERP"
+    },
+    "erp_orders_lookup": {
+      "desc": "Lista os pedidos recentes deste cliente no ERP com paginação e datas limitadas.",
+      "label": "Pedidos no ERP"
+    },
+    "erp_sync_request": {
+      "desc": "Solicita uma sincronização incremental e idempotente da conexão ERP configurada.",
+      "label": "Solicitar sincronização ERP"
+    },
+    "erp_sync_status": {
+      "desc": "Verifica o status de uma sincronização ERP solicitada por este agente.",
+      "label": "Status da sincronização ERP"
     },
     "resend_email_status": {
       "desc": "Verifica se um e-mail enviado com Enviar e-mail foi entregue ou devolveu.",

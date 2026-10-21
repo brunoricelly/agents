@@ -24,6 +24,10 @@ import {
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
+import {
+  CHATWOOT_ERP_CATALOG_TYPE,
+  chatwootErpConfigSchema,
+} from "./erp-config";
 import type { CatalogEntry } from "./types";
 
 // Integration instances: the per-tenant activation of a catalog entry. Creation mints the opaque
@@ -101,6 +105,22 @@ export function assertCatalogConfig(
   catalogType: string,
   config: Record<string, unknown>,
 ): void {
+  if (catalogType === CHATWOOT_ERP_CATALOG_TYPE) {
+    const parsed = chatwootErpConfigSchema.safeParse(config);
+    if (parsed.success) return;
+    const issue = parsed.error.issues[0];
+    const field =
+      issue?.path.join(".") ||
+      (issue?.code === "unrecognized_keys" ? issue.keys[0] : undefined) ||
+      "config";
+    throw new AppError(
+      `config.${field} is invalid for ${CHATWOOT_ERP_CATALOG_TYPE}`,
+      400,
+      "errors.invalidRequestValue",
+      { field: `config.${field}` },
+      `config.${field}`,
+    );
+  }
   if (catalogType !== "GENERIC") return;
   const value = config.instructions;
   if (value === undefined || value === null) return;
