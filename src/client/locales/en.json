@@ -1232,10 +1232,7 @@
     "unpricedCta": "Open model prices"
   },
   "dashboards": {
-    "accountNumber": "Account {{id}}",
-    "proTitle": "Dashboards are a Pro feature",
-    "subtitle": "Panels you arrange yourself over your conversations and AI usage, each at its own address.",
-    "title": "Dashboards"
+    "accountNumber": "Account {{id}}"
   },
   "documentApproval": {
     "again": "Requested again, dated today. This is the new request.",
@@ -3691,7 +3688,6 @@
     "dashboard": "Dashboard",
     "dashboards": "Dashboards",
     "expand": "Expand",
-    "github": "GitHub",
     "home": "Home",
     "logs": "Logs",
     "mainNavigation": "Main navigation",
@@ -3707,8 +3703,7 @@
     "skipToContent": "Skip to content",
     "support": "Support",
     "userMenu": "User menu",
-    "webhooks": "Webhooks",
-    "website": "bedigital.tech"
+    "webhooks": "Webhooks"
   },
   "numberInput": {
     "range": "Between {{min}} and {{max}}.",

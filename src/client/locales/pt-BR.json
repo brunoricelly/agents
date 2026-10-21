@@ -1285,10 +1285,7 @@
     "unpricedCta": "Abrir preços dos modelos"
   },
   "dashboards": {
-    "accountNumber": "Conta {{id}}",
-    "proTitle": "Dashboards são um recurso do Pro",
-    "subtitle": "Painéis que você mesmo monta sobre as suas conversas e o uso de IA, cada um no seu próprio endereço.",
-    "title": "Dashboards"
+    "accountNumber": "Conta {{id}}"
   },
   "documentApproval": {
     "again": "Pedido de novo, com a data de hoje. Este é o pedido novo.",
@@ -3795,7 +3792,6 @@
     "dashboard": "Painel",
     "dashboards": "Dashboards",
     "expand": "Expandir",
-    "github": "GitHub",
     "home": "Início",
     "logs": "Logs",
     "mainNavigation": "Navegação principal",
@@ -3811,8 +3807,7 @@
     "skipToContent": "Pular para o conteúdo",
     "support": "Suporte",
     "userMenu": "Menu do usuário",
-    "webhooks": "Webhooks",
-    "website": "bedigital.tech"
+    "webhooks": "Webhooks"
   },
   "numberInput": {
     "range": "Entre {{min}} e {{max}}.",
