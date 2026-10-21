@@ -1334,6 +1334,7 @@ export interface ToolBuildDeps {
       outsideAllowedLabels?: "refuse" | "accept";
       writableAttributes?: WritableAttribute[];
       onAttributeRefused?: AttributeRefusalReporter;
+      vocabUnavailable?: boolean;
       expiresOn?: AbortSignal;
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
@@ -1598,6 +1599,7 @@ export async function buildToolset(
     !cfg.nativeToolsAllow ||
     cfg.nativeToolsAllow.some((n) => vocabTools.includes(n));
   let vocab: ChatwootVocab | undefined;
+  let vocabUnavailable = false;
   if (needsVocab && ctx.conversationId > 0) {
     try {
       vocab = await loadChatwootVocab(
@@ -1605,6 +1607,7 @@ export async function buildToolset(
         `${ctx.tenantId}:${ctx.instanceId}`,
       );
     } catch (e) {
+      vocabUnavailable = true;
       logger.warn(
         "chatwoot vocab fetch failed (tenant=%s): %s",
         String(ctx.tenantId),
@@ -1711,6 +1714,7 @@ export async function buildToolset(
       replyIsAudioWith: ctx.replyIsAudioWith,
       timezone: cfg.timezone,
       vocab,
+      ...(vocabUnavailable ? { vocabUnavailable } : {}),
       shownLabels,
       ...(ctx.conversationLabelsRead
         ? { conversationLabelsRead: ctx.conversationLabelsRead }

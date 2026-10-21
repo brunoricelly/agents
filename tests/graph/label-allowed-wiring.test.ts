@@ -183,6 +183,8 @@ describe.skipIf(!dbUp)("the allowed list reaches set_labels", () => {
     expect(seen?.writableAttributes).toEqual([
       { scope: "contact", key: "nome" },
     ]);
+    // NOTE: this client cannot list anything, so the vocab read fails and the tool is told so.
+    expect(seen?.vocabUnavailable).toBe(true);
     const report = seen?.onAttributeRefused as (r: unknown) => void;
     report({ scope: "contact", rule: "pattern", key: "nome" });
     report({ scope: "conversation", rule: "not_allowed" });

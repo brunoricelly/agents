@@ -1656,7 +1656,13 @@ export function DecisionsFields({
               aria-label={t("editor.decisionsAttributeKey", "Attribute")}
             />
           </FormField>
-          <FormField label={t("editor.decisionsAttributeValue", "Value")}>
+          <FormField
+            label={t("editor.decisionsAttributeValue", "Value")}
+            description={t(
+              "editor.decisionsAttributeValueHint",
+              "Empty clears the attribute.",
+            )}
+          >
             <Input
               value={str(rule.args.value)}
               onChange={(e) =>

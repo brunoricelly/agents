@@ -1851,6 +1851,7 @@
     "decisionsAttributeKey": "Attribute",
     "decisionsAttributeKeyPlaceholder": "Pick an attribute…",
     "decisionsAttributeValue": "Value",
+    "decisionsAttributeValueHint": "Empty clears the attribute.",
     "decisionsClassifierProblem": "The classifier on the General tab is not complete.",
     "decisionsConditionQuestion": "Question",
     "decisionsCredential": "API key",

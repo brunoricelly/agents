@@ -7,6 +7,7 @@ import {
   type CustomAttributeDef,
   createChatwootClient,
 } from "@/modules/chatwoot/client";
+import { decisionCallArgs } from "@/modules/decisions/config";
 import { fakeChatwootAttributeStore } from "../utils/chatwoot-attribute-store";
 
 // set_custom_attribute holds a value to the account's definition and to the agent's list BEFORE it
@@ -47,10 +48,17 @@ function byName(tools: StructuredToolInterface[], name: string) {
   return t;
 }
 
-async function setup(extra: Partial<ToolCtx> = {}) {
+// `liveDefs` answers the definitions endpoint (the store does not), for a tool that reads them itself.
+async function setup(extra: Partial<ToolCtx> = {}, liveDefs?: unknown[]) {
   const cw = fakeChatwootAttributeStore(5, {
     conversations: { 7: { nome: "Maria" } },
   });
+  const fetchImpl = (async (url: string, init?: RequestInit) =>
+    liveDefs && String(url).endsWith("/custom_attribute_definitions")
+      ? new Response(JSON.stringify(liveDefs), {
+          headers: { "Content-Type": "application/json" },
+        })
+      : cw.fetchImpl(url, init)) as typeof fetch;
   const client = await createChatwootClient(
     {
       baseUrl: "https://chat.example.com",
@@ -58,7 +66,7 @@ async function setup(extra: Partial<ToolCtx> = {}) {
       adminToken: "ADMIN_TOK",
       botToken: "BOT_TOK",
     },
-    { fetchImpl: cw.fetchImpl, assertSafe: async (u: string) => new URL(u) },
+    { fetchImpl, assertSafe: async (u: string) => new URL(u) },
   );
   const refusals: AttributeRefusal[] = [];
   const noEffect: string[] = [];
@@ -212,5 +220,60 @@ describe("the agent's list of attributes it may write", () => {
     expect(desc).toContain(
       '<attribute key="visita" format="a date as YYYY-MM-DD"/>',
     );
+  });
+});
+
+describe("when turn prep could not read the definitions", () => {
+  test("the tool reads them itself and still holds the value to them", async () => {
+    const { cw, tool, refusals } = await setup(
+      { vocab: undefined, vocabUnavailable: true },
+      [
+        {
+          attribute_key: "serie",
+          attribute_display_name: "Série",
+          attribute_model: "conversation_attribute",
+          attribute_display_type: "list",
+          attribute_values: ["Infantil", "Fundamental"],
+        },
+      ],
+    );
+    await tool.invoke({ key: "serie", value: "5º ano" });
+    expect(refusals).toEqual([
+      { scope: "conversation", rule: "list", key: "serie" },
+    ]);
+    expect(cw.conversations.get(7)).toEqual({ nome: "Maria" });
+  });
+
+  test("and refuses when that read fails too, writing nothing", async () => {
+    const { cw, tool, refusals } = await setup({
+      vocab: undefined,
+      vocabUnavailable: true,
+    });
+    const out = String(await tool.invoke({ key: "serie", value: "Infantil" }));
+    expect(out).toContain("could not be read");
+    expect(refusals).toEqual([
+      { scope: "conversation", rule: "definitions_unavailable" },
+    ]);
+    expect(cw.conversations.get(7)).toEqual({ nome: "Maria" });
+  });
+});
+
+describe("a decisions rule names its value as the operator wrote it", () => {
+  test("an empty value is the rule's clear, and the tool clears", async () => {
+    const { cw, tool, refusals } = await setup();
+    await tool.invoke(
+      decisionCallArgs("set_custom_attribute", { key: "nome", value: "" }),
+    );
+    expect(refusals).toEqual([]);
+    expect(cw.conversations.get(7)).toEqual({ nome: "" });
+  });
+
+  test("a value is passed on as is, and other tools are untouched", () => {
+    expect(
+      decisionCallArgs("set_custom_attribute", { key: "k", value: "v" }),
+    ).toEqual({ key: "k", value: "v" });
+    expect(decisionCallArgs("private_note", { content: "" })).toEqual({
+      content: "",
+    });
   });
 });

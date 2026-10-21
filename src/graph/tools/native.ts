@@ -32,6 +32,7 @@ import {
   type AttributeRefusalReporter,
   checkAttributeValue,
 } from "@/modules/chatwoot/attribute-rules";
+import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import {
   ChatwootApiError,
   ChatwootCalledOffError,
@@ -412,6 +413,10 @@ export interface ToolCtx {
   // set_labels / set_custom_attribute enumerate KNOWN values in their descriptions instead of
   // letting the model guess. Absent ⇒ the tools fall back to generic descriptions.
   vocab?: ChatwootVocab;
+  // TRUE WHEN TURN PREP TRIED TO READ `vocab` AND FAILED. set_custom_attribute then reads the
+  // definitions itself at call time, and refuses when that read fails too: a missing catalog is not an
+  // attribute without a definition, and treating it as one would accept anything.
+  vocabUnavailable?: boolean;
   // WHAT THE MODEL WAS SHOWN, per scope: GROUNDING, not authority. A removal comes from the model
   // naming the label in `remove`; this lets it ask for the canonical value instead of inventing a
   // synonym, and a scope missing here costs a redundant `add` rather than a deletion. Read at turn
@@ -875,6 +880,10 @@ function attributeRefusalText(
       return `Not written: ${what} only takes one of these options, spelled exactly: ${(def?.values ?? []).slice(0, 20).join(" | ")}.${ask}`;
     case "pattern":
       return `Not written: the value does not match the format the operator set for ${what}${def?.regexCue ? `: ${def.regexCue}` : ""}.${ask}`;
+    case "pattern_timeout":
+      return `Not written: the value for ${what} could not be checked against the operator's format in time. Nothing was saved; tell the customer it will be recorded by the team.`;
+    case "definitions_unavailable":
+      return `Not written: the rules for ${what} could not be read from Chatwoot right now. Nothing was saved; try again later in the conversation.`;
     default:
       return `Not written: ${what} takes ${TYPED_ATTRIBUTE_FORMAT[def?.displayType ?? ""] ?? "a different value"}.${ask}`;
   }
@@ -1046,7 +1055,14 @@ function setCustomAttributeTool(ctx: ToolCtx) {
       };
       const key = rawKey.trim();
       const target = scope ?? "conversation";
-      const def = defsOf[target].find((d) => d.key === key);
+      let defs: CustomAttributeDef[] | null = defsOf[target];
+      if (ctx.vocabUnavailable) {
+        defs = await ctx.client
+          .listCustomAttributeDefinitions()
+          .then((all) => all.filter((d) => d.model === SCOPE_MODEL[target]))
+          .catch(() => null);
+      }
+      const def = defs?.find((d) => d.key === key);
       // Every refusal is decided here, before any lookup or write: a refused value never reaches
       // Chatwoot or the mirror, so a precondition on the same key keeps reading the previous state.
       const refuse = (rule: AttributeRefusal["rule"]): string => {
@@ -1061,12 +1077,13 @@ function setCustomAttributeTool(ctx: ToolCtx) {
       };
       if (writable.length > 0 && !writableHas(target, key))
         return refuse("not_allowed");
+      if (defs === null) return refuse("definitions_unavailable");
       let value: string;
       if (clear) {
         if (rawValue.trim() !== "") return refuse("clear_with_value");
         value = "";
       } else {
-        const checked = checkAttributeValue(def, rawValue);
+        const checked = await checkAttributeValue(def, rawValue);
         if (!checked.ok) return refuse(checked.rule);
         value = checked.value;
       }

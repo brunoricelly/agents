@@ -1914,6 +1914,7 @@
     "decisionsAttributeKey": "Atributo",
     "decisionsAttributeKeyPlaceholder": "Escolha um atributo…",
     "decisionsAttributeValue": "Valor",
+    "decisionsAttributeValueHint": "Vazio limpa o atributo.",
     "decisionsClassifierProblem": "O classificador, na aba Geral, ainda não está completo.",
     "decisionsConditionQuestion": "Pergunta",
     "decisionsCredential": "Chave de API",
