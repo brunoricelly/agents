@@ -91,4 +91,25 @@ describe("Customer Memory Module - Tenant Isolation", () => {
       })
     ).rejects.toThrow("tenantId is required");
   });
+
+  it("deve permitir appendMemory com isolamento estrito de tenant", async () => {
+    const appendResult = await memoryService.appendMemory({
+      tenantId: tenantA,
+      chatwootContactId: 1001,
+      content: "Cliente prefere contato após as 14h e tem interesse no plano anual",
+      topics: ["preferência", "horário", "plano_anual"],
+      sentiment: 0.8,
+    });
+
+    expect(appendResult.success).toBe(true);
+    expect(appendResult.id).toBe("cust-1");
+
+    await expect(
+      memoryService.appendMemory({
+        tenantId: "",
+        chatwootContactId: 1001,
+        content: "Sem tenantId deve recusar",
+      })
+    ).rejects.toThrow("tenantId is required");
+  });
 });

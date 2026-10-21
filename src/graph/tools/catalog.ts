@@ -18,6 +18,7 @@ export const NATIVE_TOOL_NAMES = [
   "open_case_in_inbox",
   "skip_reply",
   "customer_profile_lookup",
+  "append_customer_memory",
   "calculator",
   "get_current_time",
 ] as const;
@@ -69,6 +70,7 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     open_case_in_inbox: "conversation",
     skip_reply: "conversation",
     customer_profile_lookup: "conversation",
+    append_customer_memory: "conversation",
     calculator: "utility",
     get_current_time: "utility",
   };

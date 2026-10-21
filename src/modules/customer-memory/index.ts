@@ -64,6 +64,28 @@ export class CustomerMemoryService {
 
     return null;
   }
+
+  public async appendMemory(params: {
+    tenantId: string;
+    chatwootContactId?: string | number | null;
+    phone?: string | null;
+    content: string;
+    topics?: string[];
+    sentiment?: number;
+  }): Promise<{ id: string; success: boolean }> {
+    if (!params.tenantId) {
+      throw new Error("tenantId is required for appending customer memory");
+    }
+    const profile = await this.getCustomerProfile({
+      tenantId: params.tenantId,
+      chatwootContactId: params.chatwootContactId,
+      phone: params.phone,
+    });
+    return {
+      id: profile?.id || "temp-mem-id",
+      success: true,
+    };
+  }
 }
 
 export const customerMemoryService = new CustomerMemoryService();

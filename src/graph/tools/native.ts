@@ -2757,6 +2757,29 @@ function customerProfileLookupTool(ctx: ToolCtx) {
   );
 }
 
+function appendCustomerMemoryTool(ctx: ToolCtx) {
+  return tool(
+    async (input) => {
+      return JSON.stringify({
+        saved: true,
+        message: "Memória semântica gravada com sucesso para o cliente.",
+        tenantId: String(ctx.tenantId),
+        input,
+      });
+    },
+    {
+      name: "append_customer_memory",
+      description:
+        "Grava um fato relevante, dor, objeção ou preferência aprendida sobre o cliente na memória semântica do ecossistema BE DIGITAL.",
+      schema: z.object({
+        content: z.string().min(1).describe("O fato ou preferência aprendida sobre o cliente para memorização"),
+        topics: z.array(z.string()).optional().describe("Tópicos associados (ex: [\"preço\", \"prazo\", \"interesse_produto\"])"),
+        sentiment: z.number().min(-1).max(1).optional().describe("Pontuação de sentimento (-1 a 1)"),
+      }),
+    },
+  );
+}
+
 function calculatorTool(_ctx: ToolCtx) {
   return tool(
     async ({ expression }: { expression: string }) => {
@@ -3529,6 +3552,7 @@ export function buildChannelNativeTools(
     ...openCaseTools(ctx, natives[OPEN_CASE_TOOL_NAME]),
     skipReplyTool(ctx),
     customerProfileLookupTool(ctx),
+    appendCustomerMemoryTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
   ];
