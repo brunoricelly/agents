@@ -147,10 +147,10 @@ export interface CreatedInvite {
 // plaintext token ONCE. `invitedById` comes off the CONTEXT, never an argument: it says who granted
 // this membership, and a caller that could pass its own would attribute an invitation to somebody
 // who never issued it.
-export async function createInvite(
+export async function createInviteInTransaction(
+  db: ScopedDb,
   ctx: TenantContext,
   params: CreateInviteParams,
-  base: PrismaClient = basePrisma,
 ): Promise<CreatedInvite> {
   // Defense-in-depth (ManageableRole already excludes it; the DB CHECK is the last line).
   if ((params.role as UserRole) === "SUPER_ADMIN") {
@@ -162,51 +162,64 @@ export async function createInvite(
   const expiresAt = new Date(
     Date.now() + (params.ttlDays ?? INVITE_TTL_DAYS) * DAY_MS,
   );
-  const row = await asPrincipalOn(base, ctx, async (db) => {
-    // NOTE: inside the transaction because this read decides whether the write happens; outside it,
-    // it would decide against a snapshot the upsert is not held to.
-    if (await emailExistsInTenant(db, email, params.tenantId)) {
-      throw new InviteEmailInUseError();
-    }
-    const created = await db.invitation.upsert({
-      where: { tenantId_email: { tenantId: params.tenantId, email } },
-      create: {
-        tenantId: params.tenantId,
-        email,
-        role: params.role,
-        tokenHash,
-        invitedById: ctx.userId,
-        expiresAt,
-      },
-      // Re-invite rotates the token/role/expiry and clears any prior consumption.
-      update: {
-        role: params.role,
-        tokenHash,
-        invitedById: ctx.userId,
-        expiresAt,
-        consumedAt: null,
-      },
-      select: {
-        id: true,
-        tenantId: true,
-        email: true,
-        role: true,
-        expiresAt: true,
-      },
-    });
-    // Filed under the INVITED tenant and not the caller's: a SUPER_ADMIN issuing the first
-    // TENANT_ADMIN invite of a brand-new tenant (`POST /v1/tenants` with `adminEmail`) has no tenant
-    // of their own, and that invitation is the new tenant's business. Unconditional, because every
-    // apply here mints a token: a re-invite ROTATES the previous one, so the act that looks like a
-    // no-op is the one that revoked a live credential.
-    await auditMutationOn(db, ctx, created.tenantId, {
-      action: "invitation.create",
-      target: `invitation:${created.id}`,
-      after: inviteAuditProjection(created),
-    });
-    return created;
+  // NOTE: inside the transaction because this read decides whether the write happens; outside it,
+  // it would decide against a snapshot the upsert is not held to.
+  if (await emailExistsInTenant(db, email, params.tenantId)) {
+    throw new InviteEmailInUseError();
+  }
+  const created = await db.invitation.upsert({
+    where: { tenantId_email: { tenantId: params.tenantId, email } },
+    create: {
+      tenantId: params.tenantId,
+      email,
+      role: params.role,
+      tokenHash,
+      invitedById: ctx.userId,
+      expiresAt,
+    },
+    // Re-invite rotates the token/role/expiry and clears any prior consumption.
+    update: {
+      role: params.role,
+      tokenHash,
+      invitedById: ctx.userId,
+      expiresAt,
+      consumedAt: null,
+    },
+    select: {
+      id: true,
+      tenantId: true,
+      email: true,
+      role: true,
+      expiresAt: true,
+    },
   });
-  return { id: row.id, email: row.email, role: row.role, token, expiresAt };
+  // Filed under the INVITED tenant and not the caller's: a SUPER_ADMIN issuing the first
+  // TENANT_ADMIN invite of a brand-new tenant (`POST /v1/tenants` with `adminEmail`) has no tenant
+  // of their own, and that invitation is the new tenant's business. Unconditional, because every
+  // apply here mints a token: a re-invite ROTATES the previous one, so the act that looks like a
+  // no-op is the one that revoked a live credential.
+  await auditMutationOn(db, ctx, created.tenantId, {
+    action: "invitation.create",
+    target: `invitation:${created.id}`,
+    after: inviteAuditProjection(created),
+  });
+  return {
+    id: created.id,
+    email: created.email,
+    role: created.role,
+    token,
+    expiresAt,
+  };
+}
+
+export async function createInvite(
+  ctx: TenantContext,
+  params: CreateInviteParams,
+  base: PrismaClient = basePrisma,
+): Promise<CreatedInvite> {
+  return asPrincipalOn(base, ctx, (db) =>
+    createInviteInTransaction(db, ctx, params),
+  );
 }
 
 // Only a SUPER_ADMIN mints a fleet invitation, since it makes the invitee one.

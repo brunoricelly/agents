@@ -27,7 +27,6 @@
     "cannotDeleteSelf": "You cannot delete yourself",
     "cannotDemoteSelf": "Cannot demote yourself",
     "createdAt": "Created",
-    "createTenant": "Create tenant",
     "deleteUser": "Delete user",
     "deleteUserConfirm": "Type {{email}} to confirm",
     "deleteUserDone": "User deleted.",
@@ -388,8 +387,52 @@
     "signupFailed": "Signup failed"
   },
   "branding": {
+    "advanced": "Advanced",
+    "assetKind": {
+      "favicon": "favicon",
+      "logo": "logo",
+      "mark": "mark"
+    },
+    "assetLabel": "{{kind}} ({{variant}})",
+    "assetRemoveFailed": "Could not remove the asset.",
+    "assets": "Assets",
+    "assetsHint": "Provide dark and light variants. PNG, JPEG, WebP, SVG and ICO are accepted.",
+    "assetUploadFailed": "Could not upload the asset.",
+    "assetVariant": {
+      "dark": "dark",
+      "light": "light"
+    },
+    "brandColor": "Brand color",
+    "brandColorPicker": "Brand color picker",
+    "brandName": "Brand name",
+    "colorMode": "Color mode",
+    "colors": "Colors",
+    "colorsHint": "Use one brand color or tune each accent token by theme.",
+    "darkTheme": "Dark theme",
+    "hideGithub": "Hide GitHub link",
+    "identity": "Identity",
+    "identityHint": "Names and footer links shown across the deployment.",
+    "lightTheme": "Light theme",
+    "loadFailed": "Could not load branding.",
+    "removeAsset": "Remove {{label}}",
+    "save": "Save branding",
+    "saved": "Branding saved.",
+    "saveFailed": "Could not save branding.",
+    "simple": "Simple",
+    "siteUrl": "Website URL",
     "subtitle": "Customize the app's global appearance (name, colors, logo, favicon).",
-    "title": "Branding"
+    "supportEmail": "Support email",
+    "themeTokenLabel": "{{token}} ({{theme}})",
+    "title": "Branding",
+    "token": {
+      "accent": "accent",
+      "accentForeground": "accent foreground",
+      "accentHover": "accent hover",
+      "accentSoft": "soft accent",
+      "accentSolid": "solid accent",
+      "accentSolidHover": "solid accent hover"
+    },
+    "uploadAsset": "Upload {{label}}"
   },
   "breadcrumbs": {
     "dashboard": "Loading…",
@@ -627,13 +670,15 @@
     "refresh": "Refresh",
     "reload": "Reload",
     "remove": "Remove",
+    "replace": "Replace",
     "retry": "Retry",
     "role": "Role",
     "save": "Save",
     "saved": "Saved.",
     "search": "Search",
     "showHelp": "Show help",
-    "showPassword": "Show password"
+    "showPassword": "Show password",
+    "upload": "Upload"
   },
   "conversation": {
     "activity": {
@@ -4071,16 +4116,29 @@
   },
   "tenant": {
     "create": "Create tenant",
+    "createFailed": "Could not create the tenant.",
     "deepLinkUnavailable": "This link points at a tenant you cannot open. Nothing was switched.",
     "deepLinkUnverified": "Could not check this link",
     "deepLinkUnverifiedHelp": "This link opens a different tenant, and the list of tenants you can open could not be read. Nothing was switched.",
+    "delete": "Delete tenant",
+    "deleteConfirm": "Type {{name}} to confirm",
+    "deleted": "Tenant deleted.",
+    "deleteFailed": "Could not delete the tenant.",
+    "deleteWarning": "This permanently deletes {{name}} and all of its data. It cannot be undone.",
     "demo": "Demo",
+    "edit": "Edit tenant",
+    "firstAdminEmail": "First admin email",
+    "firstAdminOptional": "Optional. Creates a one-time tenant-admin invitation.",
+    "inviteReady": "The tenant was created. Copy this one-time invitation link now.",
+    "inviteUrl": "Invitation URL",
     "label": "Tenant",
     "name": "Name",
     "none": "No tenants yet.",
     "select": "Select tenant",
     "slug": "Slug",
-    "switcher": "Switch tenant"
+    "slugHint": "Lowercase letters, numbers and hyphens.",
+    "switcher": "Switch tenant",
+    "updateFailed": "Could not update the tenant."
   },
   "testMode": {
     "badge": {

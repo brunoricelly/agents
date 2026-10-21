@@ -1,5 +1,4 @@
 import { Elysia, t } from "elysia";
-import { createInvite } from "@/api/features/invitations/invitation.service";
 import { doc, errors } from "@/api/lib/openapi";
 import {
   badQueryParam,
@@ -234,7 +233,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         );
       }
       await confirmStepUp(ctx, b.password);
-      await deleteTenant(ctx, id);
+      await deleteTenant(ctx, id, b.confirmName);
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -268,25 +267,21 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     "/tenants",
     async ({ tenantContext, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const tenant = await createTenant(ctx, {
+      const created = await createTenant(ctx, {
         name: body.name,
         slug: body.slug,
+        adminEmail: body.adminEmail,
       });
+      const { initialAdminInvite, ...tenant } = created;
       let invite:
         | { email: string; role: string; acceptUrl: string; expiresAt: Date }
         | undefined;
-      if (body.adminEmail) {
-        const created = await createInvite(ctx, {
-          // biome-ignore lint/plugin/no-bigint-cast: the id of the tenant row this handler just created.
-          tenantId: BigInt(tenant.id),
-          email: body.adminEmail,
-          role: "TENANT_ADMIN",
-        });
+      if (initialAdminInvite) {
         invite = {
-          email: created.email,
-          role: created.role,
-          acceptUrl: acceptUrl(created.token),
-          expiresAt: created.expiresAt,
+          email: initialAdminInvite.email,
+          role: initialAdminInvite.role,
+          acceptUrl: acceptUrl(initialAdminInvite.token),
+          expiresAt: initialAdminInvite.expiresAt,
         };
       }
       return { instance: instanceIdentity, tenant, invite };

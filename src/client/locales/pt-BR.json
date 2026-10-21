@@ -27,7 +27,6 @@
     "cannotDeleteSelf": "Não é possível excluir a si mesmo",
     "cannotDemoteSelf": "Não é possível rebaixar a si mesmo",
     "createdAt": "Criado em",
-    "createTenant": "Criar tenant",
     "deleteUser": "Excluir usuário",
     "deleteUserConfirm": "Digite {{email}} para confirmar",
     "deleteUserDone": "Usuário excluído.",
@@ -400,8 +399,52 @@
     "signupFailed": "Falha ao cadastrar"
   },
   "branding": {
-    "subtitle": "Personalize a aparência global do app (nome, cores, logo, favicon).",
-    "title": "Identidade visual"
+    "advanced": "Avançado",
+    "assetKind": {
+      "favicon": "ícone do site",
+      "logo": "logotipo",
+      "mark": "símbolo"
+    },
+    "assetLabel": "{{kind}} — {{variant}}",
+    "assetRemoveFailed": "Não foi possível remover o arquivo.",
+    "assets": "Arquivos visuais",
+    "assetsHint": "Forneça versões clara e escura. São aceitos PNG, JPEG, WebP, SVG e ICO.",
+    "assetUploadFailed": "Não foi possível enviar o arquivo.",
+    "assetVariant": {
+      "dark": "escuro",
+      "light": "claro"
+    },
+    "brandColor": "Cor da marca",
+    "brandColorPicker": "Seletor de cor da marca",
+    "brandName": "Nome da marca",
+    "colorMode": "Modo de cores",
+    "colors": "Cores",
+    "colorsHint": "Use uma cor da marca ou ajuste cada cor de destaque por tema.",
+    "darkTheme": "Tema escuro",
+    "hideGithub": "Ocultar link do GitHub",
+    "identity": "Identidade",
+    "identityHint": "Nomes e links do rodapé exibidos em toda a instalação.",
+    "lightTheme": "Tema claro",
+    "loadFailed": "Não foi possível carregar a identidade visual.",
+    "removeAsset": "Remover {{label}}",
+    "save": "Salvar identidade visual",
+    "saved": "Identidade visual salva.",
+    "saveFailed": "Não foi possível salvar a identidade visual.",
+    "simple": "Simples",
+    "siteUrl": "URL do site",
+    "subtitle": "Personalize a aparência global do app (nome, cores, logotipo e ícone do site).",
+    "supportEmail": "E-mail de suporte",
+    "themeTokenLabel": "{{token}} — {{theme}}",
+    "title": "Identidade visual",
+    "token": {
+      "accent": "destaque",
+      "accentForeground": "texto sobre destaque",
+      "accentHover": "destaque ao passar o mouse",
+      "accentSoft": "destaque suave",
+      "accentSolid": "destaque sólido",
+      "accentSolidHover": "destaque sólido ao passar o mouse"
+    },
+    "uploadAsset": "Enviar {{label}}"
   },
   "breadcrumbs": {
     "dashboard": "Carregando…",
@@ -645,13 +688,15 @@
     "refresh": "Atualizar",
     "reload": "Recarregar",
     "remove": "Remover",
+    "replace": "Substituir",
     "retry": "Tentar novamente",
     "role": "Função",
     "save": "Salvar",
     "saved": "Salvo.",
     "search": "Buscar",
     "showHelp": "Mostrar ajuda",
-    "showPassword": "Mostrar senha"
+    "showPassword": "Mostrar senha",
+    "upload": "Enviar"
   },
   "conversation": {
     "activity": {
@@ -4183,16 +4228,29 @@
   },
   "tenant": {
     "create": "Criar tenant",
+    "createFailed": "Não foi possível criar o tenant.",
     "deepLinkUnavailable": "Este link aponta para um tenant que você não pode abrir. Nada foi trocado.",
     "deepLinkUnverified": "Não foi possível conferir este link",
     "deepLinkUnverifiedHelp": "Este link abre outro tenant, e não foi possível ler a lista de tenants que você pode abrir. Nada foi trocado.",
+    "delete": "Excluir tenant",
+    "deleteConfirm": "Digite {{name}} para confirmar",
+    "deleted": "Tenant excluído.",
+    "deleteFailed": "Não foi possível excluir o tenant.",
+    "deleteWarning": "Isso excluirá permanentemente {{name}} e todos os seus dados. Essa ação não pode ser desfeita.",
     "demo": "Demo",
+    "edit": "Editar tenant",
+    "firstAdminEmail": "E-mail do primeiro administrador",
+    "firstAdminOptional": "Opcional. Cria um convite de uso único para um administrador do tenant.",
+    "inviteReady": "O tenant foi criado. Copie agora este link de convite de uso único.",
+    "inviteUrl": "URL do convite",
     "label": "Tenant",
     "name": "Nome",
     "none": "Nenhum tenant ainda.",
     "select": "Selecionar tenant",
     "slug": "Slug",
-    "switcher": "Trocar de tenant"
+    "slugHint": "Letras minúsculas, números e hífens.",
+    "switcher": "Trocar de tenant",
+    "updateFailed": "Não foi possível atualizar o tenant."
   },
   "testMode": {
     "badge": {
