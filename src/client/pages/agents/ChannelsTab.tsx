@@ -565,7 +565,7 @@ export function ChannelsTab({
         )}
       </DataBoundary>
 
-      {(clientChannelEnabled || IS_FREE) && (
+      {clientChannelEnabled && (
         <ClientAppsSection agentId={agentId} />
       )}
 

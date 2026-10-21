@@ -500,13 +500,13 @@
     "removeAccountDone": "Account removed.",
     "removeAccountError": "Could not remove the account. Check your password and try again.",
     "removeAccountTitle": "Remove account",
-    "removeAccountWarning": "This permanently deletes this account's conversations, inboxes, bots, and dashboard data from fazer.ai. The account can then be connected elsewhere. Nothing is deleted from Chatwoot.",
+    "removeAccountWarning": "This permanently deletes this account's conversations, inboxes, bots, and dashboard data from bedigital.tech. The account can then be connected elsewhere. Nothing is deleted from Chatwoot.",
     "removedInbox": "Inbox mirror removed.",
     "removeInbox": "Remove inbox mirror",
     "removeInboxAction": "Remove mirror",
     "removeInboxError": "Could not remove the inbox.",
     "removeInboxTitle": "Remove inbox mirror",
-    "removeInboxWarning": "This removes an inbox from fazer.ai after it has been deleted in Chatwoot. Past conversations remain but no longer show the inbox; usage data and Logs also remain. It only works after deletion in Chatwoot and cannot be undone.",
+    "removeInboxWarning": "This removes an inbox from bedigital.tech after it has been deleted in Chatwoot. Past conversations remain but no longer show the inbox; usage data and Logs also remain. It only works after deletion in Chatwoot and cannot be undone.",
     "removeObserver": "Remove observer {{name}}",
     "replaceForeignBotConfirm": "Replace bot",
     "replaceForeignBotTitle": "Replace the inbox's bot?",
@@ -519,7 +519,7 @@
     "teardownBackup": "Recommended: export or back up your analytics before continuing.",
     "teardownDomain": "Type {{host}} to confirm",
     "teardownError": "Could not disconnect. Check your password and try again.",
-    "teardownWarning": "This permanently deletes all conversations, contacts, inboxes, and dashboard data for this Chatwoot from fazer.ai. Nothing is deleted from Chatwoot.",
+    "teardownWarning": "This permanently deletes all conversations, contacts, inboxes, and dashboard data for this Chatwoot from bedigital.tech. Nothing is deleted from Chatwoot.",
     "title": "Channels",
     "tokenSaved": "Token updated.",
     "tokenSaveError": "Could not update the token (check it).",
@@ -532,7 +532,7 @@
     "choose": "Two connected Chatwoot servers use account {{accountId}}. Open the one you meant:",
     "chooseTitle": "More than one conversation matches",
     "error": "Could not look up this Chatwoot conversation.",
-    "notFound": "fazer.ai agents has no record of conversation {{conversationId}} of Chatwoot account {{accountId}} in the organizations you can open. A conversation is recorded the first time Chatwoot tells the inbox's agent bot about it (a message, a status change), so conversations from before the inbox was connected are not here.",
+    "notFound": "bedigital.tech has no record of conversation {{conversationId}} of Chatwoot account {{accountId}} in the organizations you can open. A conversation is recorded the first time Chatwoot tells the inbox's agent bot about it (a message, a status change), so conversations from before the inbox was connected are not here.",
     "notFoundTitle": "This conversation is not here",
     "option": "Conversation {{id}} in {{tenant}}",
     "toList": "Go to conversations"
@@ -2815,7 +2815,7 @@
       "bound": "This agent now answers the calls of {{inbox}}.",
       "desc": "Choose the WhatsApp inboxes whose calls this agent answers. The agent answering their messages stays as it is. A change applies at once.",
       "empty": "No WhatsApp inbox to take calls",
-      "emptyDesc": "Calls come through WhatsApp inboxes connected by the fazer.ai WhatsApp connector. Connect one, sync the inboxes, and it shows up here.",
+      "emptyDesc": "Calls come through WhatsApp inboxes connected by the bedigital.tech WhatsApp connector. Connect one, sync the inboxes, and it shows up here.",
       "error": "Could not change the inbox's calls.",
       "noCalls": "This inbox does not take calls. Turn it off to release the agent.",
       "off": "This agent is turned off: in the inboxes marked here, calls ring your team until it is turned on.",
@@ -3695,7 +3695,7 @@
     "support": "Support",
     "userMenu": "User menu",
     "webhooks": "Webhooks",
-    "website": "fazer.ai"
+    "website": "bedigital.tech"
   },
   "numberInput": {
     "range": "Between {{min}} and {{max}}.",
@@ -4111,7 +4111,7 @@
     "copyEmail": "Copy email",
     "copyFailed": "Failed",
     "description": "Send us an email at:",
-    "email": "support@fazer.ai",
+    "email": "support@bedigital.tech",
     "title": "Contact support"
   },
   "tenant": {

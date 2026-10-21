@@ -1618,7 +1618,7 @@ export class ChatwootClient {
   }): Promise<unknown> {
     return this.request(this.config.adminToken, "POST", "/agent_bots", {
       name: params.name,
-      description: params.description ?? "fazer.ai agents",
+      description: params.description ?? "bedigital.tech",
       outgoing_url: params.outgoingUrl,
     });
   }
@@ -2199,7 +2199,7 @@ export class ChatwootClient {
   }
 
   // ── admin-token: Kanban driver (Pro) ──
-  // Drives the funnel/board/step/card model the fazer.ai Chatwoot Pro owns (fazer.ai agents has no
+  // Drives the funnel/board/step/card model the bedigital.tech Chatwoot Pro owns (bedigital.tech has no
   // Funnel/Card tables of its own). Routes: /kanban/{boards,boards/:id/steps,tasks}. The
   // create/update bodies wrap the Rails-required root key (board/step/task); their inner shape
   // is owned by the /desenhar-funil wizard, so they are passed through as records.

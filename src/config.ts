@@ -347,7 +347,7 @@ const parseMailFrom = (raw: string | undefined, required: boolean) => {
         'MAIL_FROM must be set when mail is sent through Resend or SMTP, e.g. MAIL_FROM="Atendimento <no-reply@example.com>". The address has to belong to a domain the provider has verified.',
       );
     }
-    return "fazer.ai agents <no-reply@localhost.test>";
+    return "bedigital.tech <no-reply@localhost.test>";
   }
   if (!MAIL_FROM_RE.test(value)) {
     throw new Error(
@@ -1016,14 +1016,14 @@ const config = {
       MAX_WINDOW_MINUTES,
     ),
   },
-  // NOTE: Central fazer.ai hub (app.fazer.ai) that serves operator announcements (the top banner)
+  // NOTE: Central bedigital.tech hub (app.bedigital.tech) that serves operator announcements (the top banner)
   // and the "new version available" check. Empty string DISABLES all hub communication (air-gapped,
-  // or a fork that does not want to talk to fazer.ai). For the Free/open-source edition this is a
+  // or a fork that does not want to talk to bedigital.tech). For the Free/open-source edition this is a
   // light update check: it sends the edition + current version + the request IP, never any PII.
   hub: {
     // NOTE: trim before stripping trailing slashes so a padded or whitespace-only value resolves to
     // "" (disabled) instead of a malformed URL.
-    url: (FAZER_AI_HUB_URL ?? "https://app.fazer.ai")
+    url: (FAZER_AI_HUB_URL ?? "https://app.bedigital.tech")
       .trim()
       .replace(/\/+$/, ""),
     // NOTE: Optional override for the VERSION check only (a fork with its own release cadence points

@@ -125,13 +125,6 @@ export const NAV_ITEMS: NavItem[] = [
     requireAdmin: true,
   },
   {
-    to: "/dashboards",
-    labelKey: "nav.dashboards",
-    defaultLabel: "Dashboards",
-    icon: LayoutDashboard,
-    requireAdmin: true,
-  },
-  {
     to: "/channels",
     labelKey: "nav.channels",
     defaultLabel: "Channels",
@@ -221,25 +214,20 @@ export interface SupportContact {
 // t('support.email', 'support@fazer.ai')
 export const SUPPORT_LINK: SupportContact | null = {
   emailKey: "support.email",
-  defaultEmail: "support@fazer.ai",
+  defaultEmail: "contato@bedigital.tech",
   labelKey: "nav.support",
-  defaultLabel: "Support",
+  defaultLabel: "Suporte",
   icon: LifeBuoy,
 };
 
-// t('nav.website', 'fazer.ai')
-// t('nav.github', 'GitHub')
-// Always the public open-source repo — even in Pro/Full (whose own repo is private): the user can
-// only open the public one. Used for the footer GitHub link AND the "new version" upgrade link, so
-// both point at fazer-ai/agents regardless of edition (never the hub).
-export const AGENTS_REPO_URL = "https://github.com/fazer-ai/agents";
+export const AGENTS_REPO_URL = "https://github.com/brunoricelly/agents";
 
 export const SECONDARY_LINKS: FooterLink[] = [
   {
     id: "website",
-    href: "https://fazer.ai",
+    href: "https://bedigital.tech",
     labelKey: "nav.website",
-    defaultLabel: "fazer.ai",
+    defaultLabel: "bedigital.tech",
     icon: Globe,
   },
   {
@@ -251,6 +239,4 @@ export const SECONDARY_LINKS: FooterLink[] = [
   },
 ];
 
-// Upgrade destination for Pro-gated features (the hub's agents page). Centralized here, alongside
-// the other external links, so every <ProGate> CTA and any future upsell point at one URL.
-export const UPGRADE_URL = "https://app.fazer.ai/#/agents";
+export const UPGRADE_URL = "https://bedigital.tech";

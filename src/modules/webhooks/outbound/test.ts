@@ -49,7 +49,7 @@ function buildTestEnvelope(
     tenant_id: String(tenantId),
     data: {
       message:
-        "Test delivery from fazer.ai agents. If you received this, your endpoint is reachable.",
+        "Test delivery from bedigital.tech. If you received this, your endpoint is reachable.",
       subscribed_events: events,
     },
   };

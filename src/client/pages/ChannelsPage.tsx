@@ -895,7 +895,7 @@ export function ChannelsPage() {
       title: t("channels.disconnectInstance", "Disconnect instance"),
       warning: t(
         "channels.teardownWarning",
-        "This permanently deletes all conversations, contacts, inboxes, and dashboard data for this Chatwoot from fazer.ai. Nothing is deleted from Chatwoot.",
+        "This permanently deletes all conversations, contacts, inboxes, and dashboard data for this Chatwoot from bedigital.tech. Nothing is deleted from Chatwoot.",
       ),
       backupNote: t(
         "channels.teardownBackup",
@@ -943,7 +943,7 @@ export function ChannelsPage() {
       title: t("channels.removeAccountTitle", "Remove account"),
       warning: t(
         "channels.removeAccountWarning",
-        "This permanently deletes this account's conversations, inboxes, bots, and dashboard data from fazer.ai. The account can then be connected elsewhere. Nothing is deleted from Chatwoot.",
+        "This permanently deletes this account's conversations, inboxes, bots, and dashboard data from bedigital.tech. The account can then be connected elsewhere. Nothing is deleted from Chatwoot.",
       ),
       backupNote: t(
         "channels.teardownBackup",
@@ -1162,7 +1162,7 @@ export function ChannelsPage() {
       title: t("channels.removeInboxTitle", "Remove inbox mirror"),
       message: t(
         "channels.removeInboxWarning",
-        "This removes an inbox from fazer.ai after it has been deleted in Chatwoot. Past conversations remain but no longer show the inbox; usage data and Logs also remain. It only works after deletion in Chatwoot and cannot be undone.",
+        "This removes an inbox from bedigital.tech after it has been deleted in Chatwoot. Past conversations remain but no longer show the inbox; usage data and Logs also remain. It only works after deletion in Chatwoot and cannot be undone.",
       ),
       danger: true,
       confirmLabel: t("channels.removeInboxAction", "Remove mirror"),

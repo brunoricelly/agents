@@ -514,13 +514,13 @@
     "removeAccountDone": "Conta removida.",
     "removeAccountError": "Não foi possível remover a conta. Verifique sua senha e tente novamente.",
     "removeAccountTitle": "Remover conta",
-    "removeAccountWarning": "Esta ação apaga permanentemente do fazer.ai as conversas, caixas de entrada, robôs e dados do painel desta conta. A conta poderá ser conectada em outro ambiente. Nada será apagado no Chatwoot.",
+    "removeAccountWarning": "Esta ação apaga permanentemente do bedigital.tech as conversas, caixas de entrada, robôs e dados do painel desta conta. A conta poderá ser conectada em outro ambiente. Nada será apagado no Chatwoot.",
     "removedInbox": "Espelho da caixa de entrada removido.",
     "removeInbox": "Remover espelho da caixa de entrada",
     "removeInboxAction": "Remover espelho",
     "removeInboxError": "Não foi possível remover a caixa de entrada.",
     "removeInboxTitle": "Remover espelho da caixa de entrada",
-    "removeInboxWarning": "Esta ação remove do fazer.ai uma caixa de entrada já excluída no Chatwoot. As conversas antigas permanecem, mas deixam de mostrar a caixa de entrada; os dados de uso e os Logs também permanecem. Só funciona após a exclusão no Chatwoot e não pode ser desfeita.",
+    "removeInboxWarning": "Esta ação remove do bedigital.tech uma caixa de entrada já excluída no Chatwoot. As conversas antigas permanecem, mas deixam de mostrar a caixa de entrada; os dados de uso e os Logs também permanecem. Só funciona após a exclusão no Chatwoot e não pode ser desfeita.",
     "removeObserver": "Remover observador {{name}}",
     "replaceForeignBotConfirm": "Substituir bot",
     "replaceForeignBotTitle": "Substituir o bot da caixa?",
@@ -533,7 +533,7 @@
     "teardownBackup": "Recomendado: exporte ou faça backup dos seus analytics antes de continuar.",
     "teardownDomain": "Digite {{host}} para confirmar",
     "teardownError": "Não foi possível desconectar. Verifique sua senha e tente de novo.",
-    "teardownWarning": "Esta ação apaga permanentemente do fazer.ai todas as conversas, contatos, caixas de entrada e dados do painel deste Chatwoot. Nada será apagado no Chatwoot.",
+    "teardownWarning": "Esta ação apaga permanentemente do bedigital.tech todas as conversas, contatos, caixas de entrada e dados do painel deste Chatwoot. Nada será apagado no Chatwoot.",
     "title": "Canais",
     "tokenSaved": "Token atualizado.",
     "tokenSaveError": "Não foi possível atualizar o token (verifique-o).",
@@ -546,7 +546,7 @@
     "choose": "Dois servidores do Chatwoot conectados usam a conta {{accountId}}. Abra a que você queria:",
     "chooseTitle": "Mais de uma conversa corresponde",
     "error": "Não foi possível localizar esta conversa do Chatwoot.",
-    "notFound": "O fazer.ai agents não tem registro da conversa {{conversationId}} da conta {{accountId}} do Chatwoot nas organizações que você pode abrir. A conversa passa a ter registro na primeira vez que o Chatwoot avisa o bot da caixa de entrada sobre ela (uma mensagem, uma mudança de status), então conversas de antes de a caixa ser conectada não aparecem aqui.",
+    "notFound": "O bedigital.tech não tem registro da conversa {{conversationId}} da conta {{accountId}} do Chatwoot nas organizações que você pode abrir. A conversa passa a ter registro na primeira vez que o Chatwoot avisa o bot da caixa de entrada sobre ela (uma mensagem, uma mudança de status), então conversas de antes de a caixa ser conectada não aparecem aqui.",
     "notFoundTitle": "Esta conversa não está aqui",
     "option": "Conversa {{id}} em {{tenant}}",
     "toList": "Ir para as conversas"
@@ -2902,7 +2902,7 @@
       "bound": "Este agente passa a atender as ligações de {{inbox}}.",
       "desc": "Escolha as caixas do WhatsApp cujas ligações este agente atende. O agente que responde as mensagens delas continua o mesmo. A mudança vale na hora.",
       "empty": "Nenhuma caixa do WhatsApp para receber ligações",
-      "emptyDesc": "As ligações chegam pelas caixas do WhatsApp conectadas pelo conector de WhatsApp da fazer.ai. Conecte uma, sincronize as caixas e ela aparece aqui.",
+      "emptyDesc": "As ligações chegam pelas caixas do WhatsApp conectadas pelo conector de WhatsApp da bedigital.tech. Conecte uma, sincronize as caixas e ela aparece aqui.",
       "error": "Não foi possível mudar as ligações da caixa.",
       "noCalls": "Esta caixa não recebe ligações. Desligue para liberar o agente.",
       "off": "Este agente está desativado: nas caixas marcadas aqui, as ligações tocam para a sua equipe até ele ser ativado.",
@@ -3799,7 +3799,7 @@
     "support": "Suporte",
     "userMenu": "Menu do usuário",
     "webhooks": "Webhooks",
-    "website": "fazer.ai"
+    "website": "bedigital.tech"
   },
   "numberInput": {
     "range": "Entre {{min}} e {{max}}.",
@@ -4223,7 +4223,7 @@
     "copyEmail": "Copiar email",
     "copyFailed": "Falha",
     "description": "Envie um email para:",
-    "email": "suporte@fazer.ai",
+    "email": "suporte@bedigital.tech",
     "title": "Contatar suporte"
   },
   "tenant": {

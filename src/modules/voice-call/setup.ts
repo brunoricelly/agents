@@ -87,7 +87,7 @@ export async function setUpAgentCalls(
       apiKey,
       calls.providerAgentId,
       {
-        name: `${read.name} (fazer.ai agents #${agentId})`,
+        name: `${read.name} (bedigital.tech #${agentId})`,
         prompt: read.prompt,
         voice,
         calls,

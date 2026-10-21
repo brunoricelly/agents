@@ -15,7 +15,7 @@ export function BrandFooter() {
         {year}{" "}
         {isDefault ? (
           <a
-            href="https://fazer.ai"
+            href="https://bedigital.tech"
             className="text-text-secondary hover:text-text-primary hover:underline"
             target="_blank"
             rel="noopener noreferrer"

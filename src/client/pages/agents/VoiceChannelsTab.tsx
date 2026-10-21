@@ -242,7 +242,7 @@ export function VoiceChannelsTab({
               )}
               description={t(
                 "editor.voiceChannels.emptyDesc",
-                "Calls come through WhatsApp inboxes connected by the fazer.ai WhatsApp connector. Connect one, sync the inboxes, and it shows up here.",
+                "Calls come through WhatsApp inboxes connected by the bedigital.tech WhatsApp connector. Connect one, sync the inboxes, and it shows up here.",
               )}
               action={
                 <Button onClick={() => navigate("/channels")}>

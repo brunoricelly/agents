@@ -453,7 +453,7 @@ export interface InstanceAlertChannelTestResult {
 }
 
 const TEST_SUMMARY =
-  "Test alert from fazer.ai agents (instance health). If you can read this, the channel is wired correctly.";
+  "Test alert from bedigital.tech (instance health). If you can read this, the channel is wired correctly.";
 
 // A probe through the same `sendAlert` the worker uses, leaving no delivery row behind.
 export async function sendInstanceAlertChannelTest(
