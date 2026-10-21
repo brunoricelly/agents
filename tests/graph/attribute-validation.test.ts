@@ -301,3 +301,16 @@ describe("a listed key the account has no definition for", () => {
     expect(tool.description ?? "").toContain('<attribute key="serie"/>');
   });
 });
+
+describe("calls made together", () => {
+  // The pattern check waits on a thread, so a set and the clear after it would otherwise queue in
+  // whichever order their checks finished.
+  test("queue their writes in the order they were made, so a set then a clear leaves it cleared", async () => {
+    const { cw, tool } = await setup();
+    await Promise.all([
+      tool.invoke({ key: "nome", value: "Alice" }),
+      tool.invoke({ key: "nome", value: "", clear: true }),
+    ]);
+    expect(cw.conversations.get(7)).toEqual({ nome: "" });
+  });
+});
