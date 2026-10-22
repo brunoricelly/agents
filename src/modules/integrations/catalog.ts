@@ -58,6 +58,15 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
     supportsInbound: false,
     defaultInboundAuth: "NONE",
   },
+  {
+    catalogType: "CHATWOOT_ERP",
+    label: "Chatwoot ERP",
+    kind: "TOOLPACK",
+    description:
+      "Tenant-bound ERP status, customer context, orders, inventory and sync tools over Chatwoot's scoped Agents integration API. The token is stored only by vault reference; the account and connection are fixed in instance config.",
+    supportsInbound: false,
+    defaultInboundAuth: "NONE",
+  },
 ];
 
 const BY_TYPE = new Map(CATALOG.map((e) => [e.catalogType, e]));

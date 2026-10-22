@@ -88,22 +88,19 @@ const ALLOWED_UNTRANSLATED: string[] = [];
 const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   // Brand and product names. A proper noun is not translated in any language.
   "alerts.type.discord",
-  // The feature's name, kept in English in the product's Portuguese as in the menu.
-  "dashboards.title",
   "documents.company.logo",
   "edition.pro",
   "integrations.catalog.ASAAS.label",
+  "integrations.catalog.CHATWOOT_ERP.label",
   "integrations.catalog.GOOGLE_CALENDAR.label",
   "integrations.catalog.GOOGLE_DRIVE.label",
   "integrations.catalog.RESEND.label",
   "mcp.admin.clientNamePlaceholder",
   "nav.dashboards",
-  "nav.github",
   // "item" is the same word in both languages, so the SINGULAR of this counter coincides while its
   // plural ("items" / "itens") does not. The pair is the evidence: a waiver over the whole key would
   // hide a real gap in the form that actually differs.
   "tools.outputTemplateListLength_one",
-  "nav.website",
   "vault.googleOAuth.scopeCalendar",
   "vault.googleOAuth.scopeContacts",
   "vault.googleOAuth.scopeGmail",
@@ -920,8 +917,8 @@ describe("both languages answer, and answer differently", () => {
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
       // A brand name reads the same in both languages, like every `vault.secretType.*` waived above.
-      // Plus the Dashboards feature's name, in the menu and on its page, in both editions.
-      hasProOnlyKeys ? 112 : 110,
+      // Plus the Dashboards feature's name in the menu, in both editions.
+      hasProOnlyKeys ? 110 : 108,
     );
     // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);

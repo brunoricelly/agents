@@ -6,14 +6,20 @@ import {
   CalendarDays,
   CalendarPlus,
   CalendarX2,
+  CircleGauge,
+  DatabaseZap,
   FileSearch,
   Link,
   type LucideIcon,
   Mail,
   MailCheck,
+  PackageSearch,
   QrCode,
   Receipt,
+  RefreshCw,
   Send,
+  ShoppingCart,
+  UserRoundSearch,
   Wrench,
 } from "lucide-react";
 
@@ -34,6 +40,12 @@ export const TOOLPACK_TOOL_ICONS: Record<string, LucideIcon> = {
   calendar_confirm_appointment: CalendarCheck2,
   drive_find_file: FileSearch,
   drive_send_file: Send,
+  erp_connection_status: CircleGauge,
+  erp_customer_context: UserRoundSearch,
+  erp_orders_lookup: ShoppingCart,
+  erp_inventory_lookup: PackageSearch,
+  erp_sync_request: DatabaseZap,
+  erp_sync_status: RefreshCw,
   resend_send_email: Mail,
   resend_email_status: MailCheck,
 };
@@ -205,6 +217,60 @@ export function toolpackToolMeta(name: string, t: TFunction): ToolpackToolMeta {
         description: t(
           "toolpackTools.drive_send_file.desc",
           "Send a Drive file to the customer as an attachment.",
+        ),
+      };
+    case "erp_connection_status":
+      return {
+        icon,
+        label: t("toolpackTools.erp_connection_status.label", "ERP status"),
+        description: t(
+          "toolpackTools.erp_connection_status.desc",
+          "Check the configured ERP connection, snapshot freshness and available capabilities.",
+        ),
+      };
+    case "erp_customer_context":
+      return {
+        icon,
+        label: t("toolpackTools.erp_customer_context.label", "ERP customer"),
+        description: t(
+          "toolpackTools.erp_customer_context.desc",
+          "Read this customer's redacted ERP profile from the local Chatwoot snapshot.",
+        ),
+      };
+    case "erp_orders_lookup":
+      return {
+        icon,
+        label: t("toolpackTools.erp_orders_lookup.label", "ERP orders"),
+        description: t(
+          "toolpackTools.erp_orders_lookup.desc",
+          "List this customer's recent ERP orders with bounded pagination and dates.",
+        ),
+      };
+    case "erp_inventory_lookup":
+      return {
+        icon,
+        label: t("toolpackTools.erp_inventory_lookup.label", "ERP inventory"),
+        description: t(
+          "toolpackTools.erp_inventory_lookup.desc",
+          "Search the bounded local ERP inventory snapshot without inferring stock.",
+        ),
+      };
+    case "erp_sync_request":
+      return {
+        icon,
+        label: t("toolpackTools.erp_sync_request.label", "Request ERP sync"),
+        description: t(
+          "toolpackTools.erp_sync_request.desc",
+          "Request one idempotent incremental sync for the configured ERP connection.",
+        ),
+      };
+    case "erp_sync_status":
+      return {
+        icon,
+        label: t("toolpackTools.erp_sync_status.label", "ERP sync status"),
+        description: t(
+          "toolpackTools.erp_sync_status.desc",
+          "Check the status of an ERP sync requested by this agent.",
         ),
       };
     case "resend_send_email":

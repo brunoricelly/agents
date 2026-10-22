@@ -55,6 +55,10 @@ type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
 >["data"];
 type CatalogEntry = NonNullable<CatalogData>["catalog"][number];
+type ChatwootDeploymentData = Awaited<
+  ReturnType<typeof api.api.v1.chatwoot.deployment.get>
+>["data"];
+type ChatwootAccount = NonNullable<ChatwootDeploymentData>["accounts"][number];
 
 function catalogLabelOf(
   t: TFunction,
@@ -65,6 +69,8 @@ function catalogLabelOf(
       return t("integrations.catalog.GENERIC.label", "Generic webhook");
     case "ASAAS":
       return t("integrations.catalog.ASAAS.label", "Asaas");
+    case "CHATWOOT_ERP":
+      return t("integrations.catalog.CHATWOOT_ERP.label", "Chatwoot ERP");
     case "GOOGLE_CALENDAR":
       return t("integrations.catalog.GOOGLE_CALENDAR.label", "Google Calendar");
     case "GOOGLE_DRIVE":
@@ -92,6 +98,11 @@ function catalogHintOf(
       return t(
         "integrations.catalog.ASAAS.hint",
         "Payment links and PIX charges; a paid charge wakes the agent.",
+      );
+    case "CHATWOOT_ERP":
+      return t(
+        "integrations.catalog.CHATWOOT_ERP.hint",
+        "Customer, order, inventory and sync context from Chatwoot's ERP snapshot.",
       );
     case "GOOGLE_CALENDAR":
       return t(
@@ -160,6 +171,8 @@ function serviceFor(catalogType: string): string {
   switch (catalogType) {
     case "ASAAS":
       return "asaas";
+    case "CHATWOOT_ERP":
+      return "chatwoot";
     case "GOOGLE_CALENDAR":
       return "google_calendar";
     case "GOOGLE_DRIVE":
@@ -212,6 +225,8 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
   switch (catalogType) {
     case "ASAAS":
       return { environment: "sandbox", notifyOnPayment: true };
+    case "CHATWOOT_ERP":
+      return { chatwootInstanceId: "", erpConnectionId: "" };
     case "GOOGLE_CALENDAR":
       return {
         calendarIds: [],
@@ -682,6 +697,11 @@ export function IntegrationEditModal({
           "integrations.catalog.ASAAS.description",
           "Brazilian payments. Create payment links and PIX charges; when a charge is paid, the agent is woken on the conversation that generated it.",
         );
+      case "CHATWOOT_ERP":
+        return t(
+          "integrations.catalog.CHATWOOT_ERP.description",
+          "Tenant-bound ERP context served by the connected Chatwoot account. Customer data is redacted, reads come from bounded local snapshots, and sync requests are idempotent.",
+        );
       case "GOOGLE_CALENDAR":
         return t(
           "integrations.catalog.GOOGLE_CALENDAR.description",
@@ -730,6 +750,10 @@ export function IntegrationEditModal({
   >("absent");
   const [rotating, setRotating] = useState(false);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [chatwootAccounts, setChatwootAccounts] = useState<ChatwootAccount[]>(
+    [],
+  );
+  const [chatwootAccountsError, setChatwootAccountsError] = useState(false);
   const [form, setForm] = useState<Form>(emptyForm());
   // The CURRENT form, readable from inside a request that started before it.
   const formRef = useRef(form);
@@ -836,6 +860,27 @@ export function IntegrationEditModal({
     }
   }
 
+  async function loadChatwootAccounts() {
+    setChatwootAccountsError(false);
+    try {
+      const { data, error } = await api.api.v1.chatwoot.deployment.get();
+      if (error || !data) {
+        setChatwootAccountsError(true);
+        return;
+      }
+      setChatwootAccounts([...data.accounts]);
+    } catch {
+      setChatwootAccountsError(true);
+    }
+  }
+
+  function configForType(catalogType: string): Record<string, unknown> {
+    const config = defaultConfig(catalogType);
+    if (catalogType !== "CHATWOOT_ERP") return config;
+    const active = chatwootAccounts.find((account) => !account.disconnectedAt);
+    return { ...config, chatwootInstanceId: active?.id ?? "" };
+  }
+
   // Derives the duration/granularity "custom" flags from a config: a numeric value that is not on the
   // preset list means the operator typed a custom value, so the field should render as a free input.
   function syncSlotModes(config: Record<string, unknown>) {
@@ -864,6 +909,7 @@ export function IntegrationEditModal({
     setFolderLoaded(false);
     setFolderFilter("");
     void loadHours();
+    void loadChatwootAccounts();
     const payloadId = modal.payload?.id;
     formBaseline.current = "";
     setLoadingForm(true);
@@ -889,7 +935,7 @@ export function IntegrationEditModal({
             name: catalogLabel(first),
             credentialRef: "",
             enabled: true,
-            config: defaultConfig(ct),
+            config: configForType(ct),
             inboundAuthStrategy: (first?.defaultInboundAuth ??
               "NONE") as AuthStrategy,
             inboundSecretRef: "",
@@ -943,12 +989,13 @@ export function IntegrationEditModal({
       form.name.trim() === "" ||
       form.name ===
         catalogLabel(catalog.find((x) => x.catalogType === form.catalogType));
-    loadedConfig.current = defaultConfig(c.catalogType);
+    const config = configForType(c.catalogType);
+    loadedConfig.current = config;
     setForm({
       ...form,
       catalogType: c.catalogType,
       name: nameIsPristine ? catalogLabel(c) : form.name,
-      config: defaultConfig(c.catalogType),
+      config,
       inboundAuthStrategy: (c.defaultInboundAuth ?? "NONE") as AuthStrategy,
       inboundSecretRef: "",
     });
@@ -958,7 +1005,7 @@ export function IntegrationEditModal({
     setFolderError(false);
     setFolderLoaded(false);
     setFolderFilter("");
-    syncSlotModes(defaultConfig(c.catalogType));
+    syncSlotModes(config);
   }
 
   async function save() {
@@ -1300,6 +1347,95 @@ export function IntegrationEditModal({
                   </option>
                 </Select>
               </FormField>
+            )}
+
+            {form.catalogType === "CHATWOOT_ERP" && (
+              <>
+                <FormField
+                  label={t(
+                    "integrations.config.chatwootAccount",
+                    "Chatwoot account",
+                  )}
+                  description={t(
+                    "integrations.config.chatwootAccountHint",
+                    "The ERP tools only run in conversations from this connected account.",
+                  )}
+                  required
+                >
+                  <Select
+                    value={
+                      typeof cfg.chatwootInstanceId === "string"
+                        ? cfg.chatwootInstanceId
+                        : ""
+                    }
+                    onChange={(e) =>
+                      setCfg({ chatwootInstanceId: e.target.value })
+                    }
+                  >
+                    <option value="">
+                      {t(
+                        "integrations.config.chatwootAccountPlaceholder",
+                        "Select an account",
+                      )}
+                    </option>
+                    {chatwootAccounts.map((account) => (
+                      <option
+                        key={account.id}
+                        value={account.id}
+                        disabled={account.disconnectedAt !== null}
+                      >
+                        {account.accountName || `#${account.accountId}`}
+                        {account.disconnectedAt
+                          ? t(
+                              "integrations.config.chatwootAccountDisconnected",
+                              " (disconnected)",
+                            )
+                          : ""}
+                      </option>
+                    ))}
+                  </Select>
+                  {chatwootAccountsError && (
+                    <p className="mt-1 text-danger text-xs">
+                      {t(
+                        "integrations.config.chatwootAccountsError",
+                        "Could not load Chatwoot accounts. Reopen this form after checking Channels.",
+                      )}
+                    </p>
+                  )}
+                  {!chatwootAccountsError && chatwootAccounts.length === 0 && (
+                    <p className="mt-1 text-text-muted text-xs">
+                      {t(
+                        "integrations.config.chatwootAccountsEmpty",
+                        "Connect a Chatwoot account under Channels first.",
+                      )}
+                    </p>
+                  )}
+                </FormField>
+                <FormField
+                  label={t(
+                    "integrations.config.erpConnectionId",
+                    "ERP connection ID",
+                  )}
+                  description={t(
+                    "integrations.config.erpConnectionIdHint",
+                    "The connection identifier configured in Chatwoot. It is fixed for every tool call and is never supplied by the model.",
+                  )}
+                  required
+                >
+                  <Input
+                    value={
+                      typeof cfg.erpConnectionId === "string"
+                        ? cfg.erpConnectionId
+                        : ""
+                    }
+                    maxLength={128}
+                    onChange={(e) =>
+                      setCfg({ erpConnectionId: e.target.value })
+                    }
+                    placeholder="erp-main"
+                  />
+                </FormField>
+              </>
             )}
 
             {form.catalogType === "RESEND" && (

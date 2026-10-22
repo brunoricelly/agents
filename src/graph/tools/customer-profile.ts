@@ -1,4 +1,4 @@
-import { z } from "zod";
+import type { z } from "zod";
 import { CustomerProfileLookupInputSchema } from "@/modules/intelligence/schemas";
 
 export const CUSTOMER_PROFILE_TOOL_NAME = "customer_profile_lookup" as const;
@@ -7,7 +7,7 @@ export const customerProfileLookupSchema = CustomerProfileLookupInputSchema;
 
 export async function executeCustomerProfileLookup(
   input: z.infer<typeof customerProfileLookupSchema>,
-  ctx: { tenantId: bigint; db?: any }
+  ctx: { tenantId: bigint; db?: unknown },
 ) {
   // Busca segura no perfil do cliente respeitando o isolamento do tenant
   return {

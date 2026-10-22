@@ -28,6 +28,19 @@ export interface ToolpackCtx {
   tenantId: bigint;
   base: PrismaClient;
   threadId: string;
+  // The current turn's correlation id. Toolpacks may forward it, but never accept a tenant/turn id
+  // from model input. Absent on contexts without a flow record; those derive an opaque bounded id.
+  turnId?: string;
+  // The current Chatwoot account and contact come from graph context, never tool arguments. ERP tools
+  // compare the configured account reference to this id before resolving the deployment endpoint.
+  chatwootInstanceId?: bigint;
+  chatwootContactId?: number | null;
+  resolveChatwootBinding?: () => Promise<{
+    baseUrl: string;
+    accountId: number;
+    serverKey: string;
+    disconnected: boolean;
+  } | null>;
   // The current customer's DB id (Contact.id), stable per tenant across conversations. Present on a
   // real turn / nudge (resolved from the conversation), absent on the playground. A toolpack that
   // must isolate per-customer data (e.g. Google Calendar appointments) stamps/filters by it and

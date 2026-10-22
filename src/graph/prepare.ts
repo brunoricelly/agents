@@ -1502,6 +1502,31 @@ export async function buildToolset(
   });
   const toolpackTools = buildToolpackTools(cfg.integrationSelections, {
     tenantId: ctx.tenantId,
+    turnId: flow?.turnId,
+    chatwootInstanceId: ctx.instanceId,
+    chatwootContactId: cfg.chatwootContactId,
+    resolveChatwootBinding: async () => {
+      if (ctx.instanceId <= 0n) return null;
+      const row = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+        db.chatwootInstance.findFirst({
+          where: { id: ctx.instanceId },
+          select: {
+            accountId: true,
+            serverKey: true,
+            disconnectedAt: true,
+            deployment: { select: { baseUrl: true } },
+          },
+        }),
+      );
+      return row
+        ? {
+            baseUrl: row.deployment.baseUrl,
+            accountId: row.accountId,
+            serverKey: row.serverKey,
+            disconnected: row.disconnectedAt !== null,
+          }
+        : null;
+    },
     expiresOn: ctx.expiresOn,
     // NOTE: Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
     // four packs with four request helpers is four places to forget.

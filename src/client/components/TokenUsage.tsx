@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { Gauge } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
@@ -30,11 +31,7 @@ export type TokenUsage = {
 // conversation screen reads them from what the turn recorded, and an old turn recorded neither.
 export type TokenTiming = { turnMs: number | null; modelMs: number | null };
 
-type T = (
-  key: string,
-  fallback: string,
-  opts?: Record<string, unknown>,
-) => string;
+type T = TFunction<"translation", undefined>;
 
 // The words for a ledger node. Static keys, so the extractor sees them; a node not listed here is
 // shown as it is stored rather than dropped, since the count beside it is still true.
@@ -397,9 +394,8 @@ export function UsageFigure({
 }) {
   const { t, i18n } = useTranslation();
   if (!usage || usage.calls === 0) return null;
-  const tt = t as T;
-  const figure = usageFigureText(tt, i18n.language, usage);
-  const detail = usageDetail(tt, i18n.language, usage, timing);
+  const figure = usageFigureText(t, i18n.language, usage);
+  const detail = usageDetail(t, i18n.language, usage, timing);
   return (
     <Popover
       label={t("tokenUsage.detailLabel", "Usage detail")}

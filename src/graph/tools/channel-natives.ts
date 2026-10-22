@@ -50,8 +50,6 @@ export const INBOX_NATIVES = {
   send_image: "real",
   open_case_in_inbox: "real",
   skip_reply: "real",
-  customer_profile_lookup: "real",
-  append_customer_memory: "real",
   calculator: "real",
   get_current_time: "real",
 } as const satisfies NativeHandlers;
@@ -86,8 +84,6 @@ export const PLAYGROUND_NATIVES = {
   send_image: "simulated",
   open_case_in_inbox: "simulated",
   skip_reply: "real",
-  customer_profile_lookup: "simulated",
-  append_customer_memory: "simulated",
   calculator: "real",
   get_current_time: "real",
 } as const satisfies NativeHandlers;
@@ -115,8 +111,6 @@ export const CLIENT_CHANNEL_NATIVES = {
   react_to_message: unsupported(NO_CUSTOMER_MESSAGE),
   send_image: unsupported(NO_CUSTOMER_MESSAGE),
   skip_reply: unsupported("the host is waiting for an answer to its request"),
-  customer_profile_lookup: "detached",
-  append_customer_memory: "detached",
   calculator: "real",
   get_current_time: "real",
 } as const satisfies NativeHandlers;

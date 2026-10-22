@@ -5,7 +5,6 @@ import {
   Gauge,
   Globe,
   KeyRound,
-  LayoutDashboard,
   LibraryBig,
   LifeBuoy,
   MessagesSquare,

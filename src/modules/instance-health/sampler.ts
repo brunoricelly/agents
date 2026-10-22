@@ -1,4 +1,4 @@
-import { type IntervalHistogram, monitorEventLoopDelay } from "node:perf_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import instanceHealthPrisma from "@/api/lib/prisma-instance-health";
@@ -28,6 +28,8 @@ import {
   THROUGHPUT_KINDS,
 } from "./signals";
 import { startInstanceAlertWorker, stopInstanceAlertWorker } from "./worker";
+
+type EventLoopHistogram = ReturnType<typeof monitorEventLoopDelay>;
 
 // Samples the instance's own load every 5 s (docs/logs.md, instance alerts) and keeps the last hour
 // in memory, which a restart empties. In-process numbers are read on every tick; the two database
@@ -88,7 +90,7 @@ interface SamplerState {
   pools: Record<string, Omit<PoolStat, "name">>;
   ticks: number;
   timer?: ReturnType<typeof setInterval>;
-  histogram?: IntervalHistogram;
+  histogram?: EventLoopHistogram;
   // The database half of a tick is in flight; the process half never waits on it.
   running: boolean;
   // A database read came due while that half was busy: it runs with the next half that starts,
@@ -352,7 +354,7 @@ export async function readDatabaseSignals(
   });
 }
 
-function defaultSources(histogram: IntervalHistogram): SamplerSources {
+function defaultSources(histogram: EventLoopHistogram): SamplerSources {
   return {
     now: () => Date.now(),
     eventLoopP99Ms: () => {

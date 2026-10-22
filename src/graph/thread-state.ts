@@ -21,14 +21,14 @@ export interface CustomerProfile {
   phone?: string | null;
   name?: string | null;
   email?: string | null;
-  metadata?: Record<string, any> | null;
-  preferences?: Record<string, any> | null;
+  metadata?: Record<string, unknown> | null;
+  preferences?: Record<string, unknown> | null;
   notes?: string | null;
   summary?: string | null;
-  traits?: Record<string, any> | null;
+  traits?: Record<string, unknown> | null;
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export const THREAD_STATE_NODE = "noop";

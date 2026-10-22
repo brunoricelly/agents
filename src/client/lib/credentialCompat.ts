@@ -46,6 +46,7 @@ const DECISIONS_PROVIDER_TYPES: Record<string, string[]> = {
 
 const CATALOG_TYPE_TYPE: Record<string, string> = {
   ASAAS: "asaas",
+  CHATWOOT_ERP: "bearer_token",
   GOOGLE_CALENDAR: "google_oauth",
   GOOGLE_DRIVE: "google_oauth",
   RESEND: "resend",

@@ -1,7 +1,7 @@
 {
   "info": {
     "title": "agents API",
-    "description": "REST surface for the fazer.ai agents operator console. Dev-only documentation, auto-generated from the route schemas.",
+    "description": "REST surface for the bedigital.tech operator console. Dev-only documentation, auto-generated from the route schemas.",
     "version": "0.0.0"
   },
   "servers": [
