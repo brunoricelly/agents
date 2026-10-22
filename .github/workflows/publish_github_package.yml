@@ -12,7 +12,8 @@ on:
 env:
   # NOTE: Edition-aware image name derived from the repo it runs in. In the master this is
   # disabled (gh workflow disable); it publishes only from the derived repos:
-  # fazer-ai/agents -> ghcr.io/fazer-ai/agents (Free), fazer-ai/agents-pro -> .../agents-pro (Pro).
+  # brunoricelly/agents -> ghcr.io/brunoricelly/agents. Private compatibility mirrors derive their
+  # own package names from their repositories without edits here.
   GITHUB_REPO: ghcr.io/${{ github.repository }}
 
 jobs:
@@ -66,12 +67,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
-  # NOTE: arm64 hosted runners are free only on public repos. fazer-ai/agents (Free) is public,
-  # so it builds amd64 + arm64 on GitHub-hosted runners. fazer-ai/agents-pro is private, so it
-  # builds amd64 + arm64 on Blacksmith runners (app installed on the fazer-ai org; one native
-  # runner per arch, no QEMU). Any other private repo (this master, forks without Blacksmith)
-  # falls back to amd64-only on GitHub-hosted runners. The matrix follows the repo it runs in,
-  # with no edit needed either way.
+  # NOTE: arm64 hosted runners are free only on public repos. brunoricelly/agents is public, so it
+  # builds amd64 + arm64 on GitHub-hosted runners. The private compatibility mirror builds both on
+  # Blacksmith runners (one native runner per arch, no QEMU). Any other private repo falls back to
+  # amd64-only on GitHub-hosted runners. The matrix follows the repo it runs in without edits.
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -103,6 +102,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Resolve source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_commit="$(git rev-parse HEAD)"
+          if [[ ! "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid source commit: $source_commit" >&2
+            exit 1
+          fi
+          echo "SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
 
       - name: Update package.json version
         if: startsWith(github.ref, 'refs/tags/')
@@ -143,6 +153,10 @@ jobs:
           build-args: |
             BUN_PUBLIC_CDN_URL=${{ secrets.BUN_PUBLIC_CDN_URL }}
             BUN_PUBLIC_EDITION=${{ vars.BUN_PUBLIC_EDITION || 'full' }}
+            SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
             ${{ env.GITHUB_REPO }}:latest
             ${{ env.GITHUB_REPO }}:${{ github.sha }}
@@ -164,6 +178,10 @@ jobs:
           build-args: |
             BUN_PUBLIC_CDN_URL=${{ secrets.BUN_PUBLIC_CDN_URL }}
             BUN_PUBLIC_EDITION=${{ vars.BUN_PUBLIC_EDITION || 'full' }}
+            SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE_COMMIT }}
           tags: |
             ${{ env.GITHUB_REPO }}:latest
             ${{ env.GITHUB_REPO }}:${{ github.sha }}

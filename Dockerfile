@@ -44,6 +44,9 @@ FROM base AS runtime
 ENV NODE_ENV=production \
   HOME=/home/bun
 
+ARG SOURCE_COMMIT
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+
 ARG BUN_PUBLIC_CDN_URL=""
 ENV BUN_PUBLIC_CDN_URL=$BUN_PUBLIC_CDN_URL
 
@@ -62,6 +65,11 @@ COPY --from=build --chown=bun:bun /app/src ./src
 COPY --from=build --chown=bun:bun /app/scripts/db-bootstrap.ts ./scripts/db-bootstrap.ts
 COPY --from=build --chown=bun:bun /app/scripts/runtime-dependency-check.ts ./scripts/runtime-dependency-check.ts
 COPY --from=build /app/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+RUN test "$(printf '%s' "$SOURCE_COMMIT" | wc -c)" -eq 40 \
+  && printf '%s' "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$' \
+  && printf '%s' "$SOURCE_COMMIT" > /app/.git_sha \
+  && chown bun:bun /app/.git_sha
 
 # Import and exercise the real production app with only the pruned runtime dependency tree. This
 # catches required peers omitted by `--omit peer` while also pinning the build-only exclusions.
