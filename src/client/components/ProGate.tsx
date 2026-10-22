@@ -34,7 +34,7 @@ const FEATURE_DESCRIPTION_KEY: Record<ProFeature, string> = {
 
 // Upsell affordance for a Pro-only action, shown ONLY in the Free edition. Renders its own trigger
 // (the "isca" button that stands in for the real action) and owns an upgrade modal that links to
-// app.fazer.ai. Outside the Free edition it renders nothing. Reusable: pass `feature` for the copy and
+// the product site. Outside the Free edition it renders nothing. Reusable: pass `feature` for the copy and
 // optionally `triggerLabel`/`trigger` to match the action it replaces.
 export function ProGate({
   feature,

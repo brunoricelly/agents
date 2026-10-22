@@ -38,12 +38,12 @@ describe("ProGate (Free edition)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  test("opens a modal with the upgrade CTA pointing at the hub", () => {
+  test("opens a modal with the upgrade CTA pointing at the product site", () => {
     render(<ProGate feature="multiTenant" triggerLabel="Create tenant" />);
     fireEvent.click(screen.getByRole("button", { name: /create tenant/i }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     const cta = screen.getByRole("link", { name: /upgrade/i });
-    expect(cta).toHaveAttribute("href", "https://app.fazer.ai/#/agents");
+    expect(cta).toHaveAttribute("href", "https://bedigital.tech");
     expect(cta).toHaveAttribute("target", "_blank");
   });
 

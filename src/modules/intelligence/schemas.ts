@@ -7,10 +7,12 @@ export const CustomerProfileSchema = z.object({
   fullName: z.string().nullable().optional(),
   email: z.string().email().nullable().optional(),
   phone: z.string().nullable().optional(),
-  preferredChannel: z.enum(["whatsapp", "web_widget", "instagram", "email", "api"]).default("whatsapp"),
+  preferredChannel: z
+    .enum(["whatsapp", "web_widget", "instagram", "email", "api"])
+    .default("whatsapp"),
   sentimentScore: z.number().min(-1).max(1).default(0),
   tags: z.array(z.string()).default([]),
-  customAttributes: z.record(z.unknown()).default({}),
+  customAttributes: z.record(z.string(), z.unknown()).default({}),
   summary: z.string().nullable().optional(),
   createdAt: z.date().optional(),
   updatedAt: z.date().optional(),
@@ -27,7 +29,7 @@ export const CustomerMemorySchema = z.object({
   content: z.string().min(1),
   summary: z.string().nullable().optional(),
   topics: z.array(z.string()).default([]),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   embedding: z.array(z.number()).length(1536).optional(),
   createdAt: z.date().optional(),
 });
@@ -44,7 +46,9 @@ export const CustomerProfileLookupInputSchema = z.object({
   minSimilarity: z.number().min(0).max(1).default(0.65),
 });
 
-export type CustomerProfileLookupInput = z.infer<typeof CustomerProfileLookupInputSchema>;
+export type CustomerProfileLookupInput = z.infer<
+  typeof CustomerProfileLookupInputSchema
+>;
 
 export const CustomerProfileLookupOutputSchema = z.object({
   found: z.boolean(),
@@ -58,9 +62,11 @@ export const CustomerProfileLookupOutputSchema = z.object({
       summary: z.string().nullable(),
       similarity: z.number(),
       createdAt: z.string(),
-    })
+    }),
   ),
   message: z.string(),
 });
 
-export type CustomerProfileLookupOutput = z.infer<typeof CustomerProfileLookupOutputSchema>;
+export type CustomerProfileLookupOutput = z.infer<
+  typeof CustomerProfileLookupOutputSchema
+>;

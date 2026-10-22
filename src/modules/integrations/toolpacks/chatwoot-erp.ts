@@ -6,6 +6,7 @@ import type {
 import { z } from "zod";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fetchBoundedBytes } from "@/lib/outbound";
+import { clipText } from "@/lib/text";
 import {
   CHATWOOT_ERP_CATALOG_TYPE,
   type ChatwootErpConfig,
@@ -256,12 +257,12 @@ function correlationFor(
   ].join("|");
   const hash = digest(seed);
   return {
-    turnId: safeId(ctx.turnId, `turn-${hash.slice(0, 48)}`),
+    turnId: safeId(ctx.turnId, `turn-${clipText(hash, 48)}`),
     toolCallId: safeId(
       config?.toolCall?.id ? String(config.toolCall.id) : undefined,
-      `tool-${hash.slice(0, 48)}`,
+      `tool-${clipText(hash, 48)}`,
     ),
-    requestId: `erp-${hash.slice(0, 64)}`,
+    requestId: `erp-${clipText(hash, 64)}`,
   };
 }
 

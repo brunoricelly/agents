@@ -150,7 +150,7 @@ export async function deleteTenant(
     if (!before) throw tenantNotFound();
     if (confirmName.trim() !== before.name) {
       throw new AppError(
-        "tenant name confirmation does not match",
+        "name confirmation does not match",
         400,
         "errors.tenantConfirmMismatch",
       );

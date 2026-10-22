@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { CustomerMemoryService } from "../../src/modules/customer-memory";
 
 describe("Customer Memory Module - Tenant Isolation", () => {
@@ -88,7 +88,7 @@ describe("Customer Memory Module - Tenant Isolation", () => {
       memoryService.getCustomerProfile({
         tenantId: "",
         chatwootContactId: 1001,
-      })
+      }),
     ).rejects.toThrow("tenantId is required");
   });
 
@@ -96,7 +96,8 @@ describe("Customer Memory Module - Tenant Isolation", () => {
     const appendResult = await memoryService.appendMemory({
       tenantId: tenantA,
       chatwootContactId: 1001,
-      content: "Cliente prefere contato após as 14h e tem interesse no plano anual",
+      content:
+        "Cliente prefere contato após as 14h e tem interesse no plano anual",
       topics: ["preferência", "horário", "plano_anual"],
       sentiment: 0.8,
     });
@@ -109,7 +110,7 @@ describe("Customer Memory Module - Tenant Isolation", () => {
         tenantId: "",
         chatwootContactId: 1001,
         content: "Sem tenantId deve recusar",
-      })
+      }),
     ).rejects.toThrow("tenantId is required");
   });
 });

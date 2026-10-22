@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { Pencil, Plus, Send, Trash2, Webhook } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -43,7 +44,7 @@ import {
 // with a credential to go look at.
 function signingLabel(
   sub: { signingState: string; secretRef: string | null },
-  t: (k: string, d: string, o?: Record<string, unknown>) => string,
+  t: TFunction<"translation", undefined>,
 ): string {
   switch (sub.signingState) {
     case "signed":

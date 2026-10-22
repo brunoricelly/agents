@@ -50,7 +50,6 @@ describe("navigation", () => {
       "/agents",
       "/approvals",
       "/resources",
-      "/dashboards",
       "/channels",
     ]);
   });

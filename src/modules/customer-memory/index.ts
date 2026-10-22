@@ -25,7 +25,9 @@ export class CustomerMemoryService {
     this.store = [];
   }
 
-  public async getCustomerProfile(params: CustomerLookupParams): Promise<CustomerProfile | null> {
+  public async getCustomerProfile(
+    params: CustomerLookupParams,
+  ): Promise<CustomerProfile | null> {
     const { tenantId, chatwootContactId, phone } = params;
 
     if (!tenantId) {
@@ -37,7 +39,9 @@ export class CustomerMemoryService {
 
     if (chatwootContactId !== undefined && chatwootContactId !== null) {
       const foundByContactId = profilesForTenant.find(
-        (p) => p.chatwootContactId !== undefined && String(p.chatwootContactId) === String(chatwootContactId)
+        (p) =>
+          p.chatwootContactId !== undefined &&
+          String(p.chatwootContactId) === String(chatwootContactId),
       );
       if (foundByContactId) {
         return foundByContactId;
@@ -90,6 +94,8 @@ export class CustomerMemoryService {
 
 export const customerMemoryService = new CustomerMemoryService();
 
-export async function getCustomerProfile(params: CustomerLookupParams): Promise<CustomerProfile | null> {
+export async function getCustomerProfile(
+  params: CustomerLookupParams,
+): Promise<CustomerProfile | null> {
   return customerMemoryService.getCustomerProfile(params);
 }
