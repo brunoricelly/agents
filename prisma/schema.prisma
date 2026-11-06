@@ -85,6 +85,8 @@ enum SchedulerJobKind {
   RECONCILE_SWEEP
   INGEST_FALLBACK
   OTHER_INBOX_SUMMARY
+  OCCURRENCE_ROUND
+  OCCURRENCE_SWEEP
 }
 
 enum SchedulerJobStatus {
@@ -197,11 +199,22 @@ model Tenant {
   dashboards                    Dashboard[]
   dashboardPanels               DashboardPanel[]
   dashboardDataSources          DashboardDataSource[]
+  conversationReadings          ConversationReading[]
+  occurrenceConversationReads   OccurrenceConversationRead[]
+  occurrenceMonitors            OccurrenceMonitor[]
+  occurrenceRuns                OccurrenceRun[]
   dashboardViewers              DashboardViewer[]
   dashboardViewerSessions       DashboardViewerSession[]
   dashboardViewerVisits         DashboardViewerVisit[]
   dashboardViewerCodes          DashboardViewerCode[]
   dashboardEmbedLinks           DashboardEmbedLink[]
+  occurrenceThemes              OccurrenceTheme[]
+  occurrenceThemeMembers        OccurrenceThemeMember[]
+  occurrenceThemeEvents         OccurrenceThemeEvent[]
+  occurrenceCanonicals          OccurrenceCanonical[]
+  occurrenceAlias               OccurrenceAlias[]
+  occurrenceSweepCursors        OccurrenceSweepCursor[]
+  occurrenceFlagEpisodes        OccurrenceFlagEpisode[]
 
   @@map("tenants")
 }
@@ -241,24 +254,86 @@ model AppBranding {
 // one password. Which tenants the person works in, and with what role, lives in `TenantUser`; the
 // only role on the person is SUPER_ADMIN, which needs no membership and sees every tenant. Issue #756.
 model User {
-  id           BigInt    @id @default(autoincrement())
-  email        String
-  passwordHash String?   @map("password_hash")
-  googleId     String?   @unique @map("google_id")
-  name         String?
-  isSuperAdmin Boolean   @default(false) @map("is_super_admin")
-  lastLoginAt  DateTime? @map("last_login_at")
+  id                        BigInt    @id @default(autoincrement())
+  email                     String
+  passwordHash              String?   @map("password_hash")
+  googleId                  String?   @unique @map("google_id")
+  name                      String?
+  isSuperAdmin              Boolean   @default(false) @map("is_super_admin")
+  lastLoginAt               DateTime? @map("last_login_at")
+  // The account's WebAuthn user handle: 32 random bytes, set on its first passkey. Never the account
+  // id: two apps on one RP ID would hand out the same small integers, and an authenticator replaces
+  // a discoverable credential that shares RP ID and user handle.
+  webauthnUserHandle        String?   @unique @map("webauthn_user_handle")
+  // "Not now" on the passkey offer after a password sign-in: when, and how many times. On the
+  // account so another browser does not reset it. The numbers are in passkeys/offer.ts.
+  passkeyPromptDismissedAt  DateTime? @map("passkey_prompt_dismissed_at")
+  passkeyPromptDismissCount Int       @default(0) @map("passkey_prompt_dismiss_count")
   // The pre-#756 shape, frozen by its migration and kept one release so the previous image can still
   // serve during the deploy. Ignored by this client; the next release drops both columns.
-  tenantId     BigInt?   @map("tenant_id") @ignore
-  role         UserRole  @default(AGENT) @ignore
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  tenantId                  BigInt?   @map("tenant_id") @ignore
+  role                      UserRole  @default(AGENT) @ignore
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
 
-  memberships   TenantUser[]
-  endedSessions EndedSession[]
+  memberships        TenantUser[]
+  endedSessions      EndedSession[]
+  passkeys           Passkey[]
+  webauthnChallenges WebauthnChallenge[]
 
   @@map("users")
+}
+
+model Passkey {
+  id         String    @id
+  userId     BigInt    @map("user_id")
+  publicKey  Bytes     @map("public_key")
+  // The signature counter, moved only by a compare-and-swap on sign-in.
+  counter    BigInt    @default(0)
+  transports String[]
+  deviceType String    @map("device_type")
+  backedUp   Boolean   @map("backed_up")
+  name       String?
+  // Who keeps it (iCloud Keychain, Google Password Manager...), from the AAGUID, or the browser and
+  // OS it was created from.
+  provider   String?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime? @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("passkeys")
+}
+
+enum WebauthnChallengeType {
+  REGISTRATION
+  // A registration asked for as a conditional create, the browser's silent upgrade after a password
+  // sign-in, which reports neither user presence nor verification. Only this type may skip them.
+  CONDITIONAL_REGISTRATION
+}
+
+// A registration challenge, single use. A sign-in challenge is not stored: it travels signed, and
+// only its spent mark is (`webauthn_consumed_challenges`).
+model WebauthnChallenge {
+  id        String                @id @default(uuid())
+  type      WebauthnChallengeType
+  challenge String
+  userId    BigInt                @map("user_id")
+  expiresAt DateTime              @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("webauthn_challenges")
+}
+
+model WebauthnConsumedChallenge {
+  challengeHash String   @id @map("challenge_hash")
+  expiresAt     DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("webauthn_consumed_challenges")
 }
 
 // A session that logged out, named by its token's `jti` and kept until that token would have expired
@@ -336,16 +411,28 @@ model Invitation {
 // Chatwoot deployment" is a structural invariant (it keeps conversation.id / contact.id / inbox.id —
 // all per-deployment — globally unique within the tenant, killing cross-deployment id collisions).
 model ChatwootDeployment {
-  id         BigInt   @id @default(autoincrement())
-  tenantId   BigInt   @unique @map("tenant_id")
+  id             BigInt   @id @default(autoincrement())
+  tenantId       BigInt   @unique @map("tenant_id")
   // NOT globally unique: one Chatwoot server can back MANY tenants (one client per tenant). The
   // shared admin token only ever acts on accounts resolved from RLS-scoped rows, so sharing is safe.
   // Uniqueness lives on the ACCOUNT (ChatwootInstance.serverKey + accountId), not the server.
   // Stored canonical (lowercase origin, no trailing slash) — see normalizeChatwootBaseUrl.
-  baseUrl    String   @map("base_url")
-  adminToken String   @map("admin_token") // encrypted; the shared user/admin access token
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
+  baseUrl        String   @map("base_url")
+  adminToken     String   @map("admin_token") // encrypted; the shared user/admin access token
+  // The base THIS Chatwoot calls the agents on (each Agent Bot's outgoing_url). Null means PUBLIC_URL;
+  // set when the Chatwoot reaches the agents on a private address. Stored canonical, no trailing slash.
+  webhookBaseUrl String?  @map("webhook_base_url")
+  // The address people open this Chatwoot on, for the links the console and case notes print. Null
+  // means base_url; set when base_url is a private address only the servers reach.
+  publicUrl      String?  @map("public_url")
+  // The key the deployment's accounts are reserved under across tenants: the address it was first
+  // connected on. Null means base_url; pinned when the base URL moves, so a move never frees a claim.
+  serverKey      String?  @map("server_key")
+  // Every base URL it answered on before the current one, so each address a move left behind still
+  // holds its accounts for every other tenant.
+  formerBaseUrls String[] @default([]) @map("former_base_urls")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instances ChatwootInstance[]
@@ -707,10 +794,11 @@ model Inbox {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance      ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
-  conversations Conversation[]
-  observers     InboxObserver[]
+  tenant                 Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance               ChatwootInstance        @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  conversations          Conversation[]
+  observers              InboxObserver[]
+  occurrenceSweepCursors OccurrenceSweepCursor[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootInboxId])
   @@map("inboxes")
@@ -1085,6 +1173,11 @@ model Conversation {
   // (src/modules/conversations/failure-note.ts), so a message mirrored after its last ask makes the
   // claim lose. NULL = none mirrored since the column existed.
   lastInboundMessageId            Int?      @map("last_inbound_message_id")
+  // A row the occurrences sweep inserted for an inbox no agent receives (src/modules/occurrences/sweep.ts):
+  // written once, with the inbox, and never touched by the sweep again. The conversation list and the
+  // dashboards count what the agents received and leave it out; the first webhook that mirrors the
+  // conversation writes it as new and clears the flag.
+  sweepOnly                       Boolean   @default(false) @map("sweep_only")
   // The newest Chatwoot message id the contact authorization gate REFUSED here (issue #890). Media of a
   // message at or below it is never sent to an STT or vision provider, whatever the gate answers
   // later: a consent given after a file was sent does not cover that file, and a late update of the
@@ -1259,15 +1352,18 @@ model Conversation {
   createdAt                       DateTime  @default(now()) @map("created_at")
   updatedAt                       DateTime  @updatedAt @map("updated_at")
 
-  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance        ChatwootInstance    @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
-  inbox           Inbox?              @relation(fields: [inboxId], references: [id], onDelete: SetNull)
-  contact         Contact?            @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  replyClaims     MessageReplyClaim[]
-  turnDeliveries  AgentTurnDelivery[]
-  replyDispensals ReplyDispensal[]
-  ruleStates      DecisionRuleState[]
-  ruleClaims      DecisionRuleClaim[]
+  tenant                 Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance               ChatwootInstance             @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  inbox                  Inbox?                       @relation(fields: [inboxId], references: [id], onDelete: SetNull)
+  contact                Contact?                     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  replyClaims            MessageReplyClaim[]
+  turnDeliveries         AgentTurnDelivery[]
+  replyDispensals        ReplyDispensal[]
+  ruleStates             DecisionRuleState[]
+  ruleClaims             DecisionRuleClaim[]
+  readings               ConversationReading[]
+  occurrenceReads        OccurrenceConversationRead[]
+  occurrenceThemeMembers OccurrenceThemeMember[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
   @@index([threadId])
@@ -1719,16 +1815,19 @@ model DashboardViewerVisit {
 // it reads that dashboard only. `origins` are the https origins allowed to frame it. Rotating replaces
 // the hash on the same row; revoking stamps `revokedAt`, and the next request is refused.
 model DashboardEmbedLink {
-  id          BigInt    @id @default(autoincrement())
-  tenantId    BigInt    @map("tenant_id")
-  dashboardId BigInt    @map("dashboard_id")
-  label       String
-  origins     String[]  @default([])
-  tokenHash   String    @unique @map("token_hash")
-  lastUsedAt  DateTime? @map("last_used_at")
-  revokedAt   DateTime? @map("revoked_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id              BigInt    @id @default(autoincrement())
+  tenantId        BigInt    @map("tenant_id")
+  dashboardId     BigInt    @map("dashboard_id")
+  label           String
+  origins         String[]  @default([])
+  // Whether a read through this link carries the contact's name, phone and e-mail (an occurrences
+  // panel's theme conversations). Off by default: the link opens without a sign-in.
+  showContactData Boolean   @default(false) @map("show_contact_data")
+  tokenHash       String    @unique @map("token_hash")
+  lastUsedAt      DateTime? @map("last_used_at")
+  revokedAt       DateTime? @map("revoked_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   dashboard Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
@@ -2185,8 +2284,11 @@ model IntegrationInstance {
 // Fail-closed for HTTP/MCP/INTEGRATION/RAG (a tool not granted is never exposed; a new
 // upstream tool is not auto-granted). NATIVE is the one permissive default: empty
 // enabledTools — or no row — means ALL native conversation-scoped tools. enabledTools is the
-// sub-tool allowlist (NATIVE/RAG/MCP/INTEGRATION); knowledgeBaseIds scopes RAG (empty = all
-// tenant KBs). Partial unique indexes (in the migration) cap NATIVE/RAG at one row per agent.
+// sub-tool allowlist (NATIVE/RAG/MCP/INTEGRATION); knowledgeBaseIds scopes RAG (empty = no
+// base: search_knowledge finds nothing, suggest_kb_entry is refused). No FK covers that array:
+// deleting a base removes its id here, and the whole RAG row when it was the only one
+// (deleteKnowledgeBase). Partial unique indexes (in the migration) cap NATIVE/RAG at one row per
+// agent.
 model AgentToolSelection {
   id                    BigInt          @id @default(autoincrement())
   tenantId              BigInt          @map("tenant_id")
@@ -2433,6 +2535,9 @@ model SchedulerJob {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, kind, dedupeKey])
+  // The lookup the scoped reads can use: under RLS `kind` (an enum) never reaches the unique index
+  // above, so a read by dedupe key walks every kind of the tenant (issue #1700).
+  @@index([tenantId, dedupeKey])
   @@index([status, runAt])
   @@map("scheduler_jobs")
 }
@@ -3405,4 +3510,332 @@ model DashboardDirty {
   @@index([tenantId, processedAt])
   @@index([tenantId, createdAt])
   @@map("dashboard_dirty")
+}
+
+// WHAT AN OBSERVER READ OFF A CONVERSATION for the account's occurrence monitor (docs/occurrences.md):
+// one row per conversation and declared field, written by the `record_reading` tool. The fields are the
+// account's (`tenant.settings.occurrences.fields`), so `field` is whatever key it declared. Counting
+// "new conversations" reads `first_read_at`, which a later change of value does not move.
+// One occurrence monitor of an account (docs/occurrences.md): its name and the configuration an admin
+// chooses (the inboxes it reads, the fields, the thresholds, the model, the cadences), validated by
+// modules/occurrences/settings.ts. Its readings, themes, canonicals and rounds are its own rows; the
+// spending cap, prices and vault stay the account's. `position` orders the list, and the account's
+// first monitor (the lowest) is the one the paths without a monitor id answer for.
+model OccurrenceMonitor {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  name      String
+  config    Json     @default("{}")
+  position  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant            Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  readings          ConversationReading[]
+  conversationReads OccurrenceConversationRead[]
+  sweepCursors      OccurrenceSweepCursor[]
+  runs              OccurrenceRun[]
+  flagEpisodes      OccurrenceFlagEpisode[]
+  themes            OccurrenceTheme[]
+  members           OccurrenceThemeMember[]
+  events            OccurrenceThemeEvent[]
+  canonicals        OccurrenceCanonical[]
+  aliases           OccurrenceAlias[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, position])
+  @@map("occurrence_monitors")
+}
+
+model ConversationReading {
+  id               BigInt    @id @default(autoincrement())
+  tenantId         BigInt    @map("tenant_id")
+  // The monitor that read it: two monitors reading one conversation keep a reading each.
+  monitorId        BigInt    @map("monitor_id")
+  conversationId   BigInt    @map("conversation_id")
+  field            String
+  value            String
+  // The agent that wrote the current value. Plain column: a reading outlives the agent that read it.
+  agentId          BigInt?   @map("agent_id")
+  firstReadAt      DateTime  @default(now()) @map("first_read_at")
+  lastReadAt       DateTime  @default(now()) @map("last_read_at")
+  // The customer message the first reading covered, which the flags count the conversation at. Null on
+  // a reading stored before it was kept, or with no customer message, which counts at `firstReadAt`.
+  firstInboundAt   DateTime? @map("first_inbound_at")
+  // The reference's canonical name, as the canonical step decided it for this value. Null on every
+  // other field, on an empty reference (the no-reference bucket) and until the step has run.
+  canonicalId      BigInt?   @map("canonical_id")
+  // Whether Chatwoot's attribute holds the canonical name: every write of the reading clears it, since
+  // the observer writes its raw spelling there, and the round's copy sets it.
+  canonicalWritten Boolean   @default(false) @map("canonical_written")
+  // The name the copy last put in Chatwoot for this value, kept across merges so a folder on it keeps
+  // the conversation; and what Chatwoot may still hold from before the current value (every spelling
+  // since the last copy, as the observer's writes of them may have failed), so a copy can tell such a
+  // leftover from a newer write.
+  writtenName      String?   @map("written_name")
+  remoteBefore     String[]  @default([]) @map("remote_before")
+  // When the copy last failed: a failed copy waits behind the ones never tried, so a conversation
+  // whose Chatwoot keeps refusing cannot take the round's whole batch. A new value clears it.
+  copyTriedAt      DateTime? @map("copy_tried_at")
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor    @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  canonical    OccurrenceCanonical? @relation(fields: [canonicalId], references: [id], onDelete: SetNull)
+
+  @@unique([monitorId, conversationId, field])
+  @@index([conversationId])
+  @@index([canonicalId])
+  @@index([monitorId, field, firstReadAt])
+  // The round counts what was read in its window.
+  @@index([monitorId, field, lastReadAt])
+  @@map("conversation_readings")
+}
+
+// Where the monitor's reading of a conversation stands: the customer message it last covered
+// (`readInboundAt`, the conversation's `last_inbound_at` when it was read), so a conversation is read
+// again only once the customer wrote after it. A read that failed is counted against the message it
+// was for (`failedInboundAt`); after a few, that message is given up on until the customer writes
+// again. The fields' values are `conversation_readings`, as before.
+model OccurrenceConversationRead {
+  id                     BigInt    @id @default(autoincrement())
+  tenantId               BigInt    @map("tenant_id")
+  monitorId              BigInt    @map("monitor_id")
+  conversationId         BigInt    @map("conversation_id")
+  readInboundAt          DateTime? @map("read_inbound_at")
+  // The covered message's Chatwoot id: two messages in one second share `readInboundAt`.
+  readInboundMessageId   Int?      @map("read_inbound_message_id")
+  readAt                 DateTime? @map("read_at")
+  failures               Int       @default(0)
+  failedInboundAt        DateTime? @map("failed_inbound_at")
+  // The failed message's Chatwoot id, beside its time, as `readInboundMessageId`.
+  failedInboundMessageId Int?      @map("failed_inbound_message_id")
+  // The conversation's latest activity as the sweep last listed it (an inbox no agent receives), and
+  // what the last reading covered of it: newer listed than read makes the conversation due. Only the
+  // sweep writes the first, only the reading the second.
+  sweptActivityAt        DateTime? @map("swept_activity_at")
+  // The listed activity at which the conversation last became due (newer than what was covered),
+  // kept while it waits: a first reading's window is measured from it, so later activity by the
+  // team does not age out a customer message the cap left for later. Written by the sweep only.
+  sweptDueSince          DateTime? @map("swept_due_since")
+  readSweptActivityAt    DateTime? @map("read_swept_activity_at")
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([monitorId, conversationId])
+  @@index([tenantId])
+  @@index([conversationId])
+  @@map("occurrence_conversation_reads")
+}
+
+// How far the occurrences sweep has listed an inbox no agent receives, per monitor (docs/occurrences.md,
+// "Inboxes no agent receives"). Only the sweep writes it.
+model OccurrenceSweepCursor {
+  tenantId   BigInt    @map("tenant_id")
+  monitorId  BigInt    @map("monitor_id")
+  inboxId    BigInt    @map("inbox_id")
+  // Every conversation listed with this activity or later was queued: the next listing stops here.
+  activityAt DateTime? @map("activity_at")
+  // When the inbox was last swept: the least recently swept goes first.
+  sweptAt    DateTime? @map("swept_at")
+  // When its listing last failed, cleared by the next one that lists: the round says so.
+  unlistedAt DateTime? @map("unlisted_at")
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  inbox   Inbox             @relation(fields: [inboxId], references: [id], onDelete: Cascade)
+
+  @@id([monitorId, inboxId])
+  @@index([tenantId])
+  @@map("occurrence_sweep_cursors")
+}
+
+// One round of the occurrence monitor: when it ran, how long it took, what it read and what its model
+// calls cost (the sum of the round's `llm_usage` rows). `status`: ok | failed.
+model OccurrenceRun {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      BigInt    @map("tenant_id")
+  monitorId     BigInt    @map("monitor_id")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  durationMs    Int?      @map("duration_ms")
+  status        String    @default("running")
+  readings      Int       @default(0)
+  // Where this round's count of readings stopped, stored with the count: the next round counts from
+  // the latest one, so a round that failed before counting leaves its window to the next.
+  countedUntil  DateTime? @map("counted_until")
+  modelCalls    Int       @default(0) @map("model_calls")
+  // Calls with no price: `costUsd` sums the priced ones only, and is null when none had a price.
+  unpricedCalls Int       @default(0) @map("unpriced_calls")
+  costUsd       Decimal?  @map("cost_usd") @db.Decimal(14, 6)
+  detail        Json      @default("{}")
+  // The round also ran the stronger model's consolidation; the next is due a consolidation cadence
+  // after the last round that did.
+  consolidated  Boolean   @default(false)
+
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor       @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  flagEpisodes OccurrenceFlagEpisode[]
+
+  @@index([tenantId, startedAt])
+  @@index([monitorId, startedAt])
+  @@map("occurrence_runs")
+}
+
+// A theme: reason sentences the assignment model judged to be one thing. `status`: open | merged |
+// split. A merged theme names its survivor in `mergedIntoId`, always the final one (never a chain).
+// `flags` is what the last round found (new, above_usual, concentrated), `flagReferenceId`
+// the canonical reference most of its window conversations share (the column keeps its first name).
+// `flagUnmetSince`: the first round a flagged theme met no rule; it keeps its flags until the monitor's
+// hold has passed since (a held theme), and is null while a rule is met.
+model OccurrenceTheme {
+  id              BigInt    @id @default(autoincrement())
+  tenantId        BigInt    @map("tenant_id")
+  monitorId       BigInt    @map("monitor_id")
+  title           String
+  status          String    @default("open")
+  mergedIntoId    BigInt?   @map("merged_into_id")
+  firstSeenAt     DateTime? @map("first_seen_at")
+  lastSeenAt      DateTime? @map("last_seen_at")
+  flags           String[]  @default([])
+  flagReferenceId BigInt?   @map("flag_subject_id")
+  flaggedAt       DateTime? @map("flagged_at")
+  flagUnmetSince  DateTime? @map("flag_unmet_since")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor       @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  members      OccurrenceThemeMember[]
+  events       OccurrenceThemeEvent[]
+  flagEpisodes OccurrenceFlagEpisode[]
+
+  @@index([tenantId, status])
+  @@index([monitorId, status])
+  @@map("occurrence_themes")
+}
+
+// One stretch a theme stayed flagged, held included (docs/occurrences.md, "Flag history"): opened by the
+// round that flagged it (`runId`; null for a save's recount), kept by every round while it stays flagged
+// (`kinds` seen, `peak` window count, `lastFlaggedAt`) and closed by the one that unflagged it
+// (`endedAt`). `title` and `referenceId` are what the theme had when it opened, so the history reads as
+// it was seen; a merge moves the absorbed theme's episodes to the survivor. At most one open episode
+// per theme (a partial unique index in the migration).
+model OccurrenceFlagEpisode {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      BigInt    @map("tenant_id")
+  monitorId     BigInt    @map("monitor_id")
+  themeId       BigInt    @map("theme_id")
+  title         String
+  kinds         String[]  @default([])
+  referenceId   BigInt?   @map("reference_id")
+  startedAt     DateTime  @map("started_at")
+  lastFlaggedAt DateTime  @map("last_flagged_at")
+  endedAt       DateTime? @map("ended_at")
+  peak          Int       @default(0)
+  runId         BigInt?   @map("run_id")
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  theme   OccurrenceTheme   @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  run     OccurrenceRun?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([monitorId, startedAt])
+  @@index([tenantId])
+  @@index([themeId])
+  @@map("occurrence_flag_episodes")
+}
+
+// A conversation in a theme, with its own reason sentence verbatim. One theme per conversation: a
+// conversation whose sentence changes is assigned again. `readAt` is when the conversation was first
+// read, and `inboundAt` the customer message that read covered, which is what the flags count.
+model OccurrenceThemeMember {
+  id             BigInt    @id @default(autoincrement())
+  tenantId       BigInt    @map("tenant_id")
+  monitorId      BigInt    @map("monitor_id")
+  themeId        BigInt    @map("theme_id")
+  conversationId BigInt    @map("conversation_id")
+  sentence       String
+  readAt         DateTime  @map("read_at")
+  // The customer message the reading it was placed from covered (`firstInboundAt`), which the flags
+  // count it at. Null on a member placed before it was kept, which counts at `readAt`.
+  inboundAt      DateTime? @map("inbound_at")
+  assignedAt     DateTime  @default(now()) @map("assigned_at")
+
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor      OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  theme        OccurrenceTheme   @relation(fields: [themeId], references: [id], onDelete: Cascade)
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([monitorId, conversationId])
+  @@index([conversationId])
+  @@index([tenantId, themeId, readAt])
+  @@map("occurrence_theme_members")
+}
+
+// What consolidation did to a theme: `kind` merge (themeId absorbed into intoId), split (themeId
+// divided, `detail.into` the new ids) or rename (`detail.from`, `detail.to`).
+model OccurrenceThemeEvent {
+  id        BigInt   @id @default(autoincrement())
+  tenantId  BigInt   @map("tenant_id")
+  monitorId BigInt   @map("monitor_id")
+  kind      String
+  themeId   BigInt   @map("theme_id")
+  intoId    BigInt?  @map("into_id")
+  runId     BigInt?  @map("run_id")
+  detail    Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor OccurrenceMonitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  theme   OccurrenceTheme   @relation(fields: [themeId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([monitorId, createdAt])
+  @@map("occurrence_theme_events")
+}
+
+// A canonical reference: the name the reference's free spellings were unified to. Never renamed, since a
+// folder may filter by it; a merged one names its survivor in `mergedIntoId`, always the final one.
+model OccurrenceCanonical {
+  id           BigInt   @id @default(autoincrement())
+  tenantId     BigInt   @map("tenant_id")
+  monitorId    BigInt   @map("monitor_id")
+  // The reference field it was decided for: a field switched later starts its own dictionary.
+  field        String   @default("")
+  name         String
+  mergedIntoId BigInt?  @map("merged_into_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  tenant   Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor  OccurrenceMonitor     @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  aliases  OccurrenceAlias[]
+  readings ConversationReading[]
+
+  @@unique([monitorId, field, name])
+  @@index([tenantId])
+  @@map("occurrence_canonicals")
+}
+
+// The canonical model's decision about one exact spelling, so the same spelling is never asked again.
+// The key is the raw value as stored: no folding of case or accents, which would be a similarity
+// judgment this code does not make.
+model OccurrenceAlias {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  monitorId   BigInt   @map("monitor_id")
+  field       String   @default("")
+  raw         String
+  canonicalId BigInt   @map("canonical_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  monitor   OccurrenceMonitor   @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  canonical OccurrenceCanonical @relation(fields: [canonicalId], references: [id], onDelete: Cascade)
+
+  @@unique([monitorId, field, raw])
+  @@index([tenantId])
+  @@map("occurrence_aliases")
 }

@@ -13,10 +13,12 @@ import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
+  JOB_NEVER_DEAD,
   JOB_RETRY_BASE_MS,
   JOB_SPENDS_PROVIDER,
   JOB_TRAFFIC_RANK,
   kindsInLane,
+  NEVER_DEAD_MAX_BACKOFF_MS,
   type SchedulerLane,
 } from "@/modules/scheduler/lanes";
 import { runningJobIds } from "./running";
@@ -31,7 +33,15 @@ import { runningJobIds } from "./running";
 // tenant scope, so RLS still fences the work. `attempts` is cleared by any completed pass, so
 // MAX_ATTEMPTS bounds consecutive failures; the reaper pushes crash loops to DEAD. See `Rearm`.
 
-const MAX_ATTEMPTS = 5;
+export const MAX_ATTEMPTS = 5;
+
+// The kinds the reaper must not dead-letter either: a crash loop of a never-dead row goes back to
+// PENDING like any other attempt, and the worker announces it once past the budget.
+const NEVER_DEAD_KINDS = (
+  Object.entries(JOB_NEVER_DEAD) as [SchedulerJobKind, boolean][]
+)
+  .filter(([, never]) => never)
+  .map(([kind]) => kind);
 
 // Whether a failure of this run puts the job back to PENDING rather than to DEAD: the run's own line
 // can then say the work will be tried again, and leave the alarm to the death (when it comes).
@@ -71,6 +81,8 @@ export type SchedulerJobKind =
   | "TAKEOVER_RECOVERY"
   | "HUMAN_REPLY_RECOVERY"
   | "SPEND_CEILING_POLL"
+  | "OCCURRENCE_ROUND"
+  | "OCCURRENCE_SWEEP"
   | "OBSERVE"
   | "MEDIA_TEXT_FALLBACK"
   | "KNOWLEDGE_SOURCE_SYNC"
@@ -945,7 +957,8 @@ export function claimSql(
       LEFT JOIN inflight f ON f.tenant_id = j.tenant_id
     ),
     due AS MATERIALIZED (
-      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
+      SELECT s.id, r.share AS k1, r.ranked_run_at AS k2, r.ranked_id AS k3
+      FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
       ORDER BY r.share, r.ranked_run_at, r.ranked_id
@@ -963,7 +976,8 @@ export function claimSql(
         ${tenantClause} ${excludeClause}
     ),
     due AS MATERIALIZED (
-      SELECT s.id FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
+      SELECT s.id, r.ranked_rank AS k1, r.ranked_created_at AS k2, r.ranked_id AS k3
+      FROM scheduler_jobs s JOIN ranked r ON r.ranked_id = s.id
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
         AND (r.ranked_spends = 0 OR r.spent <= ${order.spendCap})
@@ -973,24 +987,34 @@ export function claimSql(
     )`
       : Prisma.sql`
     due AS MATERIALIZED (
-      SELECT id FROM scheduler_jobs
+      SELECT id, ${order ? order.rank : Prisma.sql`0`} AS k1, ${order ? Prisma.sql`created_at` : Prisma.sql`run_at`} AS k2, id AS k3
+      FROM scheduler_jobs
       WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
         ${tenantClause} ${excludeClause}
-      ORDER BY ${order ? Prisma.sql`${order.rank}, created_at, id` : Prisma.sql`run_at`}
+      ORDER BY k1, k2, k3
       FOR UPDATE SKIP LOCKED
       LIMIT ${lim}
     )`;
+  // The UPDATE returns rows in the order its join produces them, not the order `due` chose (a hash
+  // join probed by a sequential scan hands them back in heap order), and callers run them in the
+  // order they come back. So `due` carries its sort key and the claimed rows are sorted by it again.
   return Prisma.sql`
-    WITH ${due}
-    UPDATE scheduler_jobs
-    SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, run_started_at = ${now}, updated_at = now()
-    FROM due
-    WHERE scheduler_jobs.id = due.id
-    RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
-              scheduler_jobs.kind, scheduler_jobs.payload,
-              scheduler_jobs.payload_secret AS "payloadSecret",
-              scheduler_jobs.dedupe_key AS "dedupeKey",
-              scheduler_jobs.attempts, scheduler_jobs.claim_seq AS "claimSeq"`;
+    WITH ${due},
+    claimed AS (
+      UPDATE scheduler_jobs
+      SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, run_started_at = ${now}, updated_at = now()
+      FROM due
+      WHERE scheduler_jobs.id = due.id
+      RETURNING scheduler_jobs.id, scheduler_jobs.tenant_id AS "tenantId",
+                scheduler_jobs.kind, scheduler_jobs.payload,
+                scheduler_jobs.payload_secret AS "payloadSecret",
+                scheduler_jobs.dedupe_key AS "dedupeKey",
+                scheduler_jobs.attempts, scheduler_jobs.claim_seq AS "claimSeq",
+                due.k1, due.k2, due.k3
+    )
+    SELECT id, "tenantId", kind, payload, "payloadSecret", "dedupeKey", attempts, "claimSeq"
+    FROM claimed
+    ORDER BY k1, k2, k3`;
 }
 
 // Claims up to `limit` due jobs across ALL tenants matching `kindFilter` (FOR UPDATE SKIP LOCKED so
@@ -1242,7 +1266,7 @@ export function claimPendingByKeyPrefix(
 
 // The same claim, of DUE rows only: the barrier runs a fallback whose time has come, and leaves one
 // still waiting for the append it stands in for. With `rank`, the rows taken are the due ones lowest
-// on it (ties to the older row) instead of the earliest `run_at`; the returned array is in no order.
+// on it (ties to the older row) instead of the earliest `run_at`, and come back in that order.
 export function claimDueByKeyPrefix(
   kind: SchedulerJobKind,
   prefix: string,
@@ -1457,7 +1481,8 @@ export async function rescheduleJob(
   return { applied: count > 0 };
 }
 
-// Failure: attempts++, retry with backoff until the cap, then DEAD. The error goes through
+// Failure: attempts++, retry with backoff until the cap, then DEAD (at once when `final`: a failure
+// no retry can change, see `failsUntilAccountFixed`). The error goes through
 // `sanitizeErrorMessage`: a character Postgres refuses would fail the whole transition and leave the
 // row CLAIMED, and it keeps credential-shaped text out of the column. `deadLettered` says whether THIS
 // call dead-lettered the job; a row re-armed mid-run fails the CAS and survives with another run queued.
@@ -1470,9 +1495,15 @@ export async function failJob(
   error: string,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
-): Promise<{ deadLettered: boolean; applied: boolean }> {
+  final = false,
+): Promise<{ deadLettered: boolean; applied: boolean; exhausted: boolean }> {
   const next = attempts + 1;
-  const dead = next >= MAX_ATTEMPTS;
+  const spent = final || next >= MAX_ATTEMPTS;
+  // A never-dead kind past its budget stays PENDING and backs off, capped: the caller announces it
+  // instead of a death (`exhausted`). See JOB_NEVER_DEAD.
+  const neverDead = JOB_NEVER_DEAD[kind];
+  const dead = spent && !neverDead;
+  const delay = backoffMs(next, JOB_RETRY_BASE_MS[kind]);
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },
@@ -1486,7 +1517,10 @@ export async function failJob(
             status: "PENDING",
             attempts: next,
             runAt: new Date(
-              now.getTime() + backoffMs(next, JOB_RETRY_BASE_MS[kind]),
+              now.getTime() +
+                (neverDead
+                  ? Math.min(delay, NEVER_DEAD_MAX_BACKOFF_MS)
+                  : delay),
             ),
             lastError: sanitizeErrorMessage(error),
           },
@@ -1494,7 +1528,11 @@ export async function failJob(
   );
   // NOTE: `applied` is separate because `deadLettered: false` is also a healthy retry, so the caller
   // could not tell a recorded failure from a refused one.
-  return { deadLettered: dead && count > 0, applied: count > 0 };
+  return {
+    deadLettered: dead && count > 0,
+    applied: count > 0,
+    exhausted: spent && neverDead && count > 0,
+  };
 }
 
 // Takes back a run its deadline failed, so the outcome of the work it committed can be written. Only
@@ -1573,7 +1611,7 @@ export async function reapStaleJobs(
       }>
     >(Prisma.sql`
       UPDATE scheduler_jobs
-      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
+      SET status = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} AND NOT (kind::text = ANY(${NEVER_DEAD_KINDS})) THEN 'DEAD'::"SchedulerJobStatus" ELSE 'PENDING'::"SchedulerJobStatus" END,
           attempts = attempts + 1,
           claimed_at = NULL,
           updated_at = now()

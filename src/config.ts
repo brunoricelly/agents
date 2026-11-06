@@ -20,6 +20,7 @@ const {
   ALLOWED_SIGNUP_DOMAINS,
   ADMIN_SIGNUP_DOMAINS,
   SIGNUP_ENABLED,
+  PASSKEYS_ENABLED,
   SETUP_TOKEN_REQUIRED,
   WEBHOOK_WORKER_ENABLED,
   WEBHOOK_WORKER_INTERVAL_MS,
@@ -30,6 +31,9 @@ const {
   CHECKPOINT_RECONCILE_INTERVAL_MS,
   CHECKPOINT_RECONCILE_FIRST_DELAY_MS,
   CHECKPOINT_RECONCILE_GRACE_MS,
+  CHECKPOINT_RETENTION_INTERVAL_MS,
+  CHECKPOINT_RETENTION_FIRST_DELAY_MS,
+  CHECKPOINT_RETENTION_GRACE_MS,
   OBSERVE_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_ENABLED,
   COMPACTION_WORKER_ENABLED,
@@ -564,6 +568,10 @@ const config = {
   // password signup and first-time Google sign-in are refused; existing users
   // keep logging in. The first admin is always created through /setup.
   signupEnabled: SIGNUP_ENABLED === "true",
+  // NOTE: Passkey (WebAuthn) sign-in is opt-in. Off, its routes answer 404 and the console shows no
+  // passkey anywhere; passkeys stored while it was on wait in the database. The relying party is
+  // PUBLIC_URL's hostname, so it must be the address people open (docs/passkeys.md).
+  passkeysEnabled: PASSKEYS_ENABLED === "true",
   // NOTE: When true (the default), the first-run /setup flow requires the token
   // printed in the server log. Disable only on trusted networks.
   setupTokenRequired: SETUP_TOKEN_REQUIRED !== "false",
@@ -718,6 +726,32 @@ const config = {
       "CHECKPOINT_RECONCILE_GRACE_MS",
       60 * 60 * 1000,
       "It is how old a thread's newest checkpoint must be before the thread can be deleted for having no owner.",
+      MAX_DURATION_MS,
+    ),
+  },
+  // NOTE: The pass that keeps, of every live thread, only the checkpoint the saver resumes from
+  // (src/graph/checkpoint-retention.ts): the older checkpoints, their writes and the blob versions only
+  // they named are deleted. It rides with the scheduler worker, like the reconciler. Operational knobs.
+  checkpointRetention: {
+    intervalMs: parseIntSetting(
+      CHECKPOINT_RETENTION_INTERVAL_MS,
+      "CHECKPOINT_RETENTION_INTERVAL_MS",
+      6 * 60 * 60 * 1000,
+      "It is how often the checkpoints older than each thread's newest are deleted.",
+      MAX_DURATION_MS,
+    ),
+    firstDelayMs: parseIntSetting(
+      CHECKPOINT_RETENTION_FIRST_DELAY_MS,
+      "CHECKPOINT_RETENTION_FIRST_DELAY_MS",
+      20 * 60 * 1000,
+      "It is how long after the boot the first pass over old checkpoints runs.",
+      MAX_DURATION_MS,
+    ),
+    graceMs: parseIntSetting(
+      CHECKPOINT_RETENTION_GRACE_MS,
+      "CHECKPOINT_RETENTION_GRACE_MS",
+      60 * 60 * 1000,
+      "It is how old a thread's newest checkpoint must be before its older checkpoints can be deleted.",
       MAX_DURATION_MS,
     ),
   },
@@ -963,8 +997,9 @@ const config = {
         : SSRF_ALLOW_PRIVATE_TARGETS === "false"
           ? false
           : (NODE_ENV || "development") === "development",
-    // The internal services an HTTP tool may reach with the guard ON. Read only by the
-    // HTTP tool, and there only when the tool's own allowedHosts names the host. See src/lib/ssrf.ts.
+    // The internal services reachable with the guard ON. Read by the HTTP tool, there only when the
+    // tool's own allowedHosts names the host, and by the Chatwoot client, there only for the
+    // deployment's base URL. See src/lib/ssrf.ts.
     internalTargets: parseInternalTargets(
       SSRF_INTERNAL_TARGETS,
       "SSRF_INTERNAL_TARGETS",

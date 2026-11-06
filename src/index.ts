@@ -8,6 +8,10 @@ import {
   startCheckpointReconciler,
   stopCheckpointReconciler,
 } from "@/graph/checkpoint-reconcile";
+import {
+  startCheckpointRetention,
+  stopCheckpointRetention,
+} from "@/graph/checkpoint-retention";
 import { assertConnectionBudget } from "@/lib/db-budget";
 import { checkRuntimeRoleAtBoot } from "@/lib/db-guard";
 import { releaseProcessLease, startProcessLease } from "@/lib/process-lease";
@@ -58,6 +62,9 @@ import {
   stopCompactionWorker,
 } from "@/modules/memory/worker";
 import { registerObserveHandler } from "@/modules/observe/job";
+import { ensureAllOccurrenceRounds } from "@/modules/occurrences/arm";
+import { registerOccurrenceRoundHandler } from "@/modules/occurrences/round";
+import { registerOccurrenceSweepHandler } from "@/modules/occurrences/sweep";
 import { registerOtherInboxSummaryHandler } from "@/modules/other-inboxes/summary-job";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import {
@@ -197,6 +204,8 @@ if (config.schedulerWorker.enabled) {
   registerTakeoverRecoveryHandler();
   registerHumanReplyRecoveryHandler();
   registerSpendPollHandler();
+  registerOccurrenceRoundHandler();
+  registerOccurrenceSweepHandler();
   registerKnowledgeSourceHandler();
   registerInboundSweepHandlers();
   startScheduler();
@@ -238,6 +247,13 @@ if (config.schedulerWorker.enabled) {
   // teardown sweeps only what exists while it runs, and a turn that writes after it leaves rows
   // nothing points at.
   startCheckpointReconciler();
+  // NOTE: The pass that keeps, of every live thread, only the checkpoint the saver resumes from: a
+  // thread keeps every checkpoint it wrote, each with a copy of the whole conversation.
+  startCheckpointRetention();
+  // NOTE: Every account whose occurrence monitor is on gets its round back.
+  void ensureAllOccurrenceRounds().catch((error) =>
+    logger.warn({ error }, "Failed to arm occurrence rounds"),
+  );
 }
 
 // NOTE: External alert delivery worker (execution-flow warnings/errors → Discord / webhook).
@@ -300,6 +316,7 @@ installShutdownHandlers({
     stopAlertWorker();
     stopDeadClaimSweep();
     stopCheckpointReconciler();
+    stopCheckpointRetention();
     stopInstanceHealthSampler();
   },
   boundMs: config.shutdown.drainMs,

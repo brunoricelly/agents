@@ -44,7 +44,10 @@ import {
 // with a credential to go look at.
 function signingLabel(
   sub: { signingState: string; secretRef: string | null },
-  t: TFunction<"translation", undefined>,
+  t: {
+    (k: string, d: string): string;
+    (k: string, d: string, o: Record<string, unknown>): string;
+  },
 ): string {
   switch (sub.signingState) {
     case "signed":
@@ -265,10 +268,10 @@ export function WebhooksPage() {
     <PageContainer className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="font-bold text-2xl text-text-primary">
+          <h1 className="text-text-primary text-2xl font-bold">
             {t("webhooks.title", "Webhooks")}
           </h1>
-          <p className="mt-1 text-sm text-text-secondary">
+          <p className="text-text-secondary mt-1 text-sm">
             {t(
               "webhooks.subtitle",
               "Send signed events to your own endpoints when things happen in this workspace.",
@@ -315,7 +318,7 @@ export function WebhooksPage() {
             >
               <div className="flex min-w-0 flex-col gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="truncate font-medium text-sm text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {sub.url}
                   </span>
                   {!sub.enabled && (

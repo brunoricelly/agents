@@ -700,6 +700,12 @@ describe("every node the ledger writes is classified for the involvement KPI", (
     expect([...NON_AGENT_TURN_NODES].sort()).toEqual([
       "decision",
       "observer",
+      "occurrence_assignment",
+      "occurrence_canonical",
+      "occurrence_consolidation",
+      "occurrence_reading",
+      "occurrence_transcription",
+      "occurrence_vision",
       "other_inbox_summary",
       "suggestion_review",
       "vision",

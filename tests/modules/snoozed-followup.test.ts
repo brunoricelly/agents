@@ -20,7 +20,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { HUMAN_HANDBACK_NOTE } from "@/graph/markers";
+import { HUMAN_HANDBACK_NOTE, isNudgeTurn } from "@/graph/markers";
 import {
   DATA_FENCE,
   NUDGE_CONVERSATION_MAX_CHARS,
@@ -28,7 +28,10 @@ import {
 } from "@/graph/nudge";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
 import {
   CHATWOOT_SEND_ID_KEY,
   resetAckSendId,
@@ -224,6 +227,19 @@ describe("snoozed ladder: what the live read decides", () => {
     expect(
       someoneSpokeAfter([{ ...phone(21), imported: true }], 20, baileys),
     ).toBe(false);
+  });
+
+  test("on a Cloud inbox, a phone reply carrying Cloud's marks counts, and only there", () => {
+    const phone = (id: number) =>
+      row({ id, senderType: null, senderId: null, cloudEcho: true });
+    const a = findSnoozedAnchor([row({ id: 11 }), phone(12)], CLOUD);
+    expect(a?.messageId).toBe(12);
+    expect(spoke([phone(21)], 20)).toBe(true);
+    for (const whatsappProvider of ["baileys", "zapi", null])
+      expect(someoneSpokeAfter([phone(21)], 20, { whatsappProvider })).toBe(
+        false,
+      );
+    expect(spoke([{ ...phone(21), imported: true }], 20)).toBe(false);
   });
 
   test("a ladder ended on its anchor stays ended when the cadence grows; a new anchor clears it", () => {
@@ -680,6 +696,7 @@ function stub(over: {
       notes.push(t);
       return {};
     },
+    getAccountName: async () => "Conta",
     getConversationLabels: async () => {
       if (over.unsnoozeOnLabelRead) unsnoozed = true;
       return currentLabels;
@@ -932,6 +949,7 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     expect(s.sent).toEqual([REPLY]);
     const hit = await until("the reminder's generate line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, stage: "generate", threadId: threadOf(2043) },
         select: { detail: true },
       });
@@ -2141,6 +2159,9 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
       expect(
         messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
       ).toBe(false);
+      expect(messages.filter(isNudgeTurn).map((m) => m.id)).toEqual([
+        expect.stringMatching(new RegExp(`^nudge:job:${jobFor(conv).id}:`)),
+      ]);
     });
   }
   test("a reminder the closed WhatsApp window kept from the customer ends the ladder, unresolved", async () => {
@@ -2299,6 +2320,64 @@ describe.skipIf(!dbUp)("snoozed ladder: the handler", () => {
     const r2 = await snoozedFollowUpHandler(jobFor(2034), appDb, noEnd.deps);
     expect(r2.outcome).toBe("reschedule");
     expect([...garbled.sent, ...noEnd.sent]).toEqual([]);
+  });
+
+  // A conversation deleted in Chatwoot answers 404, and no later read changes that: the ladder ends
+  // instead of asking again every minute, while a 5xx or a timeout is still tried again.
+  test("a conversation deleted in Chatwoot ends the ladder; a 5xx or a timeout is tried again", async () => {
+    await setSettings(LADDER);
+    const failing = async (convId: number, failure: () => Error) => {
+      await seed(convId);
+      const s = stub({ messages: [personAsked(290, 3)] });
+      const client = await s.deps.makeClient();
+      (
+        client as unknown as { getConversation: () => Promise<unknown> }
+      ).getConversation = async () => {
+        throw failure();
+      };
+      const r = await snoozedFollowUpHandler(jobFor(convId), appDb, {
+        ...s.deps,
+        makeClient: async () => client,
+      });
+      expect(s.sent).toEqual([]);
+      return r;
+    };
+    expect(
+      await failing(
+        2095,
+        () => new ChatwootApiError(404, "GET /conversations/2095"),
+      ),
+    ).toEqual({ outcome: "done" });
+    expect(
+      (
+        await failing(
+          2096,
+          () => new ChatwootApiError(503, "GET /conversations/2096"),
+        )
+      ).outcome,
+    ).toBe("reschedule");
+    expect(
+      (await failing(2097, () => new Error("The operation timed out.")))
+        .outcome,
+    ).toBe("reschedule"); // Every route answering 404, the account included, is an unreachable Chatwoot.
+    await seed(2098);
+    const s = stub({ messages: [personAsked(290, 3)] });
+    const client = await s.deps.makeClient();
+    const c = client as unknown as {
+      getConversation: () => Promise<unknown>;
+      getAccountName: () => Promise<unknown>;
+    };
+    c.getConversation = async () => {
+      throw new ChatwootApiError(404, "GET /conversations/2098");
+    };
+    c.getAccountName = async () => {
+      throw new ChatwootApiError(404, "GET ");
+    };
+    const r = await snoozedFollowUpHandler(jobFor(2098), appDb, {
+      ...s.deps,
+      makeClient: async () => client,
+    });
+    expect(r.outcome).toBe("reschedule");
   });
 
   test("the end date going missing between the handler's read and the send is tried again", async () => {

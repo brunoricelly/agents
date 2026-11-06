@@ -30,7 +30,7 @@ import { listConversations } from "@/modules/conversations/service";
 import { NEXT_NUMBER_RANGE } from "@/modules/documents/numbering";
 import { APPROVAL_TTL_HOURS } from "@/modules/documents/templates";
 import { EXPERIMENT_WEIGHT_RANGE } from "@/modules/experiments/service";
-import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
+import { FLOW_LEVELS, SELECTABLE_STAGES } from "@/modules/flowlog/stages";
 import { mcpHeadersArg } from "@/modules/mcp-connections/headers";
 import {
   runPlaygroundAudioTurn,
@@ -131,6 +131,7 @@ import {
   deploymentListAccounts,
   deploymentRotateToken,
   deploymentSetAccounts,
+  deploymentUpdate,
   inboxBind,
   inboxBindVoice,
   inboxObserve,
@@ -197,6 +198,30 @@ import {
   APPROVAL_LINK_MODES,
   APPROVAL_LINK_TEMPLATE_MAX,
 } from "@/modules/documents/approval-link";
+import { MONITOR_NAME_MAX, MONITORS_MAX } from "@/modules/occurrences/monitors";
+import { RUNS_LIMIT_RANGE } from "@/modules/occurrences/runs";
+import {
+  ABOVE_USUAL_RATIO_RANGE,
+  BUSINESS_CONTEXT_MAX,
+  CADENCE_MINUTES_RANGE,
+  CONCENTRATION_SHARE_RANGE,
+  CONSOLIDATION_MINUTES_RANGE,
+  FIELDS_MAX,
+  FLAG_HOLD_MINUTES_RANGE,
+  INBOXES_MAX,
+  NEW_MIN_CONVERSATIONS_RANGE,
+  NEW_WITHIN_MINUTES_RANGE,
+  type OccurrenceField,
+  type OccurrenceModel,
+  occurrenceFieldSchema,
+  occurrenceModelSchema,
+  PREVIOUS_DAYS_RANGE,
+  WINDOW_MINUTES_RANGE,
+} from "@/modules/occurrences/settings";
+import {
+  FLAG_EPISODES_MAX,
+  THEMES_LIMIT_RANGE,
+} from "@/modules/occurrences/views";
 import {
   PRICE_OVERRIDE_RATE_MAX,
   PRICE_OVERRIDES_MAX,
@@ -219,6 +244,17 @@ import {
   knowledgeSourceSync,
   knowledgeUpdate,
 } from "./write-knowledge";
+import {
+  occurrenceFlagEpisodesList,
+  occurrenceMonitorCreate,
+  occurrenceMonitorDelete,
+  occurrenceMonitorsList,
+  occurrenceMonitorUpdate,
+  occurrenceRunsList,
+  occurrencesGet,
+  occurrencesSet,
+  occurrenceThemesList,
+} from "./write-occurrences";
 import {
   apiKeyRevoke,
   businessHoursCreate,
@@ -290,6 +326,9 @@ function registerTenantTool(
     description: string;
     inputSchema: z.ZodRawShape;
     targetless?: (args: Record<string, unknown>) => boolean;
+    // Refuse an argument the shape does not name instead of dropping it (the SDK's object strips
+    // them), for a tool whose REST twin refuses an unknown key.
+    strict?: boolean;
   },
   handler: (
     // biome-ignore lint/suspicious/noExplicitAny: each call site narrows `args` to its own tool shape; `any` lets those narrower handler signatures bind without a per-tool generic.
@@ -299,7 +338,7 @@ function registerTenantTool(
     signal: AbortSignal,
   ) => CallToolResult | Promise<CallToolResult>,
 ): void {
-  const inputSchema =
+  const shape =
     principal.role === "SUPER_ADMIN"
       ? {
           ...def.inputSchema,
@@ -308,6 +347,10 @@ function registerTenantTool(
             : tenantSelectorField,
         }
       : def.inputSchema;
+  // Typed as the shape so the handler's `extra` keeps its inference; the SDK takes either at runtime.
+  const inputSchema = (
+    def.strict ? z.strictObject(shape) : shape
+  ) as z.ZodRawShape;
   server.registerTool(
     name,
     { description: def.description, inputSchema },
@@ -333,6 +376,12 @@ const PRICE_RATE_RANGE = numberRange(0, PRICE_OVERRIDE_RATE_MAX);
 // Matches the playground service's own audio/file upload caps so the MCP path rejects oversized
 // media before any provider call.
 const MAX_MCP_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+// An occurrence monitor's id; the tools that take it optionally answer for the account's first.
+const monitorIdArg = z
+  .string()
+  .regex(/^[1-9][0-9]{0,18}$/)
+  .optional();
 
 export interface McpPlaygroundAttachment {
   mime: string;
@@ -1193,6 +1242,101 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
     registerTenantTool(
       server,
       principal,
+      "occurrences_get",
+      {
+        description:
+          "Get an occurrence monitor; without monitor_id, the account's first.",
+        inputSchema: { monitor_id: monitorIdArg },
+      },
+      async (args: { monitor_id?: string }, eff) =>
+        writeContent(await occurrencesGet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitors_list",
+      {
+        description: "List the account's occurrence monitors.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(await occurrenceMonitorsList(eff)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_runs_list",
+      {
+        description:
+          "An occurrence monitor's rounds, newest first, and its cost.",
+        inputSchema: {
+          monitor_id: monitorIdArg,
+          limit: ranged(RUNS_LIMIT_RANGE).optional(),
+          before: z
+            .string()
+            .regex(/^[1-9][0-9]{0,18}$/)
+            .optional(),
+        },
+      },
+      async (
+        args: { monitor_id?: string; limit?: number; before?: string },
+        eff,
+      ) => writeContent(await occurrenceRunsList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_themes_list",
+      {
+        description:
+          "List an occurrence monitor's open themes, flagged first; with theme_id, that theme's conversations and sentences.",
+        inputSchema: {
+          monitor_id: monitorIdArg,
+          theme_id: z.string().optional(),
+          flagged: z.boolean().optional(),
+          limit: ranged(THEMES_LIMIT_RANGE).optional(),
+        },
+      },
+      async (
+        args: {
+          monitor_id?: string;
+          theme_id?: string;
+          flagged?: boolean;
+          limit?: number;
+        },
+        eff,
+      ) => writeContent(await occurrenceThemesList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_flag_episodes_list",
+      {
+        description: "List the flag episodes overlapping [since, until).",
+        inputSchema: {
+          monitor_id: monitorIdArg,
+          since: z.string(),
+          until: z.string(),
+          limit: z.number().int().min(1).max(FLAG_EPISODES_MAX).optional(),
+        },
+      },
+      async (
+        args: {
+          monitor_id?: string;
+          since: string;
+          until: string;
+          limit?: number;
+        },
+        eff,
+      ) => writeContent(await occurrenceFlagEpisodesList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
       "vault_list",
       {
         description:
@@ -1288,7 +1432,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           // NOTE: derived from the vocabulary, never listed here: a hand copy had drifted to 8 of the
           // 11 stages while `logs_stages` (mcp/read.ts) advertised all 11, so a caller filtering by a
           // stage this very server had just told it about was refused.
-          stage: z.enum(FLOW_STAGES).optional(),
+          stage: z.enum(SELECTABLE_STAGES).optional(),
           agent_id: z.string().optional(),
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
@@ -1335,7 +1479,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           // NOTE: derived from the vocabulary, never listed here: a hand copy had drifted to 8 of the
           // 11 stages while `logs_stages` (mcp/read.ts) advertised all 11, so a caller filtering by a
           // stage this very server had just told it about was refused.
-          stage: z.enum(FLOW_STAGES).optional(),
+          stage: z.enum(SELECTABLE_STAGES).optional(),
           agent_id: z.string().optional(),
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
@@ -2631,7 +2775,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "integration_create",
       {
         description:
-          "Instantiate an integration from the catalog (see integration_catalog). credential_ref/inbound_secret_ref are vault entry NAMES (resolved server-side). The inbound route token is a generated secret: it is NOT returned here — the response gives a console URL to reveal it. Previews and creates NOTHING unless dry_run is false.",
+          "Instantiate an integration from integration_catalog (its GENERIC entry also takes payment gateways). credential_ref/inbound_secret_ref are vault entry NAMES, resolved server-side. The inbound route token is not returned: the response gives a console URL to reveal it. Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           catalog_type: z.string(),
           name: z.string(),
@@ -2666,7 +2810,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "integration_update",
       {
         description:
-          'Update an integration instance (name, enabled, config, credentials, inbound auth). credential_ref/inbound_secret_ref are vault entry NAMES (null clears). Previews a diff and applies NOTHING unless dry_run is false. The `config` shape depends on catalogType. GOOGLE_CALENDAR: {calendarIds(allowlist of calendar ids the agent may operate on; empty ⇒ the tools refuse until one is picked), blockingCalendarIds(calendars only RESPECTED by availability, never operated on, e.g. holidays/closures; EVERY event on them blocks slots; max 10, availability refuses beyond that), calendarLabels(map of id→friendly name), timeZone(IANA, e.g. America/Sao_Paulo), businessHoursId(the BusinessHours profile bounding bookable slots; empty ⇒ no time-of-day limit), slotDurationMinutes, slotGranularityMinutes, createMeetLink(default true: calendar_create_event asks Google for a Meet room and returns its meetLink; set false when the calendar is a pure busy-block), inviteCustomer("contact"|"agent"; absent ⇒ off), appointmentReminders:{enabled,offsetsHours(array of hours-before-start, e.g. [24,1]),askConfirmationOnLast}}. GOOGLE_DRIVE: {folderId, folderName}.',
+          'Update an integration instance (name, enabled, config, credentials, inbound auth). credential_ref/inbound_secret_ref are vault entry NAMES (null clears). Previews a diff and applies NOTHING unless dry_run is false. The `config` shape depends on catalogType. GOOGLE_CALENDAR: {calendarIds(allowlist of calendar ids the agent may operate on; empty ⇒ the tools refuse until one is picked), blockingCalendarIds(calendars only RESPECTED by availability, never operated on, e.g. holidays/closures; EVERY event on them blocks slots; max 10, availability refuses beyond that), calendarLabels(id→name), timeZone(IANA), businessHoursId(the BusinessHours profile bounding bookable slots; empty ⇒ no time-of-day limit), slotDurationMinutes, slotGranularityMinutes, createMeetLink(default true: calendar_create_event asks Google for a Meet room and returns its meetLink; set false when the calendar is a pure busy-block), inviteCustomer("contact"|"agent"; absent ⇒ off), appointmentReminders:{enabled,offsetsHours(array of hours-before-start, e.g. [24,1]),askConfirmationOnLast}}. GOOGLE_DRIVE: {folderId, folderName}. GOOGLE_SHEETS: {spreadsheetId, sheetId(numeric tab gid)}.',
         inputSchema: {
           integration_id: z.string(),
           name: z.string().optional(),
@@ -3364,6 +3508,115 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
     registerTenantTool(
       server,
       principal,
+      "occurrences_set",
+      {
+        description:
+          "Set an occurrence monitor (without monitor_id, the first, created if none); fields and inboxIds replace their lists. Switching on needs inboxIds, model and reasonField; without referenceField the concentration flag is off. Previews unless dry_run is false.",
+        strict: true,
+        inputSchema: {
+          monitor_id: monitorIdArg,
+          enabled: z.boolean().optional(),
+          inboxIds: z.array(z.string()).max(INBOXES_MAX).optional(),
+          fields: z.array(occurrenceFieldSchema).max(FIELDS_MAX).optional(),
+          reasonField: z.string().nullable().optional(),
+          referenceField: z.string().nullable().optional(),
+          cadenceMinutes: ranged(CADENCE_MINUTES_RANGE).optional(),
+          consolidationMinutes: ranged(CONSOLIDATION_MINUTES_RANGE).optional(),
+          newMinConversations: ranged(NEW_MIN_CONVERSATIONS_RANGE).optional(),
+          windowMinutes: ranged(WINDOW_MINUTES_RANGE).optional(),
+          previousDays: ranged(PREVIOUS_DAYS_RANGE).optional(),
+          aboveUsualRatio: ranged(ABOVE_USUAL_RATIO_RANGE).optional(),
+          concentrationShare: ranged(CONCENTRATION_SHARE_RANGE).optional(),
+          flagHoldMinutes: ranged(FLAG_HOLD_MINUTES_RANGE).optional(),
+          newWithinMinutes: ranged(NEW_WITHIN_MINUTES_RANGE).optional(),
+          model: occurrenceModelSchema.nullable().optional(),
+          businessContext: z.string().max(BUSINESS_CONTEXT_MAX).optional(),
+          recoverMedia: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          monitor_id?: string;
+          enabled?: boolean;
+          inboxIds?: string[];
+          fields?: OccurrenceField[];
+          reasonField?: string | null;
+          referenceField?: string | null;
+          cadenceMinutes?: number;
+          consolidationMinutes?: number;
+          newMinConversations?: number;
+          windowMinutes?: number;
+          previousDays?: number;
+          aboveUsualRatio?: number;
+          concentrationShare?: number;
+          flagHoldMinutes?: number;
+          newWithinMinutes?: number;
+          model?: OccurrenceModel | null;
+          businessContext?: string;
+          recoverMedia?: boolean;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await occurrencesSet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitor_create",
+      {
+        description: `Create an occurrence monitor, off; duplicate_of copies that one's configuration, with no inboxes. At most ${MONITORS_MAX}. Previews unless dry_run is false.`,
+        inputSchema: {
+          name: z.string().max(MONITOR_NAME_MAX).optional(),
+          duplicate_of: monitorIdArg,
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { name?: string; duplicate_of?: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await occurrenceMonitorCreate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitor_update",
+      {
+        description:
+          "Rename an occurrence monitor. Previews unless dry_run is false.",
+        inputSchema: {
+          monitor_id: z.string(),
+          name: z.string().max(MONITOR_NAME_MAX),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: { monitor_id: string; name: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await occurrenceMonitorUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "occurrence_monitor_delete",
+      {
+        description:
+          "Delete an occurrence monitor and what it read; the preview counts it. Previews unless dry_run is false.",
+        inputSchema: {
+          monitor_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { monitor_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await occurrenceMonitorDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
       "langfuse_connect",
       {
         description:
@@ -3574,6 +3827,20 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {
           base_url: z.string(),
           admin_token: z.string(),
+          webhook_base_url: z
+            .string()
+            .nullable()
+            .optional()
+            .describe(
+              "The base this Chatwoot calls the agents on (each bot's webhook). Omit or null for PUBLIC_URL; the agents' private address when the Chatwoot reaches them on a private network.",
+            ),
+          public_url: z
+            .string()
+            .nullable()
+            .optional()
+            .describe(
+              "The address people open this Chatwoot on, for the links in the console and case notes. Omit or null for base_url.",
+            ),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3581,10 +3848,39 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: {
           base_url: string;
           admin_token: string;
+          webhook_base_url?: string | null;
+          public_url?: string | null;
           dry_run?: boolean;
         },
         eff,
       ) => writeContent(await deploymentConnect(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "deployment_update",
+      {
+        description:
+          "Edit the Chatwoot connection. base_url moves it to a new address of the same Chatwoot (a domain change): verified with the token (admin_token when sent, else the saved one) to be the same user with every connected account under its id, refused otherwise with nothing written; Agent Bots keep their webhook. admin_token replaces the shared token. And the two optional addresses: webhook_base_url (the base this Chatwoot calls the agents on; null for PUBLIC_URL) and public_url (the address people open this Chatwoot on, for links; null for base_url). A new webhook base moves the deployment's live bots onto it. Previews and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          base_url: z.string().optional(),
+          admin_token: z.string().optional(),
+          webhook_base_url: z.string().nullable().optional(),
+          public_url: z.string().nullable().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: {
+          base_url?: string;
+          admin_token?: string;
+          webhook_base_url?: string | null;
+          public_url?: string | null;
+          dry_run?: boolean;
+        },
+        eff,
+      ) => writeContent(await deploymentUpdate(eff, args)),
     );
 
     registerTenantTool(
@@ -3672,7 +3968,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "instance_health_get",
       {
         description:
-          "Read the instance's own load: every signal (scheduler queue age per lane, model permit waiters, debounce lane, ingress lag, event-loop delay, pending Chatwoot deliveries, pool waiters, lock timeouts, and per job kind deleted on completion its completions and failures per minute and how long its due jobs have gone without a completion) with its last value, the last hour sampled every 5 s, its threshold (\"above X for Y seconds\") and whether it is firing, plus each signal's default. `schedulerThroughput` reads each of those kinds as idle, draining or stuck. In memory: a restart starts the history empty. SUPER_ADMIN only.",
+          "Read the instance's own load: every signal (scheduler queue age per lane, model permit waiters, debounce lane, ingress lag, event-loop delay, pending Chatwoot deliveries, pool waiters, lock timeouts, how long the follow-up sweep furthest behind has gone without completing a pass, and per job kind deleted on completion its completions and failures per minute and how long its due jobs have gone without a completion) with its last value, the last hour sampled every 5 s, its threshold (\"above X for Y seconds\") and whether it is firing, plus each signal's default. `schedulerThroughput` reads each of those kinds as idle, draining or stuck; `followUpSweeps` lists every tenant's follow-up sweep with the time since its last completed pass and whether that is above the `followup_sweep_stalled_ms` threshold. In memory: a restart starts the history empty. SUPER_ADMIN only.",
         inputSchema: {},
       },
       async () => writeContent(await instanceHealthGet(principal)),

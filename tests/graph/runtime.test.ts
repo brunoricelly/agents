@@ -20,6 +20,7 @@ import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import { CONTRADICTED_HANDOFF_RESULT } from "@/graph/contradicted-handoff";
 import * as graphModule from "@/graph/graph";
 import { SILENCE_RETRY_MARK } from "@/graph/graph";
 import * as inflight from "@/graph/inflight";
@@ -544,6 +545,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // Searched rather than taken by order: a turn writes several `generate` lines, and "the last
     // one" is whichever the stage happened to end on.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { level: true, detail: true },
     });
@@ -737,6 +739,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9456 },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });
@@ -778,6 +781,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9455 },
     });
     const rows455 = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv455.id, stage: "generate" },
       select: { detail: true },
     });
@@ -842,6 +846,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9459 },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });
@@ -879,6 +884,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let retryLogged = false;
     await until("the retry line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "generate",
@@ -1198,6 +1204,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let handoff: unknown = null;
     await until("the handoff line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "handoff",
@@ -2042,6 +2049,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let resolvedLogged = false;
     await until("the resolved handoff line", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "handoff",
@@ -2417,6 +2425,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let held: Array<{ level: string; status: string | null }> = [];
       await until("the held label line", async () => {
         const rows = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -2520,6 +2529,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       // Lido com a fila AINDA ocupada: o que estiver lá só existe se foi escrito dentro do turno.
       const decisao = await flowLogRow(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -2619,6 +2629,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // The line's turn is the turn the activity trail and the Langfuse trace name: the same id the
     // ExecutionLog carries for each of the two turns.
     const logged = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id },
       select: { turnId: true },
     });
@@ -2649,6 +2660,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: chatwootConvId },
       });
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "generate" },
         select: { detail: true, turnId: true },
       });
@@ -2817,6 +2829,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // linhas `tool`, e a ordem em que chegam à tabela não é a das chamadas (cada escrita é disparada
     // sem espera), então "a primeira linha tool" seria qualquer uma das duas.
     const decisao = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         conversationId: conv.id,
@@ -2846,6 +2859,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // num turno de verdade. A linha é procurada, nunca tomada por ordem: um turno escreve várias
     // linhas `generate`, e "a última" é aquela em que a etapa por acaso terminou.
     const geradas = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { id: true, detail: true },
     });
@@ -2857,6 +2871,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
     expect(doFato).toHaveLength(1);
     const linhaDaDecisao = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "tool" },
       select: { id: true, detail: true },
     });
@@ -3593,6 +3608,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: 9728 },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { detail: true },
     });
@@ -4207,6 +4223,208 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
+  for (const [label, handoffArgs] of [
+    ["with no message", { customerMessage: "", reason: "Not applicable" }],
+    [
+      "with the goodbye as its message",
+      {
+        customerMessage: "Tudo bem, obrigada por avisar!",
+        reason: "Paciente recusou; encerrar sem transferir.",
+      },
+    ],
+  ] as const) {
+    test(`a handoff ${label} in the same step as resolve_conversation is not run, and the close and the reply stand`, async () => {
+      const conv = label === "with no message" ? 9983 : 9984;
+      await seedConversation(conv, null);
+      const calls: Array<[string, number, string]> = [];
+      const client = {
+        sendMessage: async (c: number, t: string) => {
+          calls.push(["sendMessage", c, t]);
+          return {};
+        },
+        toggleStatus: async (c: number, status: string) => {
+          calls.push(["toggleStatus", c, status]);
+          return {};
+        },
+        sendPrivateNote: async (c: number, t: string) => {
+          calls.push(["sendPrivateNote", c, t]);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      const seen: string[] = [];
+      class PhantomHandoffModel {
+        async invoke() {
+          return new AIMessage("Tudo bem, obrigada por avisar!");
+        }
+        bindTools(_t: unknown) {
+          let n = 0;
+          return {
+            async invoke(msgs: Array<{ content: unknown }>) {
+              n++;
+              if (n === 1)
+                return new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    { name: "handoff_to_human", args: handoffArgs, id: "h1" },
+                    { name: "resolve_conversation", args: {}, id: "r1" },
+                  ],
+                });
+              for (const m of msgs) seen.push(String(m.content));
+              return new AIMessage("Tudo bem, obrigada por avisar!");
+            },
+          };
+        }
+      }
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: conv }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new PhantomHandoffModel() as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([
+        ["sendMessage", conv, "Tudo bem, obrigada por avisar!"],
+        ["toggleStatus", conv, "resolved"],
+      ]);
+      expect(seen).toContain(CONTRADICTED_HANDOFF_RESULT);
+      // The trail says the handoff was set aside, and its handoff stage reads as a close.
+      const rows = await until("the ignored-handoff line", async () => {
+        const r = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
+          where: { tenantId, threadId: `${tenantId}:${instanceId}:${conv}` },
+          select: { stage: true, detail: true },
+        });
+        return r.some(
+          (x) =>
+            (x.detail as Record<string, unknown> | null)?.handoffIgnored ===
+            "resolve_in_same_step",
+        ) && r.some((x) => x.stage === "handoff")
+          ? r
+          : null;
+      });
+      const handoffOutcomes = rows
+        .filter((x) => x.stage === "handoff")
+        .map((x) => (x.detail as Record<string, unknown> | null)?.outcome);
+      expect(handoffOutcomes).toEqual(["resolved"]);
+    });
+  }
+
+  test("a lone handoff whose message is only a placeholder sends the customer nothing", async () => {
+    await seedConversation(9986, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      sendPrivateNote: async (c: number, t: string) => {
+        calls.push(["sendPrivateNote", c, t]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    class PlaceholderModel {
+      async invoke() {
+        return new AIMessage("");
+      }
+      bindTools(_t: unknown) {
+        let n = 0;
+        return {
+          async invoke() {
+            n++;
+            if (n === 1)
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "handoff_to_human",
+                    args: {
+                      customerMessage: "EMPTY",
+                      reason: "cliente pediu atendente",
+                    },
+                    id: "h1",
+                  },
+                ],
+              });
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9986 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new PlaceholderModel() as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls).toEqual([
+      ["sendPrivateNote", 9986, "cliente pediu atendente"],
+      ["toggleStatus", 9986, "open"],
+    ]);
+  });
+
+  test("a repeated handoff-and-close batch still stops as a stall instead of spending the tool budget", async () => {
+    await seedConversation(9985, null);
+    const client = {
+      sendMessage: async () => ({}),
+      toggleStatus: async () => ({}),
+      sendPrivateNote: async () => ({}),
+    } as unknown as ChatwootClient;
+    let bound = 0;
+    class RepeatingModel {
+      async invoke() {
+        return new AIMessage("Tudo bem!");
+      }
+      bindTools(_t: unknown) {
+        return {
+          async invoke() {
+            bound++;
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "handoff_to_human",
+                  args: { customerMessage: "" },
+                  id: "h1",
+                },
+                { name: "resolve_conversation", args: {}, id: "r1" },
+              ],
+            });
+          },
+        };
+      }
+    }
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9985 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new RepeatingModel() as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(bound).toBe(2);
+  });
+
   // NOTE: The bound, pinned so it is a decision and not a surprise. The closing line left before
   // this gate and is untouched by it; everything the turn still holds here stops, photo included.
   // Once the mirror reads "not ours", our own transfer and a human who accepted the conversation in
@@ -4349,6 +4567,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const lines = async () =>
         (
           await flowLogRows(suDb, {
+            orderBy: { id: "asc" },
             where: {
               tenantId,
               stage: "tool",
@@ -4407,6 +4626,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // exactly the one nobody can find afterwards. Fire-and-forget, so poll briefly.
     const warned = await until("the silence warning", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "generate",
@@ -4449,6 +4669,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // And no warning: there is nothing unexplained about this turn.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4512,6 +4733,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // And nobody is paged, because nothing here is unexplained.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4563,6 +4785,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     const warned = await until("the silence warning", async () => {
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "generate",
@@ -4589,6 +4812,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // close waits for "your final reply", and a model that already wrote it reads that as done.
   async function recoveredLine(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4604,6 +4828,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   }
   async function unexplainedWarned(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4761,6 +4986,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4799,6 +5025,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("taken-over");
     expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, threadId: `${tenantId}:${instanceId}:98871` },
       select: { stage: true, detail: true },
     });
@@ -4852,6 +5079,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // both without making anyone answer a thank-you.
   async function silenceRetryLine(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4866,6 +5094,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   }
   async function unexplainedDetail(threadConv: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -5528,6 +5757,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([]);
     // And the trail says the gate closed, from the read that refused.
     const closedLines = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "handoff",
@@ -6116,6 +6346,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       where: { tenantId, chatwootConversationId: conv },
     });
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId: c.id, stage: "tts" },
     });
     return rows.map(({ level, status, detail }) => ({ level, status, detail }));
@@ -6291,7 +6522,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const c = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: conv },
     });
-    return flowLogRows(suDb, { where: { tenantId, conversationId: c.id } });
+    return flowLogRows(suDb, {
+      orderBy: { id: "asc" },
+      where: { tenantId, conversationId: c.id },
+    });
   }
 
   test("an agent without the new keys reads the same prompt and tools on an audio turn (#859)", async () => {
@@ -7139,6 +7373,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let named = false;
       await until("the send_orcamento line", async () => {
         const flow = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -7241,6 +7476,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let skipLogged = false;
       await until("the skipped revocation line", async () => {
         const flow = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -7526,6 +7762,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let unknown: typeof flow = [];
       await until("the revocation_unknown line", async () => {
         flow = await flowLogRows(suDb, {
+          orderBy: { id: "asc" },
           where: {
             tenantId,
             stage: "tool",
@@ -7688,6 +7925,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // And nothing is reported: there is nothing unexplained about a turn that delivered.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -8914,6 +9152,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93151 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -8985,6 +9224,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93155 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "generate" },
         select: { detail: true },
       });
@@ -9133,6 +9373,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93153 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9211,11 +9452,21 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["tool", expect.any(String)],
         ["human", UNDELIVERED_REPLY_NOTE],
       ]);
+      // Stored WITH an id, so a compaction or a second rollback before the next turn can name it.
+      const stored = (
+        (
+          await buildThreadStateGraph(checkpointer).getState({
+            configurable: { thread_id: `${tenantId}:${instanceId}:93160` },
+          })
+        ).values as { messages: BaseMessage[] }
+      ).messages.at(-1);
+      expect(typeof stored?.id).toBe("string");
       // The flow log records it at `info`: the next turn tells the customer, so no alert is owed.
       const conv = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 93160 },
       });
       const lines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9334,6 +9585,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93157 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           conversationId: conv.id,
@@ -9399,6 +9651,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         where: { tenantId, chatwootConversationId: 93156 },
       });
       const generated = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, conversationId: conv.id, stage: "generate" },
         select: { detail: true },
       });
@@ -9748,6 +10001,152 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(attachments).toEqual([]);
     });
 
+    // The input check reads the conversation's thread as context: the second message is
+    // judged after the first one and the agent's reply to it, and is the only text judged.
+    test("the input check reads the earlier turns of the conversation as context", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: {
+          enabled: true,
+          action: "template",
+          templateMessage: "TEMPLATE-IN",
+          checks: {
+            toxicity: false,
+            unsafeContent: true,
+            competitorMentions: false,
+          },
+          contextMessages: 4,
+        },
+        output: { enabled: false },
+      });
+      await seedConv(9483);
+      const judged: string[][] = [];
+      const checkpointer = new MemorySaver();
+      const run = (id: number, content: string) =>
+        runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({
+            conversationId: 9483,
+            inboxId: G_INBOX,
+            message: { id, content, messageType: "incoming", private: false },
+          }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    judged.push(msgs.map((m) => String(m.content)));
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({ responses: [REPLY] }),
+            makeClient: guardStub([], []),
+            checkpointer,
+          },
+        });
+      expect(await run(94831, "C1 quero ingresso")).toBe("posted");
+      expect(judged[0]).toHaveLength(2);
+      expect(await run(94832, "C2 sim o vip como")).toBe("posted");
+      const second = judged[1] ?? [];
+      expect(second).toHaveLength(3);
+      expect(second[1]).toMatch(/customer: C1 quero ingresso/);
+      expect(second[1]).toContain(`assistant: ${REPLY}`);
+      expect(second[2]).toBe("C2 sim o vip como");
+    });
+
+    test("a new conversation of the same contact starts with no context from the one before", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: {
+          enabled: true,
+          action: "template",
+          templateMessage: "TEMPLATE-IN",
+          checks: {
+            toxicity: false,
+            unsafeContent: true,
+            competitorMentions: false,
+          },
+          contextMessages: 4,
+        },
+        output: { enabled: false },
+      });
+      const contact = await suDb.contact.create({
+        data: {
+          tenantId: gTenantId,
+          chatwootInstanceId: gInstanceId,
+          chatwootContactId: 89484,
+          name: "C",
+        },
+        select: { id: true },
+      });
+      for (const convId of [9484, 9485])
+        await suDb.conversation.create({
+          data: {
+            tenantId: gTenantId,
+            chatwootInstanceId: gInstanceId,
+            chatwootConversationId: convId,
+            contactInboxId: 9484,
+            contactId: contact.id,
+            status: "pending",
+            threadId: `${gTenantId}:${gInstanceId}:${convId}`,
+            lastEventAt: new Date(),
+          },
+        });
+      const judged: string[][] = [];
+      const checkpointer = new MemorySaver();
+      const run = (conversationId: number, id: number, content: string) =>
+        runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({
+            conversationId,
+            inboxId: G_INBOX,
+            contactInboxId: 9484,
+            message: { id, content, messageType: "incoming", private: false },
+          }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async (msgs) => {
+                    judged.push(msgs.map((m) => String(m.content)));
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({ responses: [REPLY] }),
+            makeClient: guardStub([], []),
+            checkpointer,
+          },
+        });
+      expect(await run(9484, 94841, "C1 da conversa antiga")).toBe("posted");
+      expect(await run(9485, 94851, "C2 da conversa nova")).toBe("posted");
+      expect(judged[1]?.join("\n")).not.toMatch(/conversa antiga/);
+      expect(await run(9485, 94852, "C3 da conversa nova")).toBe("posted");
+      expect(judged[2]?.[1]).toMatch(/customer: C2 da conversa nova/);
+      expect(judged[2]?.[1]).not.toMatch(/conversa antiga/);
+    });
+
     // The reply the output check sends instead of the model's keeps the escape only when a model wrote
     // it: the operator's template keeps Chatwoot's Liquid, a generated reply is escaped.
     for (const [convId, action, expected] of [
@@ -9856,6 +10255,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // Every line the turn scheduled has landed, so a missing one was never written.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId: gTenantId,
           stage: "generate",

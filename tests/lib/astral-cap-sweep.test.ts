@@ -390,6 +390,8 @@ const BARE_SLICES: Record<
   // `clipText` like every other cap.
   "src/client/pages/AuditPage.tsx": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
+  // The worst tenants listed on the follow-up sweep card: an array of rows, never a string.
+  "src/client/pages/admin/instance-health/InstanceHealthPage.tsx": [1, "array"],
   // The signature's own token insert, which splices at a SELECTION. A caret is a position the browser
   // maintains and it never sits between the two halves of an astral character. The two cuts in that
   // field that DO bound the value go through `clipText`.
@@ -405,6 +407,10 @@ const BARE_SLICES: Record<
   // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
   // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.
   "src/client/pages/resources/ToolEditModal.tsx": [2, "index"],
+  // The rounds' cursor stack's pop (Previous): an ARRAY.
+  "src/client/pages/resources/OccurrenceRounds.tsx": [2, "array"],
+  // A field's key from its name, cut after the name was reduced to [a-z0-9_].
+  "src/client/pages/resources/occurrenceWords.ts": [1, "ascii"],
   // The history without its last message, when that message is a stalled repeat the dangling-call
   // repair leaves to the stall's own removal. An array of messages, never a string.
   "src/graph/graph.ts": [1, "array"],
@@ -413,10 +419,11 @@ const BARE_SLICES: Record<
   // A server slug and MCP tool names, sanitized to ASCII before they are cut.
   "src/graph/tools/mcp-names.ts": [3, "ascii"],
   "src/graph/tools/mcp.ts": [3, "ascii"],
-  // Six: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
-  // write report, and the sixth is the same ceiling over the GUARDED list. Both cut arrays of label
-  // titles, so neither cut can land inside one.
-  "src/graph/tools/native.ts": [6, "array"],
+  // Eight: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
+  // write report, and the sixth is the same ceiling over the GUARDED list. The last two bound what a
+  // refused attribute write names back: the agent's writable attributes and a list's options. All of
+  // them cut arrays, so no cut can land inside an entry.
+  "src/graph/tools/native.ts": [8, "array"],
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
   "src/graph/tools/label-view.ts": [1, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
@@ -502,9 +509,23 @@ const BARE_SLICES: Record<
   // The refusal a calendar write answers with lists the nearest bookable slots; the cut bounds that
   // LIST, and each entry is a slot object this code built, never received text.
   "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
+  // The tabs whose header row is read in one batch: a list of tabs, never text.
+  "src/modules/integrations/google-sheets.service.ts": [1, "array"],
+  // The rows a find scans: a list of rows. Cell text is cut through `clipText`.
+  "src/modules/integrations/toolpacks/google-sheets.ts": [1, "array"],
   // Zod issue PATHS, which name our own schema's keys, never the received values.
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
+  // The names Chatwoot may still hold for a reading, the newest few kept off an ARRAY, twice: when a
+  // value changes, and when a copy posted a name the reading had already moved past.
+  "src/modules/occurrences/readings.ts": [1, "array"],
+  // The newest messages a reading recovers, an ARRAY of message rows.
+  "src/modules/occurrences/recovery.ts": [2, "array"],
+  // The round's folded skip lines, an ARRAY of strings.
+  "src/modules/occurrences/round.ts": [1, "array"],
+  // A stored skip line cut at its ": " (a position found in it), and the page of rounds off the row
+  // ARRAY read one past the limit.
+  "src/modules/occurrences/runs.ts": [2, "index + array"],
   "src/modules/memory/cut.ts": [2, "index + array"],
   // Two: the notes window and the label-change window. Both slice an ARRAY of rows, so neither can
   // land inside a surrogate pair.
@@ -545,6 +566,8 @@ const BARE_SLICES: Record<
   "src/modules/voice-call/service.ts": [1, "array"],
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
   // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
+  // The key of a `key=value` part of a signature header, cut at the index of the ASCII `=`.
+  "src/modules/webhooks/inbound/signed-message.ts": [1, "index"],
   "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
   "src/modules/webhooks/outbound/events.ts": [2, "index"],
 };

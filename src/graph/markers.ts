@@ -21,10 +21,16 @@ type SystemMarker =
   | "human_agent"
   | "human_handback"
   | "undelivered_reply"
+  | "undelivered_proactive"
   | "called_off";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
+}
+
+// Whether the message is one of the system's own, whichever marker it carries.
+export function isSystemMarker(message: BaseMessage): boolean {
+  return typeof message.additional_kwargs?.[MARKER_KWARG] === "string";
 }
 
 // Which attendance a message belongs to, stamped on the message itself; this is what the cut reads,
@@ -89,6 +95,25 @@ export function stampedBurstStart(message: BaseMessage): Date | null {
   return Number.isFinite(at.getTime()) ? at : null;
 }
 
+// What produced a turn's input: the Chatwoot message a reactive turn answers (the burst watermark on
+// a flush) or the occasion a nudge is for. A retry of the same job carries the same value and a
+// different input never does, so it is what tells a retry's copy from a second message with the same
+// words.
+const SOURCE_KWARG = "fazerSource";
+
+export function sourceStamp(
+  source: string | null | undefined,
+): Record<string, unknown> {
+  return typeof source === "string" && source.length > 0
+    ? { [SOURCE_KWARG]: source }
+    : {};
+}
+
+export function stampedSource(message: BaseMessage): string | null {
+  const raw = message.additional_kwargs?.[SOURCE_KWARG];
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
 // Which attendance the thread is on: the last stamped message's, not "any message stamped with X". A
 // conversation can be REOPENED after another ran on this thread (an operator picking an old one back
 // up, a human agent replying in it), so an earlier stamp says nothing about where the thread is now.
@@ -103,6 +128,11 @@ export function lastStampedConversationId(
   }
   return null;
 }
+
+// Marks the untrusted-data boundary in a rendered nudge. Also a reliable signal that a persisted
+// human turn is actually a proactive nudge (renderNudge always emits it; sanitizeFreeText strips it
+// from untrusted input so it can't be forged) — the playground session rebuild relies on this.
+export const DATA_FENCE = "⟦external-data⟧";
 
 // Folded into the first human turn of a NEW conversation when the contact-inbox thread already
 // carries memory from a prior one. Written by both the reactive turn (src/graph/runtime.ts) and the
@@ -178,14 +208,24 @@ export function endedInHumanAttendance(message: BaseMessage): boolean {
 export function nudgeMessage(
   content: string,
   conversationId: number,
+  source?: string,
+  id?: string,
 ): HumanMessage {
   return new HumanMessage({
+    ...(id === undefined ? {} : { id }),
     content,
     additional_kwargs: {
       [MARKER_KWARG]: "nudge" satisfies SystemMarker,
       ...conversationStamp(conversationId),
+      ...sourceStamp(source),
     },
   });
+}
+
+// The playground's simulated follow-up carries the same marker, unstamped: a session belongs to no
+// conversation, and without the marker its directive would read as something the customer wrote.
+export function playgroundNudgeMarker(): Record<string, unknown> {
+  return { [MARKER_KWARG]: "nudge" satisfies SystemMarker };
 }
 
 // A message a HUMAN AGENT sent the customer while the bot was silent. It rides as a HumanMessage (a
@@ -251,9 +291,13 @@ export function isHumanHandback(message: BaseMessage): boolean {
 export const UNDELIVERED_REPLY_NOTE =
   "(Contexto do sistema: a resposta às ações acima não chegou ao cliente, porque uma mensagem nova dele chegou antes do envio. O cliente ainda não sabe o resultado dessas ações.)";
 
-export function undeliveredReplyNote(conversationId: number): HumanMessage {
+export function undeliveredReplyNote(
+  conversationId: number,
+  id?: string,
+): HumanMessage {
   return new HumanMessage({
     content: UNDELIVERED_REPLY_NOTE,
+    ...(id !== undefined ? { id } : {}),
     additional_kwargs: {
       [MARKER_KWARG]: "undelivered_reply" satisfies SystemMarker,
       ...conversationStamp(conversationId),
@@ -263,6 +307,50 @@ export function undeliveredReplyNote(conversationId: number): HumanMessage {
 
 export function isUndeliveredReplyNote(message: BaseMessage): boolean {
   return hasMarker(message, "undelivered_reply");
+}
+
+// What stands where a proactive turn's draft was, when the draft became a private note instead of
+// a message: outside the 24h window with no usable template, or with a person holding the
+// conversation. The customer never read it, and the next turn must not build on it as said; the
+// draft rides along so the intent is not lost.
+export const UNDELIVERED_PROACTIVE_NOTE_HEAD =
+  "(Contexto do sistema: esta mensagem proativa não chegou ao cliente";
+
+export type UndeliveredProactiveReason = "window" | "held";
+const UNDELIVERED_REASON_KWARG = "fazerUndeliveredReason";
+
+export function undeliveredProactiveNote(
+  conversationId: number,
+  id: string,
+  reason: UndeliveredProactiveReason,
+  draft: string,
+): HumanMessage {
+  const why =
+    reason === "window"
+      ? "a janela de 24h do WhatsApp estava fechada e não havia template para enviar"
+      : "uma pessoa da equipe está com a conversa";
+  return new HumanMessage({
+    content: `${UNDELIVERED_PROACTIVE_NOTE_HEAD}, porque ${why}; ficou como nota interna para a equipe. O cliente não a leu. O que ela diria: "${draft}")`,
+    id,
+    additional_kwargs: {
+      [MARKER_KWARG]: "undelivered_proactive" satisfies SystemMarker,
+      [UNDELIVERED_REASON_KWARG]: reason,
+      ...conversationStamp(conversationId),
+    },
+  });
+}
+
+export function isUndeliveredProactiveNote(message: BaseMessage): boolean {
+  return hasMarker(message, "undelivered_proactive");
+}
+
+// The note says a person holds the conversation, which is the evidence `owesHandbackNote` reads:
+// when the person hands it back without writing, the next turn still needs the hand-back note.
+export function isHeldProactiveNote(message: BaseMessage): boolean {
+  return (
+    isUndeliveredProactiveNote(message) &&
+    message.additional_kwargs?.[UNDELIVERED_REASON_KWARG] === "held"
+  );
 }
 
 export function isConversationDivider(message: BaseMessage): boolean {

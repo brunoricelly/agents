@@ -374,6 +374,35 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
     expect(other.tenantSettings).toEqual([]);
   });
 
+  test("vaultReferences: a credential an occurrence monitor's steps use is referenced", async () => {
+    const ctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const { id } = await createVaultEntry(
+      ctx,
+      { name: "refs-occurrences", value: "sk_y" },
+      undefined,
+      undefined,
+      appDb,
+    );
+    const step = {
+      provider: "openai",
+      model: null,
+      credentialRef: formatVaultRef(id),
+      baseURL: null,
+    };
+    // Any of the account's monitors: the second one here, the first naming another key.
+    await su?.occurrenceMonitor.createMany({
+      data: [
+        { tenantId, name: "Ocorrências", config: { model: null } },
+        { tenantId, name: "Produtor", position: 1, config: { model: step } },
+      ],
+    });
+    expect((await vaultReferences(ctx, id, appDb)).tenantSettings).toEqual([
+      "occurrences",
+    ]);
+    await su?.occurrenceMonitor.deleteMany({ where: { tenantId } });
+    expect((await vaultReferences(ctx, id, appDb)).tenantSettings).toEqual([]);
+  });
+
   test("audit: records a row scoped to the tenant", async () => {
     // A synthetic action, because this asserts RLS scoping and nothing about the vocabulary. A
     // real one like `tenant.update` is Full-only, so the Free tree would not compile while the master

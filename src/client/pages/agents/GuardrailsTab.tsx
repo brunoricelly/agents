@@ -21,6 +21,7 @@ import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { inRange } from "@/lib/number-range";
 import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
@@ -75,6 +76,7 @@ const ACTIONS: GuardrailAction[] = [
   "generated",
   "silent",
   "handoff",
+  "observe",
 ];
 
 // A threshold field. Its text is the tab's draft for that check, shared by every field drawing the
@@ -212,6 +214,29 @@ export function GuardrailsTab({
   };
   const leaveThreshold = (key: GuardrailThresholdKey) =>
     setThresholdDrafts(({ [key]: _left, ...rest }) => rest);
+  // The context window as typed, when it is not a whole number in range: the form keeps its last valid
+  // value and the field shows the text out of range. The draft belongs to the input block it was typed
+  // over, so any other change to that block (a discard, a reload, another field) shows the form again.
+  const [contextDraft, setContextDraft] = useState<{
+    raw: string;
+    over: GuardrailsConfig["input"];
+  } | null>(null);
+  const typeContext = (raw: string) => {
+    if (
+      raw.trim() !== "" &&
+      inRange(Number(raw), GUARDRAIL_RANGES.contextMessages)
+    ) {
+      setContextDraft(null);
+      setG((s) => ({
+        ...s,
+        input: { ...s.input, contextMessages: Number(raw) },
+      }));
+    } else setContextDraft({ raw, over: g.input });
+  };
+  const contextText =
+    contextDraft && contextDraft.over === g.input
+      ? contextDraft.raw
+      : String(g.input.contextMessages);
   const checkLabel = (k: keyof GuardrailChecks) =>
     ({
       toxicity: t("editor.guardrails.checkToxicity", "Toxicity / abuse"),
@@ -252,10 +277,15 @@ export function GuardrailsTab({
               "editor.guardrails.actionHandoff",
               "Hand the conversation to the team",
             )
-          : t(
-              "editor.guardrails.actionSilent",
-              "Send nothing (leave the customer without a reply)",
-            );
+          : a === "observe"
+            ? t(
+                "editor.guardrails.actionObserve",
+                "Only record it (the conversation is not changed)",
+              )
+            : t(
+                "editor.guardrails.actionSilent",
+                "Send nothing (leave the customer without a reply)",
+              );
 
   // A check's switch, and beside it the check's threshold when a classification API judges and the
   // check is on in this direction. The threshold belongs to the check, not to the direction: a check
@@ -332,16 +362,46 @@ export function GuardrailsTab({
             </div>
           </FormField>
         )}
+        {dir === "input" && d.enabled && (
+          <FormField
+            label={t(
+              "editor.guardrails.contextMessages",
+              "Conversation context",
+            )}
+            description={t(
+              "editor.guardrails.contextMessagesHint",
+              "How many earlier messages the check reads to understand the customer's message. Only the customer's message is judged. 0 reads it alone. 0-20.",
+            )}
+            help={t(
+              "editor.guardrails.contextMessagesHelp",
+              "A short reply such as “yes, the VIP one, how?” can read as something else on its own. With the question it answers beside it, its meaning is plain.\n\nThe earlier messages are context only: they never trip a check themselves, and a message a check stopped is not among them.\n\nEach message read adds a little to the cost of every screening. Agents created before this setting existed start at 0, which is how they were screened until then.",
+            )}
+          >
+            <NumberInput
+              range={GUARDRAIL_RANGES.contextMessages}
+              value={contextText}
+              onChange={(e) => typeContext(e.target.value)}
+              data-testid="gr-context-messages"
+            />
+          </FormField>
+        )}
         {/* The action and its messages are also what the external check's block and a held failure
             use, so they stay editable while it is configured, built-in screening on or off. */}
         {(d.enabled || (dir === "output" && !!g.external.url)) && (
           <>
             <FormField
               label={t("editor.guardrails.action", "On violation")}
-              description={t(
-                "editor.guardrails.actionHint",
-                "What to do when a check trips.",
-              )}
+              description={
+                d.action === "observe"
+                  ? t(
+                      "editor.guardrails.actionObserveHint",
+                      'Only records the trip in the Logs; the conversation goes on as if the check had passed. The rationale is logged only with "Log the values sent to tools" on, in Behavior.',
+                    )
+                  : t(
+                      "editor.guardrails.actionHint",
+                      "What to do when a check trips.",
+                    )
+              }
             >
               <Select
                 value={d.action}
@@ -372,7 +432,8 @@ export function GuardrailsTab({
             {/* The hand-over's own sentence. Not the template: that one is a refusal, and this says
                 a person will continue. Empty is a choice, so the box may be left blank on purpose.
                 Shown under hold too, where a check that cannot run sends it. */}
-            {(d.action === "handoff" || g.onFailure === "hold") && (
+            {(d.action === "handoff" ||
+              (g.onFailure === "hold" && d.action !== "observe")) && (
               <FormField
                 label={t(
                   "editor.guardrails.handoffMessage",
@@ -398,48 +459,50 @@ export function GuardrailsTab({
                 />
               </FormField>
             )}
-            {d.action !== "silent" && d.action !== "handoff" && (
-              <FormField
-                label={t("editor.guardrails.template", "Template message")}
-                error={
-                  dir === "input"
-                    ? refusals.inputTemplateMessage
-                    : refusals.outputTemplateMessage
-                }
-                // The two directions say different KINDS of thing about the same box, so they take
-                // different homes. Outbound is one sentence about when this text is used, which is
-                // what the operator needs to fill the field: inline. Inbound is why the field can
-                // never be anything else, read once: behind the `?`. It matters here more than
-                // elsewhere that the inbound text is not inline, because this field renders an
-                // `error` in the same slot, so a refusal would erase the explanation of the rule
-                // it just enforced.
-                description={
-                  d.action === "generated" && dir === "output"
-                    ? t(
-                        "editor.guardrails.templateFallbackHint",
-                        "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
-                      )
-                    : undefined
-                }
-                help={
-                  d.action === "generated" && dir === "input"
-                    ? t(
-                        "editor.guardrails.templateInboundHelp",
-                        "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
-                      )
-                    : undefined
-                }
-              >
-                <Textarea
-                  value={d.templateMessage}
-                  onChange={(e) =>
-                    setDir(dir, { templateMessage: e.target.value })
+            {d.action !== "silent" &&
+              d.action !== "handoff" &&
+              d.action !== "observe" && (
+                <FormField
+                  label={t("editor.guardrails.template", "Template message")}
+                  error={
+                    dir === "input"
+                      ? refusals.inputTemplateMessage
+                      : refusals.outputTemplateMessage
                   }
-                  rows={2}
-                  maxLength={TEMPLATE_MESSAGE_MAX}
-                />
-              </FormField>
-            )}
+                  // The two directions say different KINDS of thing about the same box, so they take
+                  // different homes. Outbound is one sentence about when this text is used, which is
+                  // what the operator needs to fill the field: inline. Inbound is why the field can
+                  // never be anything else, read once: behind the `?`. It matters here more than
+                  // elsewhere that the inbound text is not inline, because this field renders an
+                  // `error` in the same slot, so a refusal would erase the explanation of the rule
+                  // it just enforced.
+                  description={
+                    d.action === "generated" && dir === "output"
+                      ? t(
+                          "editor.guardrails.templateFallbackHint",
+                          "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
+                        )
+                      : undefined
+                  }
+                  help={
+                    d.action === "generated" && dir === "input"
+                      ? t(
+                          "editor.guardrails.templateInboundHelp",
+                          "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
+                        )
+                      : undefined
+                  }
+                >
+                  <Textarea
+                    value={d.templateMessage}
+                    onChange={(e) =>
+                      setDir(dir, { templateMessage: e.target.value })
+                    }
+                    rows={2}
+                    maxLength={TEMPLATE_MESSAGE_MAX}
+                  />
+                </FormField>
+              )}
             {/* Output only. On the customer's message nothing is ever composed, so this field
                 would steer nothing — and a control that visibly does nothing is worse than one that
                 is not offered. The template hint above says why, where the operator is looking. */}

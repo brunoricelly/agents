@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AnnouncementBanner } from "@/client/components/AnnouncementBanner";
 import { Header } from "@/client/components/Header";
+import { PasskeyOffer } from "@/client/components/PasskeyOffer";
 import { ProactiveBreakerBanner } from "@/client/components/ProactiveBreakerBanner";
 import { Sidebar } from "@/client/components/Sidebar";
 import { StaleBuildBanner } from "@/client/components/StaleBuildBanner";
@@ -18,7 +19,7 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <ProactiveBreakerProvider>
-      <div className="flex h-dvh overflow-hidden bg-bg-primary">
+      <div className="bg-bg-primary flex h-dvh overflow-hidden">
         {/* Moves focus without navigating. A native fragment jump pushes a history entry, so Back
           after using it lands on the same page, which the unsaved-changes Back trap cannot tell
           from leaving it. */}
@@ -29,14 +30,14 @@ export function Layout({ children }: LayoutProps) {
             event.preventDefault();
             document.getElementById("main-content")?.focus();
           }}
-          className="sr-only rounded-md bg-accent-solid px-3 py-1.5 text-accent-foreground text-sm focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-(--z-skip-link)"
+          className="bg-accent-solid text-accent-foreground sr-only rounded-md px-3 py-1.5 text-sm focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-(--z-skip-link)"
         >
           {t("nav.skipToContent", "Skip to content")}
         </a>
         <Sidebar />
         {/* The content panel. The sidebar runs the full height beside it and carries the brand; the
           header is the panel's own top bar. */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg-secondary md:my-2 md:mr-2 md:rounded-xl md:border md:border-border">
+        <div className="bg-bg-secondary md:border-border flex min-w-0 flex-1 flex-col overflow-hidden md:my-2 md:mr-2 md:rounded-xl md:border">
           <Header />
           <StaleBuildBanner />
           <AnnouncementBanner />
@@ -55,6 +56,7 @@ export function Layout({ children }: LayoutProps) {
             {children}
           </main>
         </div>
+        <PasskeyOffer />
       </div>
     </ProactiveBreakerProvider>
   );

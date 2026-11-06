@@ -32,6 +32,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { lazyWithReload } from "@/client/lib/staleBuild";
 import {
+  FOLLOWUP_SWEEP_SIGNAL,
   INSTANCE_THRESHOLD_RANGES,
   throughputOfSignal,
 } from "@/modules/instance-health/signals";
@@ -183,7 +184,7 @@ function ThresholdModal({
         }}
       >
         {error && (
-          <div className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm">
+          <div className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm">
             {error}
           </div>
         )}
@@ -204,7 +205,7 @@ function ThresholdModal({
         <div>
           <label
             htmlFor={thresholdId}
-            className="mb-1 block font-medium text-sm text-text-primary"
+            className="text-text-primary mb-1 block text-sm font-medium"
           >
             {t("instanceHealth.thresholdLabel", "Alert when above ({{unit}})", {
               unit: unitHint,
@@ -222,7 +223,7 @@ function ThresholdModal({
             aria-invalid={thresholdInvalid}
           />
           {thresholdInvalid && (
-            <p className="mt-1 text-error text-xs" role="alert">
+            <p className="text-error mt-1 text-xs" role="alert">
               {t(
                 "instanceHealth.thresholdInvalid",
                 "The threshold must be a number of zero or more.",
@@ -233,7 +234,7 @@ function ThresholdModal({
         <div>
           <label
             htmlFor={durationId}
-            className="mb-1 block font-medium text-sm text-text-primary"
+            className="text-text-primary mb-1 block text-sm font-medium"
           >
             {t("instanceHealth.durationLabel", "For at least (seconds)")}
           </label>
@@ -247,24 +248,24 @@ function ThresholdModal({
             aria-invalid={durationInvalid}
           />
           {durationInvalid && (
-            <p className="mt-1 text-error text-xs" role="alert">
+            <p className="text-error mt-1 text-xs" role="alert">
               {t(
                 "instanceHealth.durationInvalid",
                 "The duration must be a whole number of seconds, from 0 to 3600.",
               )}
             </p>
           )}
-          <p className="mt-1 text-text-muted text-xs">
+          <p className="text-text-muted mt-1 text-xs">
             {t(
               "instanceHealth.durationHint",
               "0 alerts on the first sample above the threshold.",
             )}
           </p>
         </div>
-        <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
+        <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
           <label
             htmlFor={enabledId}
-            className="font-medium text-sm text-text-primary"
+            className="text-text-primary text-sm font-medium"
           >
             {t("instanceHealth.alertOnSignal", "Alert on this signal")}
           </label>
@@ -331,7 +332,7 @@ function SignalCard({
     <Card className="flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1">
-          <span className="font-medium text-sm text-text-primary">
+          <span className="text-text-primary text-sm font-medium">
             {signalLabel(signal.signal, t)}
           </span>
           {help && <HelpPopover content={help} />}
@@ -366,7 +367,7 @@ function SignalCard({
           )}
         </div>
       </div>
-      <div className="font-semibold text-2xl text-text-primary tabular-nums">
+      <div className="text-text-primary text-2xl font-semibold tabular-nums">
         {signal.value === null
           ? "—"
           : formatSignalValue(signal.value, signal.unit)}
@@ -382,7 +383,7 @@ function SignalCard({
           />
         </Suspense>
       </div>
-      <div className="-mt-1 flex items-center justify-between gap-2 text-text-muted text-xs tabular-nums">
+      <div className="text-text-muted -mt-1 flex items-center justify-between gap-2 text-xs tabular-nums">
         <span>
           {windowMinutes === 60
             ? t("instanceHealth.windowHour", "Last hour")
@@ -398,7 +399,7 @@ function SignalCard({
           </span>
         )}
       </div>
-      <div className="flex items-center justify-between gap-2 text-text-muted text-xs">
+      <div className="text-text-muted flex items-center justify-between gap-2 text-xs">
         <span>
           {signal.durationSeconds > 0
             ? t(
@@ -495,6 +496,7 @@ function signalDetail(
       },
     );
   }
+  if (signal === FOLLOWUP_SWEEP_SIGNAL) return followUpSweepDetail(health, t);
   const lane = /^scheduler_queue_age_ms:(.+)$/.exec(signal)?.[1];
   // Never read (the database half failing): "no job overdue" would be a claim with nothing behind it.
   if (lane && health.signals.find((s) => s.signal === signal)?.value != null) {
@@ -507,6 +509,29 @@ function signalDetail(
       : t("instanceHealth.laneIdle", "No job overdue");
   }
   return null;
+}
+
+// The follow-up sweep card's line: each tenant, furthest behind first, with how long since its last
+// completed pass, and which ones are above the threshold. The worst few are enough to act on.
+const SWEEP_TENANTS_SHOWN = 5;
+
+function followUpSweepDetail(
+  health: Health,
+  t: ReturnType<typeof useTranslation>["t"],
+): string | null {
+  const sweeps = health.followUpSweeps;
+  if (sweeps.length === 0) return null;
+  const parts = sweeps.slice(0, SWEEP_TENANTS_SHOWN).map((f) =>
+    f.aboveThreshold
+      ? t("instanceHealth.sweepTenantAbove", "{{tenant}} {{age}} (above)", {
+          tenant: f.tenantSlug,
+          age: formatSignalValue(f.sinceCompletedMs, "ms"),
+        })
+      : `${f.tenantSlug} ${formatSignalValue(f.sinceCompletedMs, "ms")}`,
+  );
+  const rest = sweeps.length - SWEEP_TENANTS_SHOWN;
+  if (rest > 0) parts.push(`+${rest}`);
+  return parts.join(" · ");
 }
 
 // `pollMs` is the sampler's cadence; a test passes a short one.
@@ -569,10 +594,10 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
     <div className="space-y-8">
       <section className="space-y-3">
         <div>
-          <h2 className="font-semibold text-base text-text-primary">
+          <h2 className="text-text-primary text-base font-semibold">
             {t("instanceHealth.title", "Instance health")}
           </h2>
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "instanceHealth.subtitle",
               "This process's own load, sampled every 5 seconds. The last hour is kept in memory and starts empty after a restart.",
@@ -582,7 +607,7 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
         {staleSince && (
           <div
             role="status"
-            className="rounded-lg border border-error bg-error-soft px-4 py-2 text-error text-sm"
+            className="border-error bg-error-soft text-error rounded-lg border px-4 py-2 text-sm"
           >
             {t(
               "instanceHealth.stale",
@@ -592,7 +617,7 @@ export function InstanceHealthPage({ pollMs = POLL_MS }: { pollMs?: number }) {
           </div>
         )}
         {health && !health.sampling && (
-          <div className="rounded-lg border border-warning bg-warning-soft px-4 py-2 text-sm text-warning">
+          <div className="border-warning bg-warning-soft text-warning rounded-lg border px-4 py-2 text-sm">
             {t(
               "instanceHealth.notSampling",
               "This process does not sample (ALERT_WORKER_ENABLED is off), so the figures stay empty and no instance alert is sent.",

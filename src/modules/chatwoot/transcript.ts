@@ -8,9 +8,11 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
+  chatwootMessageListLength,
   parseChatwootMessages,
   toRenderable,
 } from "@/modules/chatwoot/messages";
+import { phoneReplyMarked } from "@/modules/chatwoot/normalize";
 import {
   renderAttendantMessage,
   renderInboundMessage,
@@ -57,16 +59,20 @@ export async function readWindowRows(
   conversationId: number,
   want: number,
   maxPages: number = DEFAULT_MAX_PAGES,
+  // A degraded page (a body that is not a list, or rows that do not parse) throws instead of
+  // reading as the start of the conversation: for a caller that stores what it read as covered.
+  opts: { strict?: boolean } = {},
 ): Promise<ChatwootMessageRow[]> {
   const seen = new Map<number, ChatwootMessageRow>();
   let before: number | undefined;
   for (let page = 0; page < maxPages; page++) {
-    const rows = parseChatwootMessages(
-      await client.getMessages(
-        conversationId,
-        before === undefined ? undefined : { before },
-      ),
+    const raw = await client.getMessages(
+      conversationId,
+      before === undefined ? undefined : { before },
     );
+    const rows = parseChatwootMessages(raw);
+    if (opts.strict && chatwootMessageListLength(raw) !== rows.length)
+      throw new Error("a page of the conversation did not read");
     let oldest: number | null = null;
     let added = 0;
     for (const r of rows) {
@@ -119,6 +125,8 @@ export interface TranscriptLine {
   text: string;
   // When the message was written, kept only for a reader that renders it (`dated`).
   at?: Date | null;
+  // The Chatwoot message the line renders, kept only for a reader that asks (`ids`).
+  messageId?: number;
 }
 
 const ROLE_LABEL: Record<TranscriptLine["role"], string> = {
@@ -133,7 +141,7 @@ const ROLE_LABEL: Record<TranscriptLine["role"], string> = {
 function outgoingRole(
   m: ChatwootMessageRow,
   ownBotIds: ReadonlySet<number>,
-  trustPhoneEcho: boolean,
+  whatsappProvider: string | null,
 ): TranscriptLine["role"] {
   if (m.imported) return "attendant";
   if (m.platformSent === true) return "assistant";
@@ -142,9 +150,10 @@ function outgoingRole(
       ? "assistant"
       : "attendant";
   if (m.senderType === "user") return "person";
-  // A paired-phone reply is a person only where the provider reserves its echo ids: elsewhere a lost
-  // send response comes back as the same sender-less, marked echo of our own reply.
-  if (m.externalSenderName && trustPhoneEcho) return "person";
+  // A paired-phone reply is a person only where its marks can be trusted (`phoneReplyMarked`):
+  // elsewhere a lost send response comes back as the same sender-less, marked echo of our own reply.
+  if (m.senderType === null && phoneReplyMarked(m, whatsappProvider))
+    return "person";
   return "attendant";
 }
 
@@ -157,12 +166,14 @@ export function transcriptFromRows(
   // `dated` keeps each message's own time, for a reader with no other clock for a relative word.
   opts: {
     ownBotIds?: ReadonlySet<number>;
-    trustPhoneEcho?: boolean;
+    // The inbox's WhatsApp provider, which says whether a phone reply's marks name a person.
+    whatsappProvider?: string | null;
     dated?: boolean;
+    ids?: boolean;
   } = {},
 ): TranscriptLine[] {
   const ownBotIds = opts.ownBotIds ?? new Set<number>();
-  const trustPhoneEcho = opts.trustPhoneEcho === true;
+  const whatsappProvider = opts.whatsappProvider ?? null;
   // Built from every PUBLIC row fetched, not from the windowed slice: a reply inside the window can
   // quote a message older than it, and the quote is then the only thing that says what it is about.
   // What stays out of the lines stays out of the quotes: a private note, a reaction, an activity row.
@@ -197,9 +208,10 @@ export function transcriptFromRows(
       role:
         m.messageType === "incoming"
           ? "customer"
-          : outgoingRole(m, ownBotIds, trustPhoneEcho),
+          : outgoingRole(m, ownBotIds, whatsappProvider),
       text: clean,
       ...(opts.dated ? { at: m.createdAt ?? null } : {}),
+      ...(opts.ids ? { messageId: m.id } : {}),
     });
   }
   return out;

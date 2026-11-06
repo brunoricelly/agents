@@ -142,15 +142,23 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/capacity-wait-db.test.ts": 1,
   // NOTE: The lines a message on the bot token wrote, read by its conversation.
   "tests/modules/foreign-send.test.ts": 1,
+  // NOTE: The window-note line the redirect follow-up wrote, which hangs on no conversation of ours.
+  "tests/modules/channel-redirect-followup.test.ts": 1,
+  // NOTE: The repair line of one conversation's turn, read by its conversation.
+  "tests/modules/turn-attempt-residue.test.ts": 1,
+  // NOTE: How many window-note lines a run of notes wrote, on the file's own tenant.
+  "tests/modules/window-note-alert.test.ts": 1,
   // NOTE: The clip line a code tool's call wrote, read by the turn that made it.
   "tests/graph/code-tool-clip.test.ts": 1,
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/ingest-job.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,
-  "tests/graph/label-allowed-wiring.test.ts": 1,
+  // NOTE: Type checks only: the function holding these reads is never called.
+  "tests/utils/flowlog-order-type.test.ts": 4,
+  "tests/graph/label-allowed-wiring.test.ts": 2,
   // NOTE: A turn a gate stopped writes no closing line, which only a read can show.
-  "tests/graph/nudge.test.ts": 7,
+  "tests/graph/nudge.test.ts": 9,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
   // NOTE: A withdrawn turn closes on no line.
   "tests/graph/proactive-breaker.test.ts": 1,
@@ -161,7 +169,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // of one conversation (the text reply is in none), `replyRecovered` and the `silenceUnexplained` warn
   // that must not fire on it, `silenceRetry` and the warn's detail, and the lines of a turn whose
   // recovered reply a takeover refused, a guardrail replaced, or that was delivered.
-  "tests/graph/runtime.test.ts": 42,
+  "tests/graph/runtime.test.ts": 43,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   "tests/graph/skip-reply-reason-logged.test.ts": 1,
@@ -199,7 +207,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/contact-auth-stages-e2e.test.ts": 1,
   "tests/modules/dangling-tool-call-thread.test.ts": 1,
   "tests/modules/debounce-late-visual.test.ts": 1,
-  "tests/modules/debounce.test.ts": 10,
+  "tests/modules/debounce.test.ts": 11,
   "tests/modules/decisions-try.test.ts": 1,
   "tests/modules/delivery-sweep.test.ts": 7,
   // NOTE: The expiry line one request's conversation wrote, read by that conversation.
@@ -218,7 +226,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // NOTE: Two reads, tenant-wide on purpose: their subject is HOW MANY lines a lost follow-up sequence wrote
   // (one) and a one-step ladder re-run wrote (none); each case empties this file's tenant first.
   "tests/modules/followup-sweep-later-step.test.ts": 2,
+  "tests/modules/followup-sweep-snoozed-isolated.test.ts": 1,
   "tests/modules/guardrail-health.test.ts": 1,
+  "tests/modules/guardrail-observe.test.ts": 1,
   "tests/modules/guardrail-on-failure.test.ts": 1,
   "tests/modules/guardrail-unchecked-line.test.ts": 1,
   // NOTE: One reader answering both directions on the same query: the line that names a colleague's reply
@@ -248,6 +258,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   // NOTE: One reader, tenant-wide on purpose: its subject is HOW MANY lines a discarded outcome wrote, and
   // each case empties this file's tenant first.
   "tests/modules/scheduler-discard-announced.test.ts": 1,
+  "tests/modules/scheduler-never-dead.test.ts": 1,
   "tests/modules/snoozed-followup.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,

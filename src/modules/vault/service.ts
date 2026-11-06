@@ -1670,6 +1670,10 @@ export async function vaultReferences(
         // imports from this one).
         db.tenant.findFirst({ select: { settings: true } }),
       ]);
+    // The occurrence monitors' models (modules/occurrences/settings.ts), one block per monitor.
+    const monitorsUsing = await db.occurrenceMonitor.count({
+      where: { config: { path: ["model", "credentialRef"], equals: idRef } },
+    });
     const tenantSettings: string[] = [];
     const settings = (tenantRow?.settings ?? {}) as {
       embedding?: { credentialRef?: unknown };
@@ -1679,6 +1683,7 @@ export async function vaultReferences(
       tenantSettings.push("embedding");
     if (settings.langfuse?.credentialRef === idRef)
       tenantSettings.push("langfuse");
+    if (monitorsUsing > 0) tenantSettings.push("occurrences");
     return {
       toolDefinitions: tds.map((t) => t.name),
       mcpConnections: mcps.map((m) => m.name),

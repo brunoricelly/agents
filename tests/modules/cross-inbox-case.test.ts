@@ -122,7 +122,9 @@ function fakeChatwoot(
     fail(fn);
   };
   const client: CaseClient = {
-    conversationUrl: (id: number) =>
+    conversationKey: (id: number) =>
+      `https://cw.example/app/accounts/1/conversations/${id}`,
+    conversationLink: (id: number) =>
       `https://cw.example/app/accounts/1/conversations/${id}`,
     getInbox: async (id: number) => {
       record("getInbox", [id]);
@@ -626,6 +628,46 @@ describe("openCaseInInbox", () => {
       writesOf(f.calls).indexOf("createConversation") + 1,
     );
     expect(after[0]).toBe("setConversationCustomAttributes");
+  });
+
+  test("a connection with a public address links the case and its origin through it", async () => {
+    const f = fakeChatwoot();
+    // The API base is private; people open Chatwoot at another address.
+    const client = {
+      ...f.client,
+      conversationLink: (id: number) =>
+        `https://desk.example/app/accounts/1/conversations/${id}`,
+    };
+    const r = await openCaseInInbox(client, input());
+    expect(r).toMatchObject({
+      kind: "opened",
+      caseId: 100,
+      caseUrl: "https://desk.example/app/accounts/1/conversations/100",
+    });
+    expect(
+      f.calls.filter((c) => c.fn === "sendPrivateNote").map((c) => c.args),
+    ).toEqual([
+      [
+        7,
+        "➡️ Caso aberto na caixa E-mail SAC: https://desk.example/app/accounts/1/conversations/100",
+      ],
+    ]);
+    const opening = f.calls.find(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        c.args[0] === 100 &&
+        String(c.args[1]).includes("ver conversa de origem"),
+    );
+    expect(String(opening?.args[1])).toContain(
+      "(https://desk.example/app/accounts/1/conversations/7)",
+    );
+    // Asked again, the open case comes back with the same public link.
+    const again = await openCaseInInbox(client, input());
+    expect(again).toMatchObject({
+      kind: "already_open",
+      caseId: 100,
+      caseUrl: "https://desk.example/app/accounts/1/conversations/100",
+    });
   });
 
   test("an origin label already there is not written twice", async () => {
@@ -1655,6 +1697,74 @@ describe("openCaseInInbox", () => {
       expect(f.convs.find((c) => c.id === 100)?.contactId).toBe(5);
     });
 
+    // SMTP refuses an accented mailbox name, so a case opened on one never reaches the customer.
+    test("an accent on a provider that forbids it is dropped, and the case note says what was written", async () => {
+      for (const typed of [
+        "jéssica.x@gmail.com",
+        "jéssica.x@gmail.com",
+        "jéssica.x@Yahoo.com.br",
+      ]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        const written = typed.replace(/^.*@/, "jessica.x@");
+        expect(r).toMatchObject({ kind: "opened", identity: "written" });
+        expect(f.contacts.get(5)?.email).toBe(written);
+        const notes = f.calls
+          .filter((c) => c.fn === "sendMessageAsAdmin" && c.args[0] === 100)
+          .map((c) => String(c.args[1]));
+        expect(
+          notes.some((n) => n.includes(typed) && n.includes(written)),
+        ).toBe(true);
+      }
+    });
+
+    test("an accent anywhere else is refused before anything is written", async () => {
+      for (const typed of [
+        "josé@empresa.com.br",
+        "jéssica.x@meugmail.com",
+        "jéssica.x@meuyahoo.com.br",
+        "josé@live.dev",
+        "josé@yahoo.co.de",
+        "太郎@gmail.com",
+      ]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        expect(r).toEqual({ kind: "rejected_email", why: "non_ascii" });
+        expect(writesOf(f.calls)).toEqual([]);
+      }
+    });
+
+    test("a domain outside ASCII is written in its punycode form", async () => {
+      const f = fakeChatwoot({
+        contacts: noEmail,
+        incoming: ["meu e-mail é maria@acentuação.com.br"],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ email: "maria@acentuação.com.br" }),
+      );
+      expect(r).toMatchObject({ kind: "opened", identity: "written" });
+      expect(f.contacts.get(5)?.email).toBe("maria@xn--acentuao-xza3b.com.br");
+    });
+
+    test("a domain that is not a hostname is refused, not cut down or converted", async () => {
+      for (const typed of ["maria@empresa.com/ação", "maria@ação..com.br"]) {
+        const f = fakeChatwoot({
+          contacts: noEmail,
+          incoming: [`meu e-mail é ${typed}`],
+        });
+        const r = await openCaseInInbox(f.client, input({ email: typed }));
+        expect(r).toEqual({ kind: "rejected_email", why: "invalid" });
+        expect(writesOf(f.calls)).toEqual([]);
+      }
+    });
+
     test("held by another contact, merge off: the case opens on that contact, nothing is merged", async () => {
       const f = fakeChatwoot({
         contacts: { ...noEmail, 9: { email: "Ana@Exemplo.com" } },
@@ -2342,6 +2452,23 @@ describe("the tool", () => {
     );
   });
 
+  test("an accented address the provider cannot take asks the model to confirm it without the accent", async () => {
+    const f = fakeChatwoot({
+      contacts: { 5: { email: null, phone: "+5511999" } },
+      incoming: ["meu e-mail é josé@empresa.com.br"],
+    });
+    const { t } = toolFor(f);
+    const answer = String(
+      await t.invoke({
+        reason: "quer reembolso",
+        email: "josé@empresa.com.br",
+      }),
+    );
+    expect(answer).toContain("accent");
+    expect(answer).toContain("call this tool again");
+    expect(f.convs.some((c) => c.inboxId === 40)).toBe(false);
+  });
+
   test("the schema has no destination: the operator picks it, never the model", () => {
     const { t } = toolFor(fakeChatwoot());
     const shape = (t.schema as { shape: Record<string, unknown> }).shape;
@@ -2956,6 +3083,39 @@ describe("the tool", () => {
       completed: true,
       declinedToSpeak: true,
     });
+  });
+
+  test("a failed opening whose line is only a placeholder is a silent transfer", async () => {
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    const handoffState: {
+      customerMessage: string | null;
+      completed: boolean;
+      declinedToSpeak?: boolean;
+    } = { customerMessage: null, completed: false };
+    const { t } = toolFor(f, { handoffState });
+    const out = String(await t.invoke({ reason: "x", handoff_message: "N/A" }));
+    expect(handoffState).toMatchObject({
+      customerMessage: null,
+      completed: true,
+      declinedToSpeak: true,
+    });
+    expect(out).toContain("No message will reach the customer");
+  });
+
+  test("an opening whose customer_message is only a placeholder sends no public text", async () => {
+    const f = fakeChatwoot();
+    const screened: string[] = [];
+    const { t } = toolFor(f, {
+      screenCustomerText: async (text: string) => {
+        screened.push(text);
+        return "send" as const;
+      },
+    });
+    await t.invoke({ reason: "x", customer_message: "EMPTY" });
+    expect(screened).toEqual([]);
+    expect(f.calls.some((c) => JSON.stringify(c.args).includes("EMPTY"))).toBe(
+      false,
+    );
   });
 
   test("the model is told when the opening stayed a note, and when there was nowhere to move the case", async () => {

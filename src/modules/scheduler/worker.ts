@@ -6,11 +6,15 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { type PoolClass, runInPoolClass } from "@/lib/pool-class";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { Semaphore } from "@/lib/semaphore";
 import { beginWork } from "@/lib/shutdown";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
+  JOB_DEATH_CONSEQUENCE,
   JOB_DEATH_LEVEL,
+  JOB_NEVER_DEAD,
   JOB_POOL,
   JOB_SPENDS_PROVIDER,
   observeClaimLimit,
@@ -28,6 +32,7 @@ import {
   completeJob,
   failJob,
   jobCancelledOnPurpose,
+  MAX_ATTEMPTS,
   REAPED_DEATH_ERROR,
   type ReapedJob,
   reapStaleJobs,
@@ -161,6 +166,9 @@ export function registerDeadLetterHandler(
 ): void {
   deadLetterHandlers.set(kind, handler);
 }
+export function unregisterDeadLetterHandler(kind: string): void {
+  deadLetterHandlers.delete(kind);
+}
 export function getDeadLetterHandler(
   kind: string,
 ): DeadLetterHandler | undefined {
@@ -217,7 +225,7 @@ export async function announceJobDeath(
     tenantId: job.tenantId,
     unit: "job",
     level: JOB_DEATH_LEVEL[job.kind],
-    error,
+    error: jobLossLine(job.kind, "died", error),
     detail: {
       kind: job.kind,
       jobId: String(job.id),
@@ -228,6 +236,40 @@ export async function announceJobDeath(
     base,
   });
   return true;
+}
+
+// The line an operator reads, here and in the alert: which kind, what its loss costs, then the raw
+// cause. The kind and the consequence lead because the alert summary is clipped at 300 characters.
+export function jobLossLine(
+  kind: SchedulerJobKind,
+  how: "died" | "keeps failing",
+  error: string,
+): string {
+  const state = how === "died" ? "died" : "keeps failing and is still retrying";
+  return `${kind} ${state}: ${JOB_DEATH_CONSEQUENCE[kind]}. Cause: ${error}`;
+}
+
+// A never-dead kind past its retry budget (JOB_NEVER_DEAD): it is not dead, so no death is claimed,
+// but each failure from here on is announced at the kind's death level, because what it stops is
+// stopped for as long as it keeps failing. Not deduplicated: the alert bus coalesces a burst.
+function announceJobStillFailing(
+  job: ClaimedJob,
+  error: string,
+  base: PrismaClient,
+): void {
+  emitDeadLetter({
+    tenantId: job.tenantId,
+    unit: "job",
+    level: JOB_DEATH_LEVEL[job.kind],
+    error: jobLossLine(job.kind, "keeps failing", error),
+    detail: {
+      kind: job.kind,
+      jobId: String(job.id),
+      retrying: true,
+      ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
+    },
+    base,
+  });
 }
 
 // The second road to DEAD: a claim that crashed or hung never reaches failJob, so it carries no
@@ -244,6 +286,9 @@ export async function announceReaped(
     recordJobOutcome(job.kind, "failed");
     if (job.status === "DEAD") {
       await dispatchDeadLetter(job, REAPED_DEATH_ERROR, base);
+      // `attempts` here already counts this reaped claim, so the budget is spent at MAX_ATTEMPTS.
+    } else if (JOB_NEVER_DEAD[job.kind] && job.attempts >= MAX_ATTEMPTS) {
+      announceJobStillFailing(job, REAPED_DEATH_ERROR, base);
     }
   }
 }
@@ -254,8 +299,9 @@ async function fail(
   job: ClaimedJob,
   error: string,
   base: PrismaClient,
+  final = false,
 ): Promise<void> {
-  const { deadLettered, applied } = await failJob(
+  const { deadLettered, applied, exhausted } = await failJob(
     job.tenantId,
     job.id,
     job.claimSeq,
@@ -263,10 +309,26 @@ async function fail(
     job.kind,
     error,
     base,
+    new Date(),
+    final,
   );
   if (!applied) await supersededWarning(job, "fail", base);
-  else recordJobOutcome(job.kind, "failed");
+  else {
+    recordJobOutcome(job.kind, "failed");
+    logger.warn(
+      {
+        kind: job.kind,
+        jobId: String(job.id),
+        attempt: job.attempts + 1,
+        // A handler's error can echo a credential (a provider's body, an Authorization header), and
+        // the logger redacts nothing on its own.
+        error: sanitizeErrorMessage(error),
+      },
+      "scheduler: job failed",
+    );
+  }
   if (deadLettered) await dispatchDeadLetter(job, error, base);
+  if (exhausted) announceJobStillFailing(job, error, base);
 }
 
 // Runs one claimed job through its handler, under a deadline, and records the outcome (under the
@@ -371,7 +433,9 @@ async function runWithDeadline(
   } catch (err) {
     failedWith = errMsg(err);
     try {
-      await fail(job, failedWith, base);
+      // NOTE: a provider that will refuse every retry until the account is fixed (no credit, a dead
+      // key) goes to the dead-letter now: the retries would only delay the handoff.
+      await fail(job, failedWith, base, failsUntilAccountFixed(err));
     } finally {
       failureWritten();
     }

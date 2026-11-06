@@ -1,4 +1,4 @@
-import type { BaseMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -70,9 +70,16 @@ import {
   releaseProactiveReservation,
   reserveProactiveSend,
 } from "@/modules/proactive-limit/service";
+import { emitWindowNote } from "@/modules/service-window/note-alert";
 import {
+  type AppointmentFacts,
   buildTemplatePayload,
+  channelHasServiceWindow,
+  type ProactiveKind,
   proactiveSendMode,
+  resolveTemplateChoice,
+  type TemplateDefinition,
+  type TemplateOccasion,
 } from "@/modules/service-window/service";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import {
@@ -96,9 +103,13 @@ import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
 import {
   conversationDividerMessage,
+  DATA_FENCE,
   humanHandbackMessage,
+  isNudgeTurn,
   nudgeMessage,
   turnWasCalledOff,
+  type UndeliveredProactiveReason,
+  undeliveredProactiveNote,
 } from "./markers";
 import { nudgeOrigin } from "./nudge-origin";
 import { type OwnershipVerdict, withOwnershipFence } from "./ownership-fence";
@@ -132,6 +143,7 @@ import {
   skipHandoverKind,
 } from "./skip-handover";
 import { ToolFlowLogger } from "./tool-flowlog";
+import { turnInputId } from "./turn-input-id";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
 
@@ -210,6 +222,33 @@ export interface AgentNudge {
   // nothing else. Recorded on the flow line so the conversation can name the integration that
   // spoke; never rendered to the model.
   integrationInstanceId?: string;
+  // WHICH PROACTIVE SEND this is, for the 24h window's template choice (docs/service-window.md): its
+  // kind, and for a reminder its offset and appointment. Never rendered, like `occasionId`. Absent
+  // sends the agent's default template.
+  template?: NudgeTemplateOccasion;
+}
+
+export interface NudgeTemplateOccasion {
+  kind: ProactiveKind;
+  offsetHours?: number;
+  appointment?: Omit<AppointmentFacts, "fallbackTimezone">;
+}
+
+// The nudge's occasion as the template choice reads it, the agent's zone completing a reminder's
+// appointment (for a start written in UTC, which states no wall clock of its own).
+function templateOccasionOf(
+  nudge: AgentNudge,
+  timezone: string,
+): TemplateOccasion | undefined {
+  const t = nudge.template;
+  if (!t) return undefined;
+  return {
+    kind: t.kind,
+    offsetHours: t.offsetHours,
+    appointment: t.appointment
+      ? { ...t.appointment, fallbackTimezone: timezone }
+      : undefined,
+  };
 }
 
 // WHICH SCHEDULED OCCASION A REFUSAL BELONGS TO. The `over` line is one per occasion, and keying by
@@ -296,6 +335,11 @@ export interface RunAgentNudgeParams {
   // The signal of the scheduler job this nudge runs for. Its deadline aborts the invoke, and every
   // write the nudge would make afterwards is refused through `stillWanted`.
   signal?: AbortSignal;
+  // The run every attempt of this nudge belongs to (the scheduler job, the inbound delivery), stable
+  // across its retries. The directive is written under it plus the occasion key, which tells the
+  // steps of a ladder that reuses one job row apart, so a retry replaces the copy a failed attempt
+  // left instead of appending one. Absent, each attempt writes a fresh directive.
+  runKey?: string;
   tenantId: bigint;
   threadId: string;
   nudge: AgentNudge;
@@ -385,15 +429,12 @@ export function parseThreadId(
   return { tenantId, instanceId, conversationId };
 }
 
-// Marks the untrusted-data boundary in a rendered nudge. Also a reliable signal that a persisted
-// human turn is actually a proactive nudge (renderNudge always emits it; sanitizeFreeText strips it
-// from untrusted input so it can't be forged) — the playground session rebuild relies on this.
 // The transcript a nudge may carry (`AgentNudge.conversation`). Every nudge prompt is persisted on
 // the agent's thread, so a window repeated per reminder is paid again in memory: twenty messages of
 // a short exchange fit, and a long email thread keeps its newest part.
 export const NUDGE_CONVERSATION_MAX_CHARS = 8_000;
 
-export const DATA_FENCE = "⟦external-data⟧";
+export { DATA_FENCE };
 
 // The note an operator's event becomes when the conversation is not the agent's: a person holds
 // it, it was handed to the team (`open`, maybe nobody assigned yet), or a person closed it. The
@@ -740,6 +781,7 @@ async function runAgentNudgeBody(
   // so the block reaches all three without a second name to keep in sync.
   let cfg: AgentConfig = loaded.cfg;
   const contactInboxId = cfg.contactInboxId;
+  const templateOccasion = templateOccasionOf(params.nudge, cfg.timezone);
 
   // Invoke on the SAME per-contact-inbox memory thread the reactive turn uses
   // (resolveGraphThreadId), NOT params.threadId (per-conversation), which would run the follow-up
@@ -1170,6 +1212,7 @@ async function runAgentNudgeBody(
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
+      templateOccasion,
     ) !== "freeform"
   ) {
     return noteApproved(approved.windowNote, "noted-window");
@@ -1601,6 +1644,7 @@ async function runAgentNudgeBody(
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
+      templateOccasion,
     ) === "note";
   if (cfg.conversationDbId !== null) {
     const verdict = await reserveProactiveSend({
@@ -1880,6 +1924,24 @@ async function runAgentNudgeBody(
         status: "ok",
         detail: { reason: "repaired_dangling_tool_call", calls },
       }),
+    onUnansweredInputs: ({ directives, duplicates }) =>
+      emitFlowEvent(flow, {
+        stage: "memory",
+        level: "info",
+        status: "ok",
+        detail: {
+          reason: "repaired_unanswered_inputs",
+          directives,
+          duplicates,
+        },
+      }),
+    onContradictedHandoff: ({ calls }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: { handoffIgnored: "resolve_in_same_step", calls },
+      }),
     // The proactive turn runs on the SAME thread as the reactive one, so it is subject to the same
     // ceiling and has to leave the same trace. INFO for the reason given in runtime.ts.
     onHistoryTrim: ({ kept, dropped, tokens }) =>
@@ -1948,6 +2010,7 @@ async function runAgentNudgeBody(
       loaded.lastInboundAt,
       params.deps?.now?.() ?? new Date(),
       { channelType: loaded.channelType, provider: loaded.provider },
+      templateOccasion,
     );
 
   // THE SAME SIGNATURE THE REACTIVE TURN APPLIES, through the same function: both sends below
@@ -1993,6 +2056,7 @@ async function runAgentNudgeBody(
       // Same sink as this turn's own callbacks (see the buildCallbacks call above).
       persistUsage: params.deps?.persistUsage,
       langfuseCfg: cfg.langfuseCfg,
+      logValues: cfg.logToolValues,
       proactive: true,
     })("output", text);
 
@@ -2435,17 +2499,21 @@ async function runAgentNudgeBody(
     // there, since the turn failed. The hand-back note is re-derived right before the invoke
     // (../graph/runtime.ts): the invoke this deferred to can append it meanwhile, and carrying ours
     // too would put two in the channel.
-    const carriedHandback =
-      handbackDeferred &&
-      owesHandbackNote(
-        (
-          (
-            await buildThreadStateGraph(checkpointer).getState({
-              configurable: { thread_id: graphThreadId },
-            })
-          ).values as { messages?: BaseMessage[] } | undefined
-        )?.messages ?? [],
-      );
+    const directiveKey =
+      params.runKey === undefined
+        ? null
+        : `nudge:${params.runKey}:${nudgeOccasionKey(instanceId, conversationId, params.nudge)}`;
+    const before =
+      handbackDeferred || directiveKey !== null
+        ? ((
+            (
+              await buildThreadStateGraph(checkpointer).getState({
+                configurable: { thread_id: graphThreadId },
+              })
+            ).values as { messages?: BaseMessage[] } | undefined
+          )?.messages ?? [])
+        : [];
+    const carriedHandback = handbackDeferred && owesHandbackNote(before);
     closing.generating = true;
     result = await graph
       .invoke(
@@ -2463,6 +2531,8 @@ async function runAgentNudgeBody(
                 followupSilenceChannel(nudgeCfg, tools),
               ),
               conversationId,
+              nudgeOccasionKey(instanceId, conversationId, params.nudge),
+              turnInputId(directiveKey, before, isNudgeTurn),
             ),
           ],
         },
@@ -2569,6 +2639,50 @@ async function runAgentNudgeBody(
     }
   };
 
+  // WHAT STANDS IN THE DRAFT'S PLACE when the draft itself never reached the customer: the template
+  // they read instead, or a note that it became a private note. Either way the next turn builds on
+  // what was said. Same reactive plan as the silence take-back: the turn's acts and their results
+  // stay, only the unsent sentence changes.
+  const replaceDraft = async (
+    replacement: (id: string) => BaseMessage,
+    what: string,
+  ): Promise<void> => {
+    const plan = await undoRefusedTurn({
+      checkpointer,
+      graphThreadId,
+      produced: result.messages,
+      kind: "reactive",
+      replacement,
+      owner: graphOwner,
+      base,
+    }).catch((err) => {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not put the %s in the draft's place",
+        what,
+      );
+      return null;
+    });
+    if (plan && plan.action !== "remove") {
+      logger.warn(
+        "agentNudge left the unsent draft in place of the %s: conv=%s reason=%s",
+        what,
+        String(conversationId),
+        plan.reason,
+      );
+    }
+  };
+  const rememberTemplateSent = (sent: string) =>
+    replaceDraft((id) => new AIMessage({ content: sent, id }), "template");
+  const rememberDraftNoted = (
+    reason: UndeliveredProactiveReason,
+    draft: string,
+  ) =>
+    replaceDraft(
+      (id) => undeliveredProactiveNote(conversationId, id, reason, draft),
+      "undelivered note",
+    );
+
   // The post-generation stretch. Every end says whether the generated pair reached the customer:
   // `refused` is rolled back by the single caller below, after the claims above were released, and
   // `settled` does not compile on a word that can only be a refusal (`NudgeRefusalOnly`).
@@ -2603,6 +2717,31 @@ async function runAgentNudgeBody(
     // owes, no retry can deliver it (the conversation reads `open`), and "never message over a human"
     // does not reach the conversation we just handed to one. Every OTHER proactive text is decided here.
     const handedOff = handoffAnsweredTheTurn(handoffState);
+
+    // The template's synced definition, read BEFORE the fences below and never between them and the
+    // send: with it the dashboard shows the text the customer reads and a NAMED template is keyed by
+    // name, and without it the send still goes, positional. Best-effort.
+    let templateDefinitions: TemplateDefinition[] = [];
+    // Whenever this occasion HAS a template on a channel with a window, not only when the window is
+    // already closed: it can close during the fences below, and a NAMED template sent without its
+    // definition would be keyed by number.
+    if (
+      cfg.chatwootInboxId !== null &&
+      cfg.serviceWindowConfig.enabled &&
+      channelHasServiceWindow({
+        channelType: loaded.channelType,
+        provider: loaded.provider,
+      }) &&
+      resolveTemplateChoice(cfg.serviceWindowConfig, templateOccasion) !== null
+    ) {
+      try {
+        templateDefinitions = await client.listTemplateDefinitions(
+          cfg.chatwootInboxId,
+        );
+      } catch {
+        templateDefinitions = [];
+      }
+    }
 
     // NOTE: answers for the GENERATION, which every path pays for, and sits before the ownership probe
     // because everything below WRITES to the conversation. Six ends below reach `applyPostActions`, and
@@ -2951,15 +3090,19 @@ async function runAgentNudgeBody(
       );
     }
     if (canMessagePre && canMessagePost) {
-      if (sendModeNow() === "template") {
+      const windowMode = sendModeNow();
+      if (windowMode === "template") {
         const payload = buildTemplatePayload(
           cfg.serviceWindowConfig,
           cfg.contactName,
+          templateOccasion,
+          templateDefinitions,
         );
         if (payload) {
           delivered = true;
           keepSentId(await client.sendTemplate(conversationId, payload));
           await recordProactiveSpeech();
+          await rememberTemplateSent(payload.content);
           logger.info(
             "agentNudge templated (outside 24h window): conv=%s source=%s template=%s",
             String(conversationId),
@@ -2979,11 +3122,17 @@ async function runAgentNudgeBody(
         conversationId,
         `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(reply)}`,
       );
+      await rememberDraftNoted("window", reply);
       logger.info(
         "agentNudge noted (outside 24h window, no template): conv=%s source=%s",
         String(conversationId),
         params.nudge.source,
       );
+      emitWindowNote(flow, {
+        agentId: cfg.agentId,
+        kind: templateOccasion?.kind ?? null,
+        reason: windowMode === "template" ? "blank_value" : "no_template",
+      });
       markFollowUp("noted-window");
       await applyPostActions({
         canMessage: canMessagePost,
@@ -2993,6 +3142,7 @@ async function runAgentNudgeBody(
     }
     delivered = true;
     await client.sendPrivateNote(conversationId, literalForChatwoot(reply));
+    await rememberDraftNoted("held", reply);
     logger.info(
       "agentNudge noted: conv=%s source=%s",
       String(conversationId),

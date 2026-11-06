@@ -332,6 +332,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/flowlog/fallback-lines.ts": [2, "flow-event"],
   // The fixed sentence of a message posted on the bot token, never the message.
   "src/modules/flowlog/foreign-send.ts": [1, "flow-event"],
+  "src/modules/service-window/note-alert.ts": [1, "flow-event"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
   "src/modules/flowlog/webhook.ts": [1, "flow-event"],
@@ -383,6 +384,13 @@ const GUARD_CALLS: Record<string, number> = {
   // The body of an alert and of a rate alert, each a line posted to the channel.
   "src/modules/flowlog/alerts.ts": 2,
   "src/modules/flowlog/service.ts": 2,
+  // The snoozed selection's failure, before it reaches the log.
+  "src/modules/followups/handlers.ts": 1,
+  // A step's model call that failed, and a step whose model could not be resolved, before either
+  // reason reaches `occurrence_runs.detail.skipped`.
+  "src/modules/occurrences/model.ts": 2,
+  // A failed occurrence round's cause, before it reaches `occurrence_runs.detail`.
+  "src/modules/occurrences/round.ts": 1,
   "src/modules/rag/documents.ts": 1,
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
   // and the boot re-arm's before it reaches the log.
@@ -390,6 +398,8 @@ const GUARD_CALLS: Record<string, number> = {
   // The third reads it back: a run past its deadline takes its row back only while the row still
   // carries the failure that deadline wrote, compared in the form `failJob` stored it.
   "src/modules/scheduler/service.ts": 3,
+  // A job's failure, before it reaches the log.
+  "src/modules/scheduler/worker.ts": 1,
   // The ledger read's error text, before it reaches `poll_error`.
   "src/modules/spend-ceiling/poll.ts": 1,
   // The line the retry loop writes for a retry it announced and could not start.

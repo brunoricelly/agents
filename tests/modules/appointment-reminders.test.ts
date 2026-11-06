@@ -17,6 +17,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
+import { isNudgeTurn } from "@/graph/markers";
 import { DATA_FENCE, nudgeOccasionKey, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { recordAppointment } from "@/modules/appointments/record";
@@ -145,6 +146,24 @@ describe("reminderNudge", () => {
     expect(n.instructions).toContain("confirm");
     expect(n.instructions).toContain("calendar_confirm_appointment");
     expect(n.summary).toContain("Consulta");
+  });
+
+  // The 24h window's template choice reads the reminder's offset and appointment off the
+  // nudge, and nothing in that field reaches the model's fenced data.
+  test("names its template occasion: the kind, the offset and the appointment", () => {
+    const n = reminderNudge({
+      ...args,
+      isLast: false,
+      askConfirmation: false,
+      offsetHours: 24,
+      calendarLabel: "Centro",
+    });
+    expect(n.template).toEqual({
+      kind: "appointment_reminder",
+      offsetHours: 24,
+      appointment: { startISO: args.startISO, calendarLabel: "Centro" },
+    });
+    expect(Object.keys(n.refs ?? {})).not.toContain("calendar_label");
   });
 
   test("last but confirmation disabled → plain reminder", () => {
@@ -856,6 +875,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     });
     const s = stubClient();
     let commits = 0;
+    const saver = new MemorySaver();
 
     await appointmentReminderHandler(
       job,
@@ -863,7 +883,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
       {
         makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
         makeClient: s.makeClient,
-        checkpointer: new MemorySaver(),
+        checkpointer: saver,
         persistUsage: async () => {},
       },
       {
@@ -876,6 +896,15 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     expect(s.sent.length).toBe(1);
     expect(commits).toBe(1);
+    const directives = new Set<string>();
+    for await (const t of saver.list({})) {
+      for (const m of (t.checkpoint.channel_values.messages ??
+        []) as BaseMessage[])
+        if (isNudgeTurn(m)) directives.add(m.id as string);
+    }
+    expect([...directives]).toEqual([
+      expect.stringMatching(new RegExp(`^nudge:job:${job.id}:`)),
+    ]);
   });
 
   // The agent resolving right after the booking is the ordinary close, so a reminder has to reach a

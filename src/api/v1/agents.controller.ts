@@ -29,7 +29,7 @@ import {
   listAgentsPaged,
   replaceAgentToolSelections,
   type ToolGrantInput,
-  updateAgent,
+  updateAgentAndGrants,
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
@@ -88,6 +88,22 @@ import { setUpAgentCalls } from "@/modules/voice-call/setup";
 // translate('errors.providerListUnreachable', 'Could not reach {{provider}} to list the options')
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.playgroundTurnFailed', 'The turn failed on the server. The cause is in the server log, under the id of this turn.')
+// translate('errors.serviceWindowKind', '{{where}}: not a proactive kind ({{kinds}}).')
+// translate('errors.serviceWindowReminderOffset', '{{where}}: the key is a reminder offset in hours.')
+// translate('errors.serviceWindowReminderChoice', '{{where}}: not a template choice ({ name, language, params, … }).')
+// translate('errors.serviceWindowAppointmentVar', '{{where}}: {{placeholder}} is an appointment placeholder, and only appointment reminders have an appointment.')
+// translate('errors.serviceWindowTemplateBlankBody', '{{where}}: body parameter {{index}} of template "{{name}}" is blank.')
+// translate('errors.serviceWindowTemplateBlankHeader', '{{where}}: header parameter {{index}} of template "{{name}}" is blank.')
+// translate('errors.serviceWindowReminderOffsetRepeated', '{{where}}: another key already names the reminder {{hours}} hours before.')
+// translate('errors.serviceWindowTemplateNotFound', '{{where}}: template "{{name}}" is not an approved template of this agent\'s inbox.')
+// translate('errors.serviceWindowTemplateLanguage', '{{where}}: template "{{name}}" has no "{{language}}" version (available: {{available}}).')
+// translate('errors.serviceWindowTemplateBodyCount', '{{where}}: template "{{name}}" takes {{want}} body parameter(s), {{got}} configured.')
+// translate('errors.serviceWindowTemplateHeaderCount', '{{where}}: template "{{name}}" takes {{want}} header parameter(s), {{got}} configured.')
+// translate('errors.serviceWindowTemplateMediaHeader', '{{where}}: template "{{name}}" has a {{format}} header, which proactive sends do not fill.')
+// translate('errors.serviceWindowTemplateButtonCount', '{{where}}: template "{{name}}" has {{want}} button(s), {{got}} configured.')
+// translate('errors.serviceWindowTemplateButtonNeedsSuffix', '{{where}}: button {{index}} ("{{text}}") of template "{{name}}" needs the end of its URL.')
+// translate('errors.serviceWindowTemplateButtonTakesNone', '{{where}}: button {{index}} ("{{text}}") of template "{{name}}" takes no parameter.')
+// translate('errors.serviceWindowTemplateAuthentication', '{{where}}: template "{{name}}" is an authentication (one-time code) template, which proactive messages cannot use.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.invalidSignatureSwitch', '`signature.enabled` must be true or false, not {{got}}. Send the whole signature block to change it.')
 // translate('errors.settingsBlocksDropped', 'This `settings` would delete what this agent has configured under {{blocks}}, because it replaces the whole object. Add what is missing, or pass `settingsMode: "replace"` to say it is complete.')
@@ -784,25 +800,32 @@ export const agentsController = new Elysia({
   .patch(
     "/:id",
     async ({ tenantContext, params, body }) => {
-      const { patch, expectedUpdatedAt, settingsMode } = splitAgentUpdateBody(
-        body as AgentUpdate & {
-          expectedUpdatedAt?: string;
-          settingsMode?: "replace";
-        },
+      const { grants, ...rest } = body as AgentUpdate & {
+        expectedUpdatedAt?: string;
+        settingsMode?: "replace";
+        grants?: ToolGrantInput[];
+      };
+      const { patch, expectedUpdatedAt, settingsMode } =
+        splitAgentUpdateBody(rest);
+      const { agent, toolSelection } = await updateAgentAndGrants(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        patch,
+        grants ?? null,
+        undefined,
+        { expectedUpdatedAt, settingsMode },
       );
       return {
         instance: instanceIdentity,
-        agent: await updateAgent(
-          ctxOrThrow(tenantContext),
-          requireDbId(params.id),
-          patch,
-          undefined,
-          { expectedUpdatedAt, settingsMode },
-        ),
+        agent,
+        ...(toolSelection ? { toolSelection } : {}),
       };
     },
     {
-      detail: doc("Update agent", "Partially updates an existing agent."),
+      detail: doc(
+        "Update agent",
+        "Partially updates an existing agent. With `grants`, the agent's whole tool grant set is replaced in the same transaction: either every part of the write is applied or none is.",
+      ),
       response: errors(400, 401, 403, 404, 409, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
@@ -876,6 +899,12 @@ export const agentsController = new Elysia({
           t.String({
             description:
               "Optimistic-concurrency precondition: the agent's updatedAt the client loaded (ISO). When it no longer matches, the update is rejected with 409 instead of overwriting a change made elsewhere. Omit for last-write-wins.",
+          }),
+        ),
+        grants: t.Optional(
+          t.Array(ToolGrantBody, {
+            description:
+              "The agent's WHOLE tool grant set, in the shape PUT /v1/agents/{id}/tool-selections takes (replace-the-set semantics), written in the same transaction as the other fields. The answer then carries `toolSelection`, the set as written with its catalog.",
           }),
         ),
         settingsMode: t.Optional(

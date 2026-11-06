@@ -97,6 +97,8 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // read and one enqueue.
   HUMAN_REPLY_RECOVERY: "shared",
   SPEND_CEILING_POLL: "shared",
+  OCCURRENCE_ROUND: "shared",
+  OCCURRENCE_SWEEP: "shared",
   // A lane of its own, drained by the scheduler's fast tick: on the traffic share it would wait
   // behind every ingestion row armed before it, five rows a tick for the whole install.
   OBSERVE: "observe",
@@ -145,6 +147,8 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // whatever turn reads the thread next, which is the whole point of the ingestion being a job.
   HUMAN_REPLY_RECOVERY: false,
   SPEND_CEILING_POLL: false,
+  OCCURRENCE_ROUND: true,
+  OCCURRENCE_SWEEP: false,
   OBSERVE: true,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
@@ -192,6 +196,8 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // traffic.
   HUMAN_REPLY_RECOVERY: true,
   SPEND_CEILING_POLL: false,
+  OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: false,
   // One row per observed CONVERSATION, the same shape as DEBOUNCE's and the same answer: with a lane
   // of its own, no claim that holds a fixed-rate kind ever holds it.
   OBSERVE: false,
@@ -235,6 +241,8 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // Same key, same shape, same answer.
   HUMAN_REPLY_RECOVERY: true,
   SPEND_CEILING_POLL: false,
+  OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: false,
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
@@ -282,6 +290,8 @@ const EXPECTED_DEATH_LEVEL: Record<
   // reply twice.
   HUMAN_REPLY_RECOVERY: "warn",
   SPEND_CEILING_POLL: "error",
+  OCCURRENCE_ROUND: "warn",
+  OCCURRENCE_SWEEP: "warn",
   OBSERVE: "warn",
   MEDIA_TEXT_FALLBACK: "error",
   KNOWLEDGE_SOURCE_SYNC: "warn",

@@ -18,6 +18,7 @@ import {
 } from "@/modules/business-hours/hours";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import { resetAckSendId } from "@/modules/chatwoot/constants";
+import { conversationIsGone } from "@/modules/chatwoot/conversation-gone";
 import {
   instanceAgentBotChatwootIds,
   loadChatwootClient,
@@ -30,8 +31,7 @@ import {
 import {
   isSnoozedForAPerson,
   parseLiveConversation,
-  providerReservesEchoIds,
-  SESSION_SENDER_NAME,
+  phoneReplyMarked,
 } from "@/modules/chatwoot/normalize";
 import { renderAttendantMessage } from "@/modules/chatwoot/render";
 import {
@@ -117,26 +117,16 @@ const ANCHOR_TEXT_MAX = 1500;
 
 // ── the sweep's half ───────────────────────────────────────────────────────────────────────────────
 
-// Called by the per-tenant FOLLOWUP_SWEEP pass with the agents whose snoozed ladder is ON. Nominates
-// every conversation the mirror says is snoozed and held by a person, on an inbox one of those agents
-// serves, that has no job in flight, or whose job is older than the conversation's last event (the
-// person wrote again, the customer answered, the labels changed, the snooze or the holder moved: the
-// handler re-decides from scratch).
-// The handler is what judges the end date, the anchor and the cadence, live.
-export async function sweepSnoozedFollowUps(
-  base: PrismaClient,
+// The snoozed sweep's selection, as the statement it runs, so a test can read the plan the database
+// gives it under the tenant policy (tests/modules/scoped-index-plans.test.ts). `now` is the app's
+// clock, the one that wrote `run_at`.
+export function snoozedSweepSelectionSql(
   tenantId: bigint,
   agentIds: bigint[],
-): Promise<number> {
-  if (agentIds.length === 0) return 0;
+  now: Date,
+): Prisma.Sql {
   const idsSql = Prisma.sql`ARRAY[${Prisma.join(agentIds)}]::bigint[]`;
-  const threads = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    (db) =>
-      db.$queryRaw<
-        Array<{ thread_id: string; finished: boolean; waiting: boolean }>
-      >`
+  return Prisma.sql`
       SELECT c.thread_id,
              -- A row whose run finished (DONE or DEAD) spent its budget on what that run saw; what
              -- re-arms it now is an event after it, so the arm is new work with a fresh budget.
@@ -197,7 +187,7 @@ export async function sweepSnoozedFollowUps(
                 -- A row waiting and already due runs next anyway: arming it again would only rewrite
                 -- it on every pass until it is claimed, since its watermark is still its last start.
                 -- Due by the app's clock, the one that wrote run_at: the database's may lag it.
-                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= ${new Date()})
+                OR (j.status IN ('PENDING', 'FAILED') AND j.run_at <= ${now})
                 OR COALESCE(j.run_started_at, j.claimed_at, j.updated_at) >= GREATEST(
                   c.last_event_at + interval '1 second',
                   to_timestamp(c.chatwoot_status_at + 1) AT TIME ZONE 'UTC',
@@ -206,8 +196,32 @@ export async function sweepSnoozedFollowUps(
                   i.responder_bound_at
                 )
               )
+             -- A correlated lookup per candidate, by the (tenant_id, dedupe_key) index. OFFSET 0 keeps
+             -- the planner from turning this into an anti-join: under the tenant policy the kind filter
+             -- does not narrow its estimate, so it hashed every job of the tenant with a Seq Scan on
+             -- each pass (measured in production).
+             OFFSET 0
          )
-       LIMIT 500`,
+       LIMIT 500
+  `;
+}
+
+// Called by the per-tenant FOLLOWUP_SWEEP pass with the agents whose snoozed ladder is ON. Nominates
+// every conversation the mirror says is snoozed and held by a person, on an inbox one of those agents
+// serves, that has no job in flight, or whose job is older than the conversation's last event (the
+// person wrote again, the customer answered, the labels changed, the snooze or the holder moved: the
+// handler re-decides from scratch).
+// The handler is what judges the end date, the anchor and the cadence, live.
+export async function sweepSnoozedFollowUps(
+  base: PrismaClient,
+  tenantId: bigint,
+  agentIds: bigint[],
+): Promise<number> {
+  if (agentIds.length === 0) return 0;
+  const threads = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.$queryRaw<
+      Array<{ thread_id: string; finished: boolean; waiting: boolean }>
+    >(snoozedSweepSelectionSql(tenantId, agentIds, new Date())),
   );
   for (const t of threads) {
     // Never over a CLAIMED row (its outcome would be discarded): the handler re-decides from Chatwoot
@@ -257,11 +271,7 @@ function personWrote(
     return false;
   if (r.private || r.isReaction || r.imported) return false;
   if (r.senderType === "user") return !r.platformSent;
-  return (
-    r.senderType === null &&
-    r.externalSenderName === SESSION_SENDER_NAME &&
-    providerReservesEchoIds(opts.whatsappProvider)
-  );
+  return r.senderType === null && phoneReplyMarked(r, opts.whatsappProvider);
 }
 
 function customerWrote(r: ChatwootMessageRow): boolean {
@@ -390,6 +400,7 @@ export function snoozedNudge(params: {
   return {
     source: "followup",
     kind: "snoozed",
+    template: { kind: "snoozed_followup" },
     // The directive itself is the framing's (renderNudge); the summary carries only the facts.
     framing: "snoozed_reminder",
     summary: `a person asked the customer ${params.idleMin} minutes ago; no reply yet`,
@@ -527,6 +538,14 @@ export async function snoozedFollowUpHandler(
       }
     }
   } catch (err) {
+    // NOTE: a conversation deleted in Chatwoot has no snooze left to chase, and no read will bring it.
+    if (await conversationIsGone(client, conversationId, err)) {
+      logger.info(
+        { conversationId: String(conversationId) },
+        "snoozedFollowUp: the conversation no longer exists in Chatwoot; the ladder ends",
+      );
+      return { outcome: "done" };
+    }
     logger.warn(
       { err, conversationId: String(conversationId) },
       "snoozedFollowUp: live read failed; trying again later",
@@ -680,7 +699,7 @@ export async function snoozedFollowUpHandler(
         ownBotIds: new Set(
           await instanceAgentBotChatwootIds(tenantId, instanceId, base),
         ),
-        trustPhoneEcho: providerReservesEchoIds(ctx.reply.whatsappProvider),
+        whatsappProvider: ctx.reply.whatsappProvider,
       }),
       // The nudge's own budget, spent here per message: cut again there, the window would lose the
       // label of its oldest line.
@@ -701,6 +720,7 @@ export async function snoozedFollowUpHandler(
   };
   const outcome = await runAgentNudge({
     signal: run?.signal,
+    runKey: `job:${job.id}`,
     // The agent whose cadence, hours and fence were read: a rebinding since then is not its to send.
     expectAgentId: ctx.agentId,
     tenantId,

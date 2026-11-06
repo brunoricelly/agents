@@ -1,5 +1,8 @@
-import type { AIMessage, BaseMessage } from "@langchain/core/messages";
-import { RemoveMessage } from "@langchain/core/messages";
+import {
+  type AIMessage,
+  type BaseMessage,
+  RemoveMessage,
+} from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
@@ -244,10 +247,14 @@ export async function undoRefusedTurn(params: {
   // that happens to be named like a native one is never mistaken for the inert one.
   inertTools?: ReadonlySet<string>;
   // The note that takes the removed reply's place when the turn acted before it
-  // (`turnActedBeforeItsReply`). It reuses the first removed id, so the reducer puts it exactly where
-  // the reply stood, ahead of anything appended since. Absent, the reply just goes. Meaningful on the
-  // reactive plan only: the proactive one removes nothing from a turn that acted.
-  undeliveredNote?: BaseMessage;
+  // (`turnActedBeforeItsReply`), built ON the first removed id: the reducer puts it exactly where the
+  // reply stood, and the checkpoint keeps the id a later removal names (an id assigned after
+  // construction never reaches it). Absent, the reply just goes. Reactive plan only: the proactive
+  // one removes nothing from a turn that acted.
+  undeliveredNote?: (id: string) => BaseMessage;
+  // What stands in the removed reply's place whatever the turn did before it: the template the
+  // customer read instead, or the note that the draft never reached them. Built on the same id.
+  replacement?: (id: string) => BaseMessage;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
   // neither: without them only the process-local check applies, which is all a thread with no
   // contact inbox can have.
@@ -287,13 +294,16 @@ export async function undoRefusedTurn(params: {
       )?.messages ?? []) as BaseMessage[];
       const decided = plan(produced, current, params.inertTools ?? new Set());
       if (decided.action === "remove") {
-        const note =
-          params.undeliveredNote !== undefined &&
-          turnActedBeforeItsReply(produced, params.inertTools)
-            ? params.undeliveredNote
-            : null;
         const [first, ...rest] = decided.ids;
-        if (note && first !== undefined) note.id = first;
+        const note =
+          first === undefined
+            ? null
+            : params.replacement !== undefined
+              ? params.replacement(first)
+              : params.undeliveredNote !== undefined &&
+                  turnActedBeforeItsReply(produced, params.inertTools)
+                ? params.undeliveredNote(first)
+                : null;
         await graph.updateState(
           threadCfg,
           {

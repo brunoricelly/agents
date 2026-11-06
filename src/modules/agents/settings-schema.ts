@@ -37,6 +37,7 @@ import {
 import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
+  WRITABLE_ATTRIBUTES_MAX,
 } from "@/modules/agents/tool-guidance";
 import {
   GUARDABLE_TOOL_NAME,
@@ -72,6 +73,7 @@ import {
   OTHER_INBOXES_LIMITS,
   OTHER_INBOXES_MAX_INBOXES,
 } from "@/modules/other-inboxes/settings";
+import { PROACTIVE_KINDS } from "@/modules/service-window/kinds";
 import {
   SIGNATURE_FREQUENCIES,
   SIGNATURE_POSITIONS,
@@ -400,6 +402,22 @@ const signature = z.looseObject({
     .describe("blank = 2 newlines; -- adds a -- line. Chatwoot's own bytes"),
 });
 
+export const templateChoice = z.looseObject({
+  name: z
+    .string()
+    .refine((s) => s.trim() !== "", "blank")
+    .describe("approved HSM name"),
+  language: z.string().optional().describe('default "pt_BR"'),
+  category: z.string().optional().describe('default "UTILITY"'),
+  params: z.array(z.string()).optional().describe("body {{1}}.. in order"),
+  headerParams: z.array(z.string()).optional().describe("text header {{1}}"),
+  buttonParams: z
+    .array(z.string())
+    .optional()
+    .describe("per button: dynamic URL suffix, else empty"),
+  content: z.string().nullable().optional(),
+});
+
 const serviceWindow = z.looseObject({
   enabled: z.boolean().optional(),
   windowHours: ranged(SERVICE_WINDOW_RANGES.windowHours).optional(),
@@ -407,18 +425,34 @@ const serviceWindow = z.looseObject({
     .string()
     .nullable()
     .optional()
-    .describe("approved HSM outside the window; null = a private note"),
+    .describe("default HSM outside the window; null = a note"),
   templateLanguage: z.string().optional().describe('e.g. "pt_BR"'),
   templateCategory: z.string().optional().describe('e.g. "UTILITY"'),
   templateParams: z
     .array(z.string())
     .optional()
-    .describe("positional body params; {contact_name} interpolates"),
+    .describe(
+      "positional body params; {{nome_contato}} interpolates, {{var|text}} when empty",
+    ),
+  templateHeaderParams: z.array(z.string()).optional(),
+  templateButtonParams: z.array(z.string()).optional(),
   templateContent: z
     .string()
     .nullable()
     .optional()
     .describe("dashboard-facing only; the send uses the params"),
+  // NOTE: Both maps validated by `assertSettingsServiceWindow`, where the key is known: a schema per
+  // kind would repeat the choice six times in every MCP listing.
+  templates: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      `${PROACTIVE_KINDS.join("|")} → {name,language,params,headerParams,buttonParams}; reminders add {{data_agendamento}} {{hora_agendamento}} {{dia_semana_agendamento}} {{agenda}}`,
+    ),
+  reminderTemplates: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe("offset hours → same"),
 });
 
 const grounding = z.looseObject({
@@ -939,7 +973,7 @@ const outputChecks = z.looseObject({
 });
 
 const ACTION_DESC =
-  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and give the conversation to the team";
+  "on a violation: template = send templateMessage; generated = guardrails writes a safe reply; silent = send nothing; handoff = send handoffMessage and hand over to the team; observe = only log it";
 
 const directionCommon = {
   enabled: z.boolean().optional(),
@@ -971,10 +1005,18 @@ const guardrailInput = z.looseObject({
   checks: inputChecks.optional(),
   // NOTE: Input analysis never generates a replacement reply (prompts.ts reads this only for `output`).
   generationPrompt: z.never().optional(),
+  contextMessages: ranged(GUARDRAIL_RANGES.contextMessages)
+    .optional()
+    .describe(
+      "earlier messages read as context, never judged; 0 = the message alone; new agents start at 4",
+    ),
 });
 
 const guardrailOutput = z.looseObject({
   ...directionCommon,
+  // NOTE: Refused rather than ignored: the reply is judged on its own, and a loose object would take
+  // the field as a silent no-op.
+  contextMessages: z.never().optional(),
   action: oneOf(GUARDRAIL_ACTIONS).optional().describe(ACTION_DESC),
   checks: outputChecks.optional(),
   generationPrompt: z
@@ -1211,6 +1253,27 @@ const setLabels = z
     "per-agent configuration for the set_labels native tool that is not a note (the note lives in toolGuidance.set_labels)",
   );
 
+// The `set_custom_attribute` fence: the attributes it may write. The VALUE rules come from the
+// account's Chatwoot definitions, not from here.
+const setCustomAttribute = z
+  .looseObject({
+    allowed: z
+      .array(
+        z.object({
+          scope: z.enum(["conversation", "contact", "task"]),
+          key: z.string().trim().min(1),
+        }),
+      )
+      .max(WRITABLE_ATTRIBUTES_MAX)
+      .describe(
+        `the only attributes set_custom_attribute may write or clear; empty = any key. A key with a Chatwoot definition is also held to it. At most ${WRITABLE_ATTRIBUTES_MAX}`,
+      )
+      .optional(),
+  })
+  .describe(
+    "set_custom_attribute config that is not a note (the note is toolGuidance.set_custom_attribute)",
+  );
+
 const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
   `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
 );
@@ -1336,6 +1399,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   kanban: kanban.optional(),
   toolGuidance: toolGuidance.optional(),
   setLabels: setLabels.optional(),
+  setCustomAttribute: setCustomAttribute.optional(),
   toolPreconditions: toolPreconditions.optional(),
   monitoring: monitoring.optional(),
 } satisfies z.ZodRawShape;

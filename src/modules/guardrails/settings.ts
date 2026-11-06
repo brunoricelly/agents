@@ -1,6 +1,8 @@
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { clampToRange } from "@/lib/number-range";
 import { clipText } from "@/lib/text";
+import { GUARDRAIL_RANGES } from "@/modules/agents/number-ranges";
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
@@ -16,15 +18,24 @@ import {
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
 // analyzes the customer message (input) and/or the agent reply (output) against a set of standard
 // checks; on a violation the configured PER-DIRECTION action fires (template reply / a guardrails-
-// generated safe reply / stay silent / hand the conversation to the team). This reader is the single source of defaults + clamping, so a
+// generated safe reply / stay silent / hand the conversation to the team / only record the verdict). This reader is the single source of defaults + clamping, so a
 // malformed value never breaks the webhook. Surfaced in the agent editor. Off by default.
 
-export type GuardrailAction = "template" | "generated" | "silent" | "handoff";
+// `observe` runs the check and records the verdict, and the conversation goes on as if it had passed:
+// nothing is replaced, suppressed or handed over, and no note is posted. It is how an operator measures
+// a policy on real traffic before letting it act.
+export type GuardrailAction =
+  | "template"
+  | "generated"
+  | "silent"
+  | "handoff"
+  | "observe";
 export const GUARDRAIL_ACTIONS: readonly GuardrailAction[] = [
   "template",
   "generated",
   "silent",
   "handoff",
+  "observe",
 ];
 
 // Who judges a screening. `chat` is the guardrails agent's own chat model writing a verdict with a
@@ -89,7 +100,7 @@ export interface GuardrailDirectionConfig {
   enabled: boolean;
   checks: GuardrailChecks;
   // What to do on a violation: send `templateMessage` verbatim, send a guardrails-generated safe
-  // reply, or stay silent (send nothing). Default "template".
+  // reply, stay silent (send nothing), hand over to the team, or only record it. Default "template".
   action: GuardrailAction;
   // The static reply used when action === "template".
   templateMessage: string;
@@ -101,6 +112,17 @@ export interface GuardrailDirectionConfig {
   // continue". EMPTY is a real value and means: say nothing, only hand over.
   handoffMessage: string;
 }
+
+// The customer side also reads the conversation: a short reply ("sim, o vip, como?") is ambiguous on
+// its own and plain after the question it answers.
+export interface GuardrailInputConfig extends GuardrailDirectionConfig {
+  // How many earlier messages travel beside the customer's as context, never judged themselves. 0 is
+  // the message alone, which is what an agent saved before this setting existed keeps.
+  contextMessages: number;
+}
+
+// What a NEW agent is born with (modules/agents/creation-defaults.ts): two exchanges.
+export const NEW_AGENT_CONTEXT_MESSAGES = 4;
 
 export interface GuardrailsConfig {
   enabled: boolean;
@@ -119,7 +141,7 @@ export interface GuardrailsConfig {
   competitors: string[];
   // Free-text extra policy appended to every analysis prompt.
   customPolicy: string;
-  input: GuardrailDirectionConfig;
+  input: GuardrailInputConfig;
   output: GuardrailDirectionConfig;
   onFailure: GuardrailFailureMode;
   external: GuardrailExternalConfig;
@@ -173,6 +195,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
     templateMessage: DEFAULT_TEMPLATE,
     generationPrompt: "",
     handoffMessage: DEFAULT_HANDOFF_MESSAGE,
+    contextMessages: 0,
   },
   output: {
     enabled: true,
@@ -274,6 +297,18 @@ function readDirection(
   };
 }
 
+function readInput(v: unknown): GuardrailInputConfig {
+  const b = v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  return {
+    ...readDirection(v, GUARDRAILS_DEFAULTS.input),
+    contextMessages: clampToRange(
+      b.contextMessages,
+      GUARDRAIL_RANGES.contextMessages,
+      GUARDRAILS_DEFAULTS.input.contextMessages,
+    ),
+  };
+}
+
 // The competitor list as the check receives it, which is also what the editor counts.
 export function readCompetitors(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -350,7 +385,7 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     baseURL: str(bag.baseURL),
     competitors: readCompetitors(bag.competitors),
     customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),
-    input: readDirection(bag.input, GUARDRAILS_DEFAULTS.input),
+    input: readInput(bag.input),
     output: readDirection(bag.output, GUARDRAILS_DEFAULTS.output),
     onFailure: bag.onFailure === "hold" ? "hold" : "pass",
     external: readExternal(bag.external),

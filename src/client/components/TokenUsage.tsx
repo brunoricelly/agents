@@ -31,7 +31,12 @@ export type TokenUsage = {
 // conversation screen reads them from what the turn recorded, and an old turn recorded neither.
 export type TokenTiming = { turnMs: number | null; modelMs: number | null };
 
-type T = TFunction<"translation", undefined>;
+// Two signatures rather than an optional `opts`: i18next's `TFunction` declares the call with and
+// without options as separate overloads, and a single optional one matches neither.
+type T = {
+  (key: string, fallback: string): string;
+  (key: string, fallback: string, opts: Record<string, unknown>): string;
+};
 
 // The words for a ledger node. Static keys, so the extractor sees them; a node not listed here is
 // shown as it is stored rather than dropped, since the count beside it is still true.
@@ -234,7 +239,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-6">
       <span className="text-text-muted">{label}</span>
-      <span className="font-medium text-text-primary tabular-nums">
+      <span className="text-text-primary font-medium tabular-nums">
         {value}
       </span>
     </div>
@@ -246,16 +251,16 @@ function Share({ pct, label }: { pct: number; label: string }) {
   return (
     <div className="space-y-1">
       <div
-        className="h-1 overflow-hidden rounded-full bg-bg-tertiary"
+        className="bg-bg-tertiary h-1 overflow-hidden rounded-full"
         role="img"
         aria-label={label}
       >
         <div
-          className="h-full rounded-full bg-accent-solid"
+          className="bg-accent-solid h-full rounded-full"
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="text-[11px] text-text-muted">{label}</p>
+      <p className="text-text-muted text-[11px]">{label}</p>
     </div>
   );
 }
@@ -263,7 +268,7 @@ function Share({ pct, label }: { pct: number; label: string }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-1.5">
-      <h4 className="font-semibold text-[10px] text-text-muted uppercase tracking-wider">
+      <h4 className="text-text-muted text-[10px] font-semibold tracking-wider uppercase">
         {title}
       </h4>
       {children}
@@ -276,8 +281,8 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
   const locale = i18n.language;
   return (
     <div className="w-64 space-y-3 text-xs" data-testid="token-usage-detail">
-      <p className="flex items-center gap-1.5 font-semibold text-sm text-text-primary">
-        <Gauge className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
+      <p className="text-text-primary flex items-center gap-1.5 text-sm font-semibold">
+        <Gauge className="text-accent h-3.5 w-3.5" aria-hidden="true" />
         {title}
       </p>
       <Section title={t("tokenUsage.tokens", "Tokens used")}>
@@ -311,10 +316,10 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
           {d.steps.map((s) => (
             <span
               key={s.node}
-              className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[11px] text-text-secondary"
+              className="bg-bg-tertiary text-text-secondary rounded-full px-2 py-0.5 text-[11px]"
             >
               {s.label}
-              <span className="ml-1 font-medium text-text-primary tabular-nums">
+              <span className="text-text-primary ml-1 font-medium tabular-nums">
                 {t("tokenUsage.stepCalls", "{{count}} calls", {
                   count: s.calls,
                 })}
@@ -330,7 +335,7 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
           value={d.cost ?? t("tokenUsage.noPrice", "no price")}
         />
         {d.cost !== null && d.unpriced > 0 && (
-          <p className="text-[11px] text-warning">
+          <p className="text-warning text-[11px]">
             {t(
               "tokenUsage.unpricedCalls",
               "{{count}} calls with no price are not in it",
@@ -338,7 +343,7 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
             )}
           </p>
         )}
-        <p className="text-[11px] text-text-muted">
+        <p className="text-text-muted text-[11px]">
           {costSourceLine(t, locale, d.priceSources, d.priceTableDate)}
         </p>
       </Section>

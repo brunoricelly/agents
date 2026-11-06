@@ -1,13 +1,19 @@
 import logger from "@/api/lib/logger";
+import type { InternalTarget } from "@/config";
+import appConfig from "@/config";
 import {
   closeKeyedQueueTail,
   keyedQueueTail,
   withKeyedQueue,
 } from "@/lib/locks";
 import { withDeadline } from "@/lib/outbound";
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { assertSafeOutboundUrl, matchInternalTarget } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
 import type { AdditionalContactField } from "@/modules/chatwoot/contact-fields";
+import {
+  parseTemplateDefinition,
+  type TemplateDefinition,
+} from "@/modules/service-window/service";
 import {
   CHATWOOT_AUTH_HEADER,
   CHATWOOT_PLATFORM_SENT_KEY,
@@ -147,6 +153,12 @@ async function authFailureDetail(res: Response): Promise<string | undefined> {
 
 export interface ChatwootClientConfig {
   baseUrl: string;
+  // The address people open this Chatwoot on, for links a person follows; null or absent means
+  // baseUrl. Differs when baseUrl is a private address only the servers reach.
+  publicUrl?: string | null;
+  // What stays the same while the base URL moves (a domain change of the same Chatwoot): the
+  // deployment's id, set by `loadChatwootClient`. Keys in-process queues; absent means the base URL.
+  identity?: string;
   accountId: number;
   adminToken: string;
   botToken: string;
@@ -303,6 +315,57 @@ export interface ChatwootClientDeps {
   assertSafe?: (url: string) => Promise<URL>;
 }
 
+// The SSRF check for a URL on the tenant's own Chatwoot deployment. The guard stays on; what it adds
+// is the operator's SSRF_INTERNAL_TARGETS, so a Chatwoot reached on a private address (same VPC, same
+// Docker network) is a declared host:port and not a reason to turn the guard off for the whole
+// instance. Only the deployment's base URL comes through here: an attachment on any other host goes
+// through the plain guard (see `downloadAttachment`).
+// The origin of the links a person follows into this Chatwoot: its public address when the
+// connection has one, else the base URL. Without a trailing slash.
+export function chatwootLinkBase(dep: {
+  baseUrl: string;
+  publicUrl?: string | null;
+}): string {
+  return (dep.publicUrl || dep.baseUrl).replace(/\/+$/, "");
+}
+
+export function assertSafeChatwootUrl(url: string): Promise<URL> {
+  return assertSafeOutboundUrl(url, {
+    internalTargets: appConfig.ssrf.internalTargets,
+  });
+}
+
+// Where an attachment is actually fetched from. Chatwoot builds a data_url from its FRONTEND_URL,
+// which is the public address; when this app reaches Chatwoot on a declared private address that
+// public one can be closed to it (an access gate in front, no hairpin route). So a data_url on another
+// host whose path is Chatwoot's own Active Storage route is fetched from the deployment's base, same
+// path and query: the blob lives on the instance that sent the webhook, and the admin token then goes
+// to the address the operator configured and nowhere else. Done only when the base is a declared
+// internal target, so a deployment reached on its public address keeps fetching the URL as written.
+// `sameInstance` says whether the admin token may go along.
+export function attachmentFetchTarget(
+  dataUrl: string,
+  baseUrl: string,
+  internalTargets: readonly InternalTarget[],
+): { url: string; sameInstance: boolean } {
+  const data = new URL(dataUrl);
+  const base = new URL(baseUrl);
+  if (data.origin === base.origin) return { url: dataUrl, sameInstance: true };
+  const viaBase =
+    data.pathname.startsWith(ACTIVE_STORAGE_PREFIX) &&
+    (data.protocol === "http:" || data.protocol === "https:") &&
+    data.username === "" &&
+    data.password === "" &&
+    matchInternalTarget(base, internalTargets) === "match";
+  if (!viaBase) return { url: dataUrl, sameInstance: data.host === base.host };
+  return {
+    url: `${base.origin}${data.pathname}${data.search}`,
+    sameInstance: true,
+  };
+}
+
+const ACTIVE_STORAGE_PREFIX = "/rails/active_storage/";
+
 export interface AttachmentDownloadOptions {
   // Opt-in bounded retry for the write race described on ATTACHMENT_RETRY_DELAYS_MS. The eager media
   // path (STT/vision, right off the webhook) sets it; the interactive media proxy does NOT — there a
@@ -318,13 +381,17 @@ export type ChatwootMessageType = "outgoing" | "incoming";
 
 // A Chatwoot custom-attribute definition (account-level). `model` is one of conversation_attribute |
 // contact_attribute | task_attribute | company_attribute; `values` is populated only for list types.
-// Surfaced to the set_custom_attribute tool so the agent writes known keys (and known list values).
+// Surfaced to the set_custom_attribute tool so the agent writes known keys (and known list values),
+// and enforced by it (attribute-rules.ts). `regexPattern` is the `/source/flags` string the dashboard
+// stores and `regexCue` the operator's sentence describing it; null when the definition has none.
 export interface CustomAttributeDef {
   key: string;
   displayName: string;
   model: string;
   displayType: string;
   values: string[];
+  regexPattern: string | null;
+  regexCue: string | null;
 }
 
 // A custom_attributes bag as Chatwoot renders it, or {} for anything that is not a plain object.
@@ -545,6 +612,12 @@ export class ChatwootClient {
     this.accountBase = `${root}/api/v1/accounts/${config.accountId}`;
   }
 
+  // Whether this client's deadline has passed: everything it would write is refused from here on, and
+  // a caller that keeps its own record of the same work (a reading) stops there too.
+  get expired(): boolean {
+    return this.config.expiresOn?.aborted === true;
+  }
+
   // Asked by a queued write at the last moment before it sends. Absent ⇒ the write proceeds, which
   // is what every caller with no fence to offer means. A fence that THROWS is not a withdrawal
   // either: the write goes out, exactly as every other fence in this codebase decides.
@@ -573,10 +646,14 @@ export class ChatwootClient {
     if (token === "") throw new ChatwootMissingTokenError(endpoint);
   }
 
-  // Scoped by accountBase so two installs (or two accounts) never queue behind each other on the
-  // same numeric id.
+  // Scoped by installation and account so two installs (or two accounts) never queue behind each
+  // other on the same numeric id. The installation is the deployment's identity when the loader set
+  // it, so clients loaded before and after a base URL move still share one queue per target.
   private targetKey(scope: string, id: number): string {
-    return `${this.accountBase}:${scope}:${id}`;
+    const owner = this.config.identity
+      ? `${this.config.identity}/accounts/${this.config.accountId}`
+      : this.accountBase;
+    return `${owner}:${scope}:${id}`;
   }
 
   private async request(
@@ -1140,7 +1217,7 @@ export class ChatwootClient {
   // Conversation labels. The POST REPLACES the whole set, so set_labels reads the current labels
   // first and writes the set it derived. LabelConcern + labels/{index,create}.json.jbuilder render
   // `json.payload @labels`; create permits `labels: []` and calls `update_labels`. The read stays on
-  // the admin token: `conversations/labels` is bot-accessible only on Chatwoot from 2026-06-05 on,
+  // the admin token, because `conversations/labels` is bot-accessible only on Chatwoot from 2026-06-05 on,
   // self-hosted versions are not ours to pick, and a read attributes nothing, so a 401 buys nothing.
   async getConversationLabels(conversationId: number): Promise<string[]> {
     const res = (await this.request(
@@ -1156,7 +1233,7 @@ export class ChatwootClient {
 
   // The write is the persona's: Chatwoot names the requester on the activity line it writes, so with
   // the admin token an automated verdict would be signed by the person whose token provisioned the
-  // instance. The bot token is authorized: `conversations/labels` create is in
+  // instance. The bot token is authorized, since `conversations/labels` create is in
   // BOT_ACCESSIBLE_ENDPOINTS, and the controller authorizes against `ConversationPolicy#show?`, which
   // accepts an agent bot. `asAdmin` is for an operator-initiated write, as on assignToAgent and
   // toggleStatus: /reset peels an episode's labels off because a person asked.
@@ -1328,7 +1405,7 @@ export class ChatwootClient {
 
   // Account custom-attribute definitions (admin token). Shape confirmed against the
   // chatwoot-pro fork: a bare array of { attribute_key, attribute_display_name, attribute_model,
-  // attribute_display_type, attribute_values }.
+  // attribute_display_type, attribute_values, regex_pattern, regex_cue }.
   async listCustomAttributeDefinitions(): Promise<CustomAttributeDef[]> {
     const res = await this.request(
       this.config.adminToken,
@@ -1356,6 +1433,14 @@ export class ChatwootClient {
         values: Array.isArray(o.attribute_values)
           ? o.attribute_values.filter((v): v is string => typeof v === "string")
           : [],
+        regexPattern:
+          typeof o.regex_pattern === "string" && o.regex_pattern !== ""
+            ? o.regex_pattern
+            : null,
+        regexCue:
+          typeof o.regex_cue === "string" && o.regex_cue.trim() !== ""
+            ? o.regex_cue.trim()
+            : null,
       });
     }
     return out;
@@ -1474,11 +1559,16 @@ export class ChatwootClient {
     );
   }
 
-  // Whether a URL is on this instance's own host: the one place an attachment is fetched from when the
-  // caller must not reach anywhere else (carrying a customer's files into a case).
+  // Whether a URL is one of this instance's own files: the one place an attachment is fetched from
+  // when the caller must not reach anywhere else (carrying a customer's files into a case). Same rule
+  // as `downloadAttachment`, so a public data_url fetched through a private base counts.
   isInstanceUrl(url: string): boolean {
     try {
-      return new URL(url).host === new URL(this.config.baseUrl).host;
+      return attachmentFetchTarget(
+        url,
+        this.config.baseUrl,
+        appConfig.ssrf.internalTargets,
+      ).sameInstance;
     } catch {
       return false;
     }
@@ -1495,17 +1585,23 @@ export class ChatwootClient {
     dataUrl: string,
     opts: AttachmentDownloadOptions = {},
   ): Promise<{ bytes: ArrayBuffer; contentType: string | null }> {
-    await assertSafeOutboundUrl(dataUrl);
-    let sameHost = false;
+    let target: { url: string; sameInstance: boolean };
     try {
-      sameHost = new URL(dataUrl).host === new URL(this.config.baseUrl).host;
+      target = attachmentFetchTarget(
+        dataUrl,
+        this.config.baseUrl,
+        appConfig.ssrf.internalTargets,
+      );
     } catch {
       throw new ChatwootApiError(400, "GET attachment");
     }
+    const sameHost = target.sameInstance;
+    if (sameHost) await assertSafeChatwootUrl(target.url);
+    else await assertSafeOutboundUrl(target.url);
     const delays = opts.retryOnMissing ? ATTACHMENT_RETRY_DELAYS_MS : [];
     const sleep = opts.sleep ?? realSleep;
     for (let attempt = 0; ; attempt++) {
-      const res = await this.fetchImpl(dataUrl, {
+      const res = await this.fetchImpl(target.url, {
         method: "GET",
         headers: sameHost
           ? { [CHATWOOT_AUTH_HEADER]: this.config.adminToken }
@@ -1561,14 +1657,13 @@ export class ChatwootClient {
   }
 
   // WhatsApp Cloud (official) HSM templates of an inbox, read from the inbox detail's
-  // `message_templates` (admin token), returned as { name, category, language } (approved only when a
-  // status is present). NOTE: baileys/zapi inboxes are also `Channel::Whatsapp` but with an unofficial
+  // `message_templates` (admin token), parsed into their definitions (approved only when a status is
+  // present). NOTE: baileys/zapi inboxes are also `Channel::Whatsapp` but with an unofficial
   // `provider` (no 24h window/HSM), so they carry NONE here — the editor then keeps the free-text
-  // field. Shape is the Meta template object; not live-validatable on the baileys demo server
-  // (open-validation, like sendTemplate).
-  async listMessageTemplates(
+  // field. Shape is the Meta template object.
+  async listTemplateDefinitions(
     inboxId: number,
-  ): Promise<Array<{ name: string; category: string; language: string }>> {
+  ): Promise<TemplateDefinition[]> {
     const inbox = (await this.request(
       this.config.adminToken,
       "GET",
@@ -1577,21 +1672,27 @@ export class ChatwootClient {
     const arr = Array.isArray(inbox?.message_templates)
       ? inbox.message_templates
       : [];
-    const out: Array<{ name: string; category: string; language: string }> = [];
+    const out: TemplateDefinition[] = [];
     for (const tpl of arr) {
       if (!tpl || typeof tpl !== "object") continue;
-      const o = tpl as Record<string, unknown>;
-      const name = typeof o.name === "string" ? o.name : "";
-      if (!name) continue;
-      const status = typeof o.status === "string" ? o.status.toLowerCase() : "";
-      if (status && status !== "approved") continue;
-      out.push({
-        name,
-        category: typeof o.category === "string" ? o.category : "",
-        language: typeof o.language === "string" ? o.language : "",
-      });
+      const status = (tpl as Record<string, unknown>).status;
+      if (typeof status === "string" && status.toLowerCase() !== "approved") {
+        continue;
+      }
+      const def = parseTemplateDefinition(tpl);
+      if (def) out.push(def);
     }
     return out;
+  }
+
+  async listMessageTemplates(
+    inboxId: number,
+  ): Promise<Array<{ name: string; category: string; language: string }>> {
+    return (await this.listTemplateDefinitions(inboxId)).map((d) => ({
+      name: d.name,
+      category: d.category,
+      language: d.language,
+    }));
   }
 
   // Agents + teams for the handoff targeting picker. Admin token (neither is in the bot allowlist).
@@ -1623,11 +1724,33 @@ export class ChatwootClient {
     });
   }
 
-  // Lists the account's Agent Bots ({id,name}[]) — used to detect a bot deleted out-of-band on
-  // Chatwoot so ensureAgentBot can re-provision instead of reusing a dead id/token.
-  async listAgentBots(): Promise<Array<{ id: number; name: string }>> {
-    return normalizeIdName(
-      await this.request(this.config.adminToken, "GET", "/agent_bots"),
+  // Lists the account's Agent Bots — used to detect a bot deleted out-of-band on Chatwoot so
+  // ensureAgentBot can re-provision instead of reusing a dead id/token, and to read the outgoing_url
+  // each one calls (absent on system bots, which Chatwoot serializes without it).
+  async listAgentBots(): Promise<
+    Array<{ id: number; name: string; outgoingUrl?: string }>
+  > {
+    const raw = await this.request(
+      this.config.adminToken,
+      "GET",
+      "/agent_bots",
+    );
+    const urls = new Map<number, string>();
+    const arr = Array.isArray(raw)
+      ? raw
+      : raw &&
+          typeof raw === "object" &&
+          Array.isArray((raw as { payload?: unknown }).payload)
+        ? (raw as { payload: unknown[] }).payload
+        : [];
+    for (const item of arr) {
+      if (!item || typeof item !== "object") continue;
+      const url = (item as { outgoing_url?: unknown }).outgoing_url;
+      const id = Number((item as { id?: unknown }).id);
+      if (typeof url === "string" && Number.isInteger(id)) urls.set(id, url);
+    }
+    return normalizeIdName(raw).map((b) =>
+      urls.has(b.id) ? { ...b, outgoingUrl: urls.get(b.id) } : b,
     );
   }
 
@@ -1635,13 +1758,17 @@ export class ChatwootClient {
   // name). Best-effort caller; PATCH to the account-scoped agent_bots resource.
   updateAgentBot(
     agentBotId: number,
-    params: { name: string },
+    params: { name?: string; outgoingUrl?: string },
   ): Promise<unknown> {
+    const body: Record<string, string> = {};
+    if (params.name !== undefined) body.name = params.name;
+    if (params.outgoingUrl !== undefined)
+      body.outgoing_url = params.outgoingUrl;
     return this.request(
       this.config.adminToken,
       "PATCH",
       `/agent_bots/${agentBotId}`,
-      { name: params.name },
+      body,
     );
   }
 
@@ -1835,10 +1962,24 @@ export class ChatwootClient {
   // asks `ConversationPolicy#show?` about the caller: a credential that is neither an administrator
   // nor a member of that inbox has the reuse refused in silence and gets a second conversation.
 
-  // The operator-facing dashboard link of a conversation of this account. `displayId` is the number
-  // the API calls `id` (the fork serializes `display_id` there), never the internal row id.
-  conversationUrl(displayId: number): string {
-    return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
+  // A conversation's key for serializing writes: the deployment's identity, the account and the
+  // number the API calls `id` (the fork serializes `display_id` there), never the internal row id. Not
+  // a URL, so a base URL moving while a write runs does not split one conversation into two keys; a
+  // link a person follows is `conversationLink`.
+  conversationKey(displayId: number): string {
+    const identity =
+      this.config.identity ?? this.config.baseUrl.replace(/\/+$/, "");
+    return `${identity}/accounts/${this.config.accountId}/conversations/${displayId}`;
+  }
+
+  // The operator-facing link of a conversation, on the address people open this Chatwoot on.
+  conversationLink(displayId: number): string {
+    return `${chatwootLinkBase(this.config)}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
+  }
+
+  // The account's custom-attribute settings page, where an operator edits a definition's pattern.
+  attributesSettingsUrl(): string {
+    return `${chatwootLinkBase(this.config)}/app/accounts/${this.config.accountId}/settings/custom-attributes/list`;
   }
 
   async getContact(contactId: number): Promise<ChatwootContact | null> {
@@ -2431,12 +2572,13 @@ export class ChatwootClient {
   }
 }
 
-// Validates the tenant-configured baseUrl (anti-SSRF, https-only) before any call is possible.
+// Validates the tenant-configured baseUrl (anti-SSRF, https-only unless it is a declared internal
+// target) before any call is possible.
 export async function createChatwootClient(
   config: ChatwootClientConfig,
   deps: ChatwootClientDeps = {},
 ): Promise<ChatwootClient> {
-  const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
+  const assertSafe = deps.assertSafe ?? assertSafeChatwootUrl;
   await assertSafe(config.baseUrl);
   return new ChatwootClient(config, deps.fetchImpl ?? fetch);
 }
@@ -2451,7 +2593,7 @@ export async function fetchChatwootProfile(
   params: { baseUrl: string; token: string },
   deps: ChatwootClientDeps = {},
 ): Promise<unknown> {
-  const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
+  const assertSafe = deps.assertSafe ?? assertSafeChatwootUrl;
   await assertSafe(params.baseUrl);
   const fetchImpl = deps.fetchImpl ?? fetch;
   const root = params.baseUrl.replace(/\/+$/, "");

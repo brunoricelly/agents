@@ -23,7 +23,7 @@ export type ProFeature =
 // dynamic lookup below.
 // t('upgrade.multiTenant.description', 'The Free edition runs a single tenant. Upgrade to Pro to create and manage multiple tenants.')
 // t('upgrade.branding.description', 'White-label branding (name, colors, logo, favicon) is a Pro feature. Upgrade to Pro to customize the app identity.')
-// t('upgrade.dashboards.description', 'Build your own dashboards (conversations by event, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.')
+// t('upgrade.dashboards.description', 'Build your own dashboards (conversations by attribute, label or outcome, AI cost by model) and share each one by its address. Upgrade to Pro to create them.')
 // t('upgrade.clientChannel.description', 'Put this agent on your own web application with a script tag: it answers your signed-in users, guides them through your pages and can run the tools your app declares. Upgrade to Pro to embed it.')
 const FEATURE_DESCRIPTION_KEY: Record<ProFeature, string> = {
   multiTenant: "upgrade.multiTenant.description",
@@ -83,7 +83,7 @@ export function ProGate({
       {triggerNode}
       <Modal modal={modal} title={t("upgrade.title", "Pro feature")} size="sm">
         <div className="space-y-5">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {
               // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in FEATURE_DESCRIPTION_KEY
               t(descriptionKey, "This feature is available on the Pro edition.")
@@ -97,7 +97,7 @@ export function ProGate({
               href={UPGRADE_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-accent-solid px-4 py-2 font-medium text-accent-foreground text-sm transition-colors hover:bg-accent-solid-hover"
+              className="bg-accent-solid text-accent-foreground hover:bg-accent-solid-hover inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors"
             >
               <Sparkles className="h-4 w-4" aria-hidden="true" />
               {t("upgrade.cta", "Upgrade to Pro")}

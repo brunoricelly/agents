@@ -14,8 +14,9 @@ import {
   onChatwootHost,
   oneByBlob,
   servedBy,
+  throughBase,
 } from "@/modules/chatwoot/email-body-images";
-import { chatwootBaseUrl } from "@/modules/chatwoot/instance";
+import { chatwootAddresses } from "@/modules/chatwoot/instance";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
   BODY_IMAGE_IGNORED,
@@ -23,6 +24,7 @@ import {
   type ExtractInboundParams,
   extractBodyImage,
   readInboundFile,
+  rememberedFileRead,
 } from "./service";
 import type { VisionConfig } from "./settings";
 import { isUnread, type UnreadFile } from "./unread";
@@ -82,13 +84,20 @@ async function doProprioChatwoot(
 ): Promise<VisualAttachment[]> {
   if (corpo.length === 0) return corpo;
   try {
-    const baseUrl = await chatwootBaseUrl(
+    const { baseUrl, publicUrl } = await chatwootAddresses(
       params.tenantId,
       params.instanceId,
       params.base,
     );
     const doHost = corpo
-      .map((v) => ({ ...v, dataUrl: onChatwootHost(v.dataUrl, baseUrl) }))
+      .map((v) => ({
+        ...v,
+        dataUrl: throughBase(
+          onChatwootHost(v.dataUrl, baseUrl),
+          baseUrl,
+          publicUrl,
+        ),
+      }))
       .filter((v) => servedBy(v.dataUrl, baseUrl));
     const um = new Set(oneByBlob(doHost.map((v) => v.dataUrl)));
     return doHost.filter((v) => um.delete(v.dataUrl));
@@ -117,6 +126,7 @@ export async function extractMessageVisuals(params: {
   stillAllowed?: () => Promise<boolean>;
   // The caller's deadline: past it, no later batch and no further provider attempt starts.
   signal?: AbortSignal;
+  usageNode?: ExtractInboundParams["usageNode"];
 }): Promise<MessageVisuals | null> {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
   if (todos.length === 0) return null;
@@ -151,6 +161,7 @@ export async function extractMessageVisuals(params: {
       // O agregado é stashado uma vez depois do laço; ver a nota lá embaixo.
       stashAnnotation: false,
       signal: params.signal,
+      usageNode: params.usageNode,
     };
     return visual.id === null
       ? extractBodyImage(comum)
@@ -173,6 +184,15 @@ export async function extractMessageVisuals(params: {
       : extrair(visual)
           // Um arquivo ilegível não pode custar os outros: a extração é best-effort por anexo.
           .catch((err) => {
+            // A read that answered before this wait was cut (during the write-back) is kept.
+            const kept = rememberedFileRead({
+              tenantId,
+              instanceId,
+              messageId,
+              attachmentId: visual.id,
+              dataUrl: visual.dataUrl,
+            });
+            if (kept) return kept;
             logger.warn(
               "vision failed for attachment %s (conv=%s): %s",
               visual.id,

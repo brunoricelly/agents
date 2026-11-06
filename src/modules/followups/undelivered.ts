@@ -6,7 +6,9 @@ import {
   mediaFallbackDedupeKey,
   resendExpected,
 } from "@/modules/chatwoot/channel-failure";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { replyKeyOf } from "@/modules/chatwoot/constants";
+import { conversationIsGone } from "@/modules/chatwoot/conversation-gone";
 import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
@@ -16,6 +18,8 @@ import {
   hasAnswerableContent,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
+import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
+import { debounceDedupeKey } from "@/modules/debounce/service";
 import { foreignReplyBoundary } from "@/modules/debounce/watermark";
 
 // Whether the bot's newest reply in a conversation reached the customer, asked before a follow-up
@@ -31,6 +35,8 @@ export type LastReplyDelivery =
   // landed late is activity the inactivity delay counts from.
   | { state: "delivered"; repliedAt?: Date }
   | { state: "customer_spoke" }
+  // The conversation no longer exists in Chatwoot: there is no reply left to ask about, now or later.
+  | { state: "conversation_gone" }
   | { state: "resend_pending"; until: Date }
   | {
       state: "undelivered";
@@ -56,6 +62,9 @@ const MAX_PAGES = 5;
 // The fork's catch-up read (by id), and how many of them the read past the reply's start takes.
 const CATCH_UP_PAGE = 100;
 const CATCH_UP_MAX_READS = 5;
+// How long an open customer message past the watermark holds the step with no flush queued for it:
+// its webhook may still be on the way. One older than this with nothing queued is not getting a turn.
+const TURN_ARRIVAL_GRACE_MS = 10 * 60_000;
 
 export type Row = ReturnType<typeof parseChatwootMessages>[number];
 
@@ -85,7 +94,60 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-export async function lastReplyDelivery(params: {
+// Whether a turn can still come for this conversation from work already on record: a flush queued
+// or running (its retry after a partial claim answers a message the watermark already passed), a
+// customer message's webhook delivery still being worked or stranded for the sweep to recover, or a
+// recovery of one queued. Asked of the records, not of the paths that write them, so a turn queued
+// by any of them holds the follow-up for its customer message.
+export async function turnQueuedFor(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  chatwootConversationId: number;
+  threadId: string;
+  // The customer messages still waiting: only their own deliveries can run a turn for them.
+  messageIds: number[];
+  base: PrismaClient;
+}): Promise<boolean> {
+  return runScopedOn(params.base, sysCtx(params.tenantId), async (db) => {
+    const flush = await db.schedulerJob.findFirst({
+      where: {
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(params.threadId),
+        status: { in: ["PENDING", "CLAIMED"] },
+      },
+      select: { id: true },
+    });
+    if (flush) return true;
+    const deliveries = await db.chatwootWebhookDelivery.findMany({
+      where: {
+        chatwootInstanceId: params.instanceId,
+        conversationId: params.chatwootConversationId,
+        inboundMessageId: { in: params.messageIds },
+      },
+      select: { id: true, status: true },
+    });
+    if (
+      deliveries.some(
+        (d) => d.status === "PENDING" || d.status === "PROCESSING",
+      )
+    )
+      return true;
+    if (deliveries.length === 0) return false;
+    const recovery = await db.schedulerJob.findFirst({
+      where: {
+        kind: "DELIVERY_RECOVERY",
+        dedupeKey: {
+          in: deliveries.map((d) => deliveryRecoveryDedupeKey(d.id)),
+        },
+        status: { in: ["PENDING", "CLAIMED"] },
+      },
+      select: { id: true },
+    });
+    return recovery !== null;
+  });
+}
+
+type LastReplyDeliveryParams = {
   tenantId: bigint;
   instanceId: bigint;
   chatwootConversationId: number;
@@ -104,14 +166,34 @@ export async function lastReplyDelivery(params: {
   stillOpen: (
     rows: Row[],
   ) => Promise<{ open: Set<number>; settled: Set<number> }>;
+  // Whether a turn is queued for this conversation (a flush pending or running): the one an open
+  // customer message the watermark already passed is waiting for, when it waits for any.
+  turnQueued: (messageIds: number[]) => Promise<boolean>;
   base: PrismaClient;
   deps?: LoadChatwootClientDeps;
   now?: Date;
-}): Promise<LastReplyDelivery> {
+};
+
+export async function lastReplyDelivery(
+  params: LastReplyDeliveryParams,
+): Promise<LastReplyDelivery> {
   const client = await loadChatwootClient(params.tenantId, params.instanceId, {
     ...params.deps,
     base: params.base,
   });
+  try {
+    return await readLastReplyDelivery(client, params);
+  } catch (err) {
+    if (await conversationIsGone(client, params.chatwootConversationId, err))
+      return { state: "conversation_gone" };
+    throw err;
+  }
+}
+
+async function readLastReplyDelivery(
+  client: ChatwootClient,
+  params: LastReplyDeliveryParams,
+): Promise<LastReplyDelivery> {
   const bots = new Set(params.agentBotIds);
   const ours = (m: Row) =>
     m.messageType === "outgoing" &&
@@ -179,7 +261,7 @@ export async function lastReplyDelivery(params: {
         (m.id === head.id || (key !== null && replyKeyOf(m.sendId) === key)),
     );
   const start = replyOf(read, newest).reduce(
-    (a, m) => (m.id < a ? m.id : a),
+    (a, m) => Math.min(a, m.id),
     newest.id,
   );
   // NOTE: with the pages run out, a customer message already handled says enough: before the reply
@@ -233,9 +315,24 @@ export async function lastReplyDelivery(params: {
     );
   const reply = replyOf(read, newest);
   const { open, settled } = await params.stillOpen(read);
-  // NOTE: any the read holds, before the reply too: one that arrived after the turn's last look and
-  // before its reply was written is still queued for its own turn.
-  if (read.some((m) => customer(m) && open.has(m.id)))
+  // An open customer message holds the step while a turn for it can still come: a flush queued for
+  // the conversation (its retry after a partial claim answers one the watermark already passed), or,
+  // past the watermark, a webhook still on its way, for as long as one takes to arrive. Past that the
+  // reply is judged as if no turn were coming: holding without a bound reads the conversation from
+  // Chatwoot every backoff, forever.
+  const now = params.now ?? new Date();
+  const waiting = read.filter((m) => customer(m) && open.has(m.id));
+  const arriving = (m: Row) =>
+    (params.handledThrough === null || m.id > params.handledThrough) &&
+    m.createdAt != null &&
+    now.getTime() < m.createdAt.getTime() + TURN_ARRIVAL_GRACE_MS;
+  // NOTE: any open one the read holds, before the reply too: one that arrived after the turn's last
+  // look and before its reply was written is still queued for its own turn.
+  if (
+    waiting.length > 0 &&
+    (waiting.some(arriving) ||
+      (await params.turnQueued(waiting.map((m) => m.id))))
+  )
     return { state: "customer_spoke" };
   // A person's public reply or template that was not refused, written after a refused message,
   // moved the conversation past it. Attributed the way the flush attributes it
@@ -269,7 +366,7 @@ export async function lastReplyDelivery(params: {
   if (missing.length === 0) {
     const sent = reply
       .map((m) => m.createdAt?.getTime() ?? 0)
-      .reduce((a, t) => (t > a ? t : a), 0);
+      .reduce((a, t) => Math.max(a, t), 0);
     return sent > 0
       ? { state: "delivered", repliedAt: new Date(sent) }
       : { state: "delivered" };
@@ -287,12 +384,15 @@ export async function lastReplyDelivery(params: {
       select: { runAt: true, status: true, dedupeKey: true },
     }),
   );
-  const now = params.now ?? new Date();
   const queued = jobs.filter(
     (j) => j.status === "PENDING" || j.status === "CLAIMED",
   );
   if (queued.length > 0) {
-    const latest = queued.reduce((a, j) => (j.runAt > a ? j.runAt : a), now);
+    const latest = queued.reduce(
+      // biome-ignore lint/complexity/useMathMinMax: a Date is kept, where Math.max would return a number
+      (a, j) => (j.runAt > a ? j.runAt : a),
+      now,
+    );
     return {
       state: "resend_pending",
       until: new Date(latest.getTime() + RESEND_SETTLE_MS),
@@ -324,7 +424,7 @@ export async function lastReplyDelivery(params: {
   // Without one, the reply's start: a page behind the mirror says nothing about what came after.
   const assessed = read
     .filter((m) => m.messageType === "incoming" && !m.private)
-    .reduce<number>((a, m) => (m.id > a ? m.id : a), 0);
+    .reduce<number>((a, m) => Math.max(a, m.id), 0);
   return {
     state: "undelivered",
     messageId: lost.id,

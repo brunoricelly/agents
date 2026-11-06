@@ -6,6 +6,7 @@
 // NOT close the origin: `resolve_conversation` defers that until after delivery and drops it when the
 // customer writes again, and closing here would lose that protection.
 
+import { domainToASCII } from "node:url";
 import { withKeyedQueue } from "@/lib/locks";
 import {
   ChatwootApiError,
@@ -30,7 +31,8 @@ export { destinationIdentity };
 // What the operation needs from the Chatwoot client, named so a test can hand it a fake.
 export type CaseClient = Pick<
   ChatwootClient,
-  | "conversationUrl"
+  | "conversationKey"
+  | "conversationLink"
   | "getInbox"
   | "getConversation"
   | "getContact"
@@ -90,6 +92,8 @@ export interface OpenCaseInput {
   // The address the host states for the user, set with `detachedOrigin`: the opening goes there,
   // whatever the contact holds when it is sent (another writer can change it in between).
   recipientEmail?: string;
+  // What the user typed, when the address written for them is not it (see `deliverableEmail`).
+  emailTypedAs?: string;
   reason: string;
   customerMessage: string | null;
   email: string | null;
@@ -158,7 +162,10 @@ export type OpenCaseResult =
   | { kind: "same_inbox" }
   | { kind: "needs_email" }
   | { kind: "needs_phone" }
-  | { kind: "rejected_email"; why: "invalid" | "not_in_conversation" }
+  | {
+      kind: "rejected_email";
+      why: "invalid" | "not_in_conversation" | "non_ascii";
+    }
   | { kind: "called_off" }
   // The output check's policy transferred the origin to the team over the opening message: nothing
   // was opened, and the conversation is the team's now.
@@ -170,6 +177,72 @@ const EMAIL_RE = /^[^\s@<>"',;]+@[^\s@<>"',;]+\.[^\s@<>"',;.]{2,}$/;
 export function normalizeEmail(raw: string): string | null {
   const v = raw.trim().replace(/^mailto:/i, "");
   return EMAIL_RE.test(v) ? v : null;
+}
+
+// Providers whose mailbox names are ASCII only: an accent typed there can only stand for the plain
+// letter, so it is dropped. Anywhere else an accented mailbox may be someone else's, so the address
+// is refused and confirmed with the customer.
+const ASCII_ONLY_DOMAINS = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "yahoo.com",
+  "yahoo.com.br",
+  "yahoo.com.ar",
+  "yahoo.com.mx",
+  "yahoo.es",
+  "yahoo.fr",
+  "yahoo.co.uk",
+  "ymail.com",
+  "rocketmail.com",
+  "hotmail.com",
+  "hotmail.com.br",
+  "hotmail.com.ar",
+  "hotmail.es",
+  "hotmail.fr",
+  "hotmail.co.uk",
+  "outlook.com",
+  "outlook.com.br",
+  "outlook.es",
+  "outlook.fr",
+  "live.com",
+  "live.com.ar",
+  "live.com.mx",
+  "live.co.uk",
+  "msn.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "uol.com.br",
+  "bol.com.br",
+  "terra.com.br",
+]);
+// `domainToASCII` parses URL host syntax and drops what follows a delimiter, so a domain carrying one
+// would be written as a host the customer never typed.
+const URL_DELIMITER_RE = /[/?#:\\[\]%@\s]/;
+const HOSTNAME_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+const ASCII_RE = /^[\x21-\x7e]+$/;
+
+// The address mail can be sent to, from a well-formed one the customer typed: SMTP refuses a mailbox
+// name outside ASCII, and a domain outside it goes as its punycode form, which is the same domain.
+export function deliverableEmail(
+  typed: string,
+):
+  | { ok: true; address: string; adjusted: boolean }
+  | { ok: false; why: "invalid" | "non_ascii" } {
+  const [local = "", typedDomain = ""] = typed.split("@");
+  let domain = typedDomain;
+  if (!ASCII_RE.test(domain)) {
+    if (URL_DELIMITER_RE.test(domain)) return { ok: false, why: "invalid" };
+    domain = domainToASCII(domain);
+    if (!HOSTNAME_RE.test(domain)) return { ok: false, why: "invalid" };
+  }
+  if (ASCII_RE.test(local))
+    return { ok: true, address: `${local}@${domain}`, adjusted: false };
+  const lower = domain.toLowerCase();
+  if (!ASCII_ONLY_DOMAINS.has(lower)) return { ok: false, why: "non_ascii" };
+  const plain = local.normalize("NFD").replace(/\p{M}/gu, "");
+  if (!ASCII_RE.test(plain)) return { ok: false, why: "non_ascii" };
+  return { ok: true, address: `${plain}@${domain}`, adjusted: true };
 }
 
 // The customer's own messages on one page of the conversation. An address the tool writes on the
@@ -337,6 +410,10 @@ export function addressUpdatedNote(email: string): string {
   return `⚠️ O e-mail do cliente agora é ${literalForChatwoot(email)}. As respostas desta conversa podem estar endereçadas ao e-mail anterior: confira o destinatário antes de responder.`;
 }
 
+export function addressAdjustedNote(typed: string, written: string): string {
+  return `ℹ️ O cliente escreveu o e-mail como ${literalForChatwoot(typed)}, e ele foi gravado como ${literalForChatwoot(written)}: o provedor não aceita acento no endereço.`;
+}
+
 export function originLinkNote(caseUrl: string, inboxName: string): string {
   return `➡️ Caso aberto na caixa ${inboxName}: ${caseUrl}`;
 }
@@ -417,7 +494,7 @@ export function openCaseInInbox(
   // calls twice would otherwise read "no case yet" twice and open two. Serialized per origin
   // conversation, the second call reads the case number the first one wrote.
   return withKeyedQueue(
-    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationUrl(input.originConversationId)}`,
+    `cross-inbox-case:${input.detachedOrigin?.key ?? client.conversationKey(input.originConversationId)}`,
     () => run(client, input),
   );
 }
@@ -431,7 +508,7 @@ async function run(
   if (target === null) return { kind: "not_configured" };
   const origin = input.originConversationId;
   const detached = input.detachedOrigin ?? null;
-  const originUrl = detached?.url ?? client.conversationUrl(origin);
+  const originUrl = detached?.url ?? client.conversationLink(origin);
   const interpolate = input.interpolate ?? ((t: string) => t);
 
   let step = "read_target_inbox";
@@ -526,7 +603,7 @@ async function run(
         return {
           kind: "already_open",
           caseId: known,
-          caseUrl: client.conversationUrl(known),
+          caseUrl: client.conversationLink(known),
           identity: null,
           partial,
           additionDelivered,
@@ -547,6 +624,7 @@ async function run(
     let caseContactId = contactId;
     let identity: "held" | "written" | "merged" | "other_contact" | null = null;
     let pendingEmail: string | null = null;
+    let emailTypedAs = input.emailTypedAs ?? null;
     if (needs === "phone") {
       if (!contact?.phoneNumber) return { kind: "needs_phone" };
       identity = "held";
@@ -559,11 +637,15 @@ async function run(
         if (!input.email || detached) return { kind: "needs_email" };
         const email = normalizeEmail(input.email);
         if (!email) return { kind: "rejected_email", why: "invalid" };
+        const deliverable = deliverableEmail(email);
+        if (!deliverable.ok)
+          return { kind: "rejected_email", why: deliverable.why };
         step = "read_messages";
         if (!(await customerTypedInConversation(client, origin, email))) {
           return { kind: "rejected_email", why: "not_in_conversation" };
         }
-        pendingEmail = email;
+        pendingEmail = deliverable.address;
+        if (deliverable.adjusted) emailTypedAs = email;
       }
     }
 
@@ -642,7 +724,7 @@ async function run(
     // ORIGIN, so two origins of one contact could both list before either creates and both send an
     // opening to the same continued case. Keyed by account, inbox and case contact, the second lists
     // after the first created and reads its case as continued.
-    const caseKey = `cross-inbox-case-contact:${client.conversationUrl(0)}:${target}:${caseContactId}`;
+    const caseKey = `cross-inbox-case-contact:${client.conversationKey(0)}:${target}:${caseContactId}`;
     return await withKeyedQueue(caseKey, async (): Promise<OpenCaseResult> => {
       // 3. Open, or continue. Which of the two happened is read from the contact's conversations
       // BEFORE the call: the create answers with a conversation either way.
@@ -725,7 +807,7 @@ async function run(
       // An addition reads as continued too: a listed case is in `before`, and one only the filter finds
       // is older than every listed conversation, so its number is below `newestBefore`.
       const continued = before.has(caseId) || caseId <= newestBefore;
-      const caseUrl = client.conversationUrl(caseId);
+      const caseUrl = client.conversationLink(caseId);
 
       // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
       // The case number goes first, because it is what makes the next call answer "already open".
@@ -857,6 +939,17 @@ async function run(
         noteDelivered = true;
       });
       const currentEmail = input.recipientEmail ?? contact?.email ?? null;
+      const writtenEmail = pendingEmail ?? input.recipientEmail ?? null;
+      if (emailTypedAs && writtenEmail) {
+        const typed = emailTypedAs;
+        await attempt("address_adjusted_note", () =>
+          client.sendMessageAsAdmin(
+            caseId,
+            addressAdjustedNote(typed, writtenEmail),
+            { private: true },
+          ),
+        );
+      }
       // NOTE: the inbox handed back an open conversation of the contact (it continues or locks to one
       // conversation per contact). For a detached origin that conversation was not opened under an
       // address this side knows, and its next reply can be addressed from earlier messages, so the

@@ -52,6 +52,9 @@ export const FLOW_STAGES = [
   // other than the agent (an external automation). The agent did not see it, so its next reply can
   // answer as if it was never said. One line per message; the alert is one per agent per window.
   "foreign_send",
+  // A proactive send outside the WhatsApp 24h window that became a private note because its occasion
+  // had no usable template. One line per note; the alert is one per agent per day.
+  "service_window",
   "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)
   // A watching agent's verdict on a conversation it does not answer, written as labels by the
@@ -78,6 +81,32 @@ export type FlowStage = (typeof FLOW_STAGES)[number];
 
 export function isFlowStage(s: string): s is FlowStage {
   return (FLOW_STAGES as readonly string[]).includes(s);
+}
+
+// A `guardrail` line whose trip was only recorded (the `observe` action), as a selector: an alert
+// channel's stage list and the Logs stage filter name it to pick those lines apart from the trips that
+// acted. Not a stage of its own: the line is written as `guardrail`, where every trip is.
+export const GUARDRAIL_OBSERVED = "guardrail_observed";
+
+// What an alert channel's stage list and the Logs stage filter may name: every stage, plus the
+// observed guardrail trips. In a channel's list `guardrail` means the trips that ACTED, so a channel
+// that pages on guardrail trips today keeps paging on exactly those; the Logs filter for `guardrail`
+// still lists every line stored at that stage, observed ones included.
+export const SELECTABLE_STAGES = [...FLOW_STAGES, GUARDRAIL_OBSERVED] as const;
+export type SelectableStage = (typeof SELECTABLE_STAGES)[number];
+
+export function isSelectableStage(s: string): s is SelectableStage {
+  return (SELECTABLE_STAGES as readonly string[]).includes(s);
+}
+
+// The selector a line answers to: its stage, except an observed guardrail trip.
+export function selectorOf(
+  stage: string,
+  detail: Record<string, unknown> | null | undefined,
+): string {
+  return stage === "guardrail" && detail?.action === "observe"
+    ? GUARDRAIL_OBSERVED
+    : stage;
 }
 
 // The buses that can reach a terminal failure. Closed, because the `dead_letter` line is only

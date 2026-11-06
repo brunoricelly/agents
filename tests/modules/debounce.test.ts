@@ -10,6 +10,7 @@ import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import { stampedBurstStart, stampedSentAt } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import { failsUntilAccountFixed } from "@/lib/provider-failure";
 import {
   clearMediaAnnotations,
   stashMediaAnnotation,
@@ -199,6 +200,9 @@ function page(
     // the WhatsApp session (an attendant typing on the paired phone), with nobody in the `sender`
     // field.
     fromDevice?: boolean;
+    // WhatsApp Cloud's own marks on a reply typed in the WhatsApp Business app (coexistence):
+    // `external_created_at`, WhatsApp's timestamp, with no `external_sender_name`.
+    fromCloudPhone?: boolean;
     // `content_attributes.imported`: a row the history importer backfilled, which carries today's
     // id and last year's conversation.
     imported?: boolean;
@@ -211,6 +215,7 @@ function page(
       const ca = {
         ...(m.reaction ? { is_reaction: true } : {}),
         ...(m.fromDevice ? { external_sender_name: "WhatsApp" } : {}),
+        ...(m.fromCloudPhone ? { external_created_at: 1793390000 } : {}),
         ...(m.imported ? { imported: true } : {}),
       };
       return {
@@ -339,6 +344,7 @@ async function correctionLine(convId: number) {
   const conversationId = await convRowId(convId);
   const lines = await until("the correction line", async () => {
     const found = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, conversationId, stage: "delivery" },
       select: { level: true, detail: true },
     });
@@ -2052,6 +2058,66 @@ describe.skipIf(!dbUp)("debounce", () => {
     }
   });
 
+  // THE SAME FENCE ON WHATSAPP CLOUD. A reply typed in the WhatsApp Business app on a Cloud number
+  // carries Cloud's own marks, never the session's, and the Cloud API never echoes what was sent
+  // through it, so on Cloud those marks are a person. On a session provider the same marks alone are
+  // not: an automation row there gets `external_created_at` once it is sent.
+  test("a phone reply on a CLOUD inbox closes the burst by Cloud's marks, and only on Cloud", async () => {
+    const withProvider = async (convId: number, provider: string) => {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider },
+      });
+      await seedConversation(convId);
+      const { id } = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: { id },
+        data: { replyClaimFloorMessageId: 0 },
+      });
+      const sent: Array<[number, string]> = [];
+      await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: () => fakeModel(),
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tudo bem?" },
+                {
+                  id: 3,
+                  content: "oi, aqui é a Ana",
+                  type: 1,
+                  fromCloudPhone: true,
+                },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      return sent;
+    };
+
+    try {
+      expect(await withProvider(1675, "whatsapp_cloud")).toEqual([]);
+      expect(
+        (await withProvider(1676, "baileys")).map(([, text]) => text),
+      ).toEqual([REPLY]);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { provider: null },
+      });
+    }
+  });
+
   // THE IMPORTER WRITES THE PAST WITH TODAY'S IDS. When a phone is paired, its history enters as
   // new messages: last year's attendant reply gets an id ABOVE the question the customer just sent
   // and matches every clause of the boundary. Read as a reply, it silences that customer, and the
@@ -3684,6 +3750,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     // a second time.
     await settleFlowEvents();
     const row = await flowLogRow(suDb, {
+      orderBy: { id: "asc" },
       where: { tenantId, threadId: threadOf(convId), stage: "debounce" },
       select: { detail: true },
     });
@@ -6509,6 +6576,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       ).rejects.toThrow();
       expect(sent).toEqual([]);
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           threadId: threadOf(conv),
@@ -6522,6 +6590,67 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(
         (rows[0]?.detail as Record<string, unknown> | undefined)?.willRetry,
       ).toBe(willRetry);
+      await clearFlowLog(suDb, { tenantId, threadId: threadOf(conv) });
+    });
+  }
+
+  // A provider out of credit (or with a dead key) refuses every retry until a person acts on the
+  // account: the run says no retry follows even with attempts left, and its failure carries the mark
+  // the scheduler reads to dead-letter the job now. A rate limit keeps its retries.
+  for (const [name, failure, permanent] of [
+    [
+      "no credit",
+      Object.assign(new Error("You exceeded your current quota"), {
+        status: 429,
+        code: "insufficient_quota",
+      }),
+      true,
+    ],
+    [
+      "a rate limit",
+      Object.assign(new Error("slow down"), { status: 429 }),
+      false,
+    ],
+  ] as const) {
+    test(`a run that throws with ${name} on attempt 1 says whether a retry follows`, async () => {
+      const conv = name === "no credit" ? 10910 : 10911;
+      await seedConversation(conv);
+      const sent: Array<[number, string]> = [];
+      let thrown: unknown;
+      try {
+        await flushDebounceJob({
+          job: { ...jobFor(conv), attempts: 0 },
+          base: appDb,
+          deps: {
+            makeModel: () => new FailingModel(failure),
+            makeClient: makeStub({
+              pages: [page([{ id: 1, content: "oi" }])],
+              sent,
+              calls: { getMessages: 0 },
+            }),
+            checkpointer: new MemorySaver(),
+          },
+        });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect(failsUntilAccountFixed(thrown)).toBe(permanent);
+      expect(sent).toEqual([]);
+      const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: {
+          tenantId,
+          threadId: threadOf(conv),
+          stage: "generate",
+          status: "error",
+        },
+        select: { detail: true },
+      });
+      expect(rows).toHaveLength(1);
+      expect(
+        (rows[0]?.detail as Record<string, unknown> | undefined)?.willRetry,
+      ).toBe(!permanent);
       await clearFlowLog(suDb, { tenantId, threadId: threadOf(conv) });
     });
   }
@@ -7560,6 +7689,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // ...and no refusal line, because nothing was refused.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         // Scoped to this flush's own thread, not to the tenant: the fixture is shared with the
         // refusals above, and a tenant-wide read would be asserting about their rows too.
         where: { tenantId, threadId: threadOf(914), stage: "spend_ceiling" },
@@ -7635,6 +7765,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // absence of is proved by the refusals in the sibling tests above.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         // This flush's own thread, not the tenant: the fixture is shared with those refusals.
         where: { tenantId, threadId: threadOf(913), stage: "spend_ceiling" },
         select: { level: true },
@@ -7687,6 +7818,7 @@ describe.skipIf(!dbUp)("debounce", () => {
 
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId: threadOf(916), stage: "spend_ceiling" },
         select: { level: true },
       });
@@ -7739,6 +7871,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // ...and no refusal line, because nothing was refused.
       await settleFlowEvents();
       const rows = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: { tenantId, threadId: threadOf(915), stage: "spend_ceiling" },
         select: { level: true },
       });

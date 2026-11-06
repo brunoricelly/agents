@@ -45,6 +45,12 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // a cadence of minutes by design. The ceiling's gate reads the row it writes, so a late poll
   // costs staleness, which the row reports, and never a customer's turn.
   SPEND_CEILING_POLL: "shared",
+  // Shared, and neither reason applies: one round per account every few minutes at most, whose model
+  // calls take the shared lane's provider concurrency like any other proactive spend.
+  OCCURRENCE_ROUND: "shared",
+  // The monitor's listing of the inboxes no agent receives (occurrences/sweep.ts): a few Chatwoot
+  // reads per monitor per cadence, and no model call.
+  OCCURRENCE_SWEEP: "shared",
   // Shared, and neither reason applies. Cadence: the message it answers has been unanswered for at
   // least the sweep's staleness window, so a wait of one shared tick is not what the customer feels.
   // Budget: it does spend the model, but the cap that needs is the shared lane's own provider
@@ -141,6 +147,8 @@ export const JOB_POOL: Record<SchedulerJobKind, PoolClass> = {
   DELIVERY_SWEEP: "background",
   RECONCILE_SWEEP: "background",
   SPEND_CEILING_POLL: "background",
+  OCCURRENCE_ROUND: "background",
+  OCCURRENCE_SWEEP: "background",
   // Background: it repairs a conversation's status; no reply is sent.
   TAKEOVER_RECOVERY: "background",
   // Background: it reads a page of messages and arms an ingest job; no reply is sent.
@@ -182,6 +190,9 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   RECONCILE_SWEEP: false,
   // It asks Langfuse, not a model provider: no tokens, no embeddings.
   SPEND_CEILING_POLL: false,
+  // Its model calls (canonical names, grouping) queue for the same provider as a customer's turn.
+  OCCURRENCE_ROUND: true,
+  OCCURRENCE_SWEEP: false,
   // It runs the delivery path, which runs a real agent turn: a model call, and whatever tools the
   // turn decides to use. The whole reason it is a kind of its own rather than work the sweep does
   // inline.
@@ -264,6 +275,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   DELIVERY_SWEEP: false,
   RECONCILE_SWEEP: false,
   SPEND_CEILING_POLL: false,
+  OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: false,
   // Same reason as INGEST_MESSAGE, and the same shape: the key names ONE ledger row — it has to, or
   // a second stranded delivery would overwrite the first — so nothing ever reuses the row and the
   // count is bounded by how many deliveries have ever been stranded. What the record of the work is
@@ -334,6 +347,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // One row per tenant with the ceiling on, re-armed forever. Bounded by the install's tenant
   // count, not by traffic.
   SPEND_CEILING_POLL: false,
+  OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: false,
   // One row per DELIVERY the sweep declared lost, and one pass can declare a whole batch (a deploy
   // strands every delivery in flight), armed for `now`: the shape that starves a reminder. The cost:
   // the claim is FIFO on `run_at`, so a recovery waits behind ingestion rows armed before it, but
@@ -414,6 +429,8 @@ export const JOB_TRAFFIC_RANK: Record<SchedulerJobKind, number> = {
   DELIVERY_SWEEP: 1,
   RECONCILE_SWEEP: 1,
   SPEND_CEILING_POLL: 1,
+  OCCURRENCE_ROUND: 1,
+  OCCURRENCE_SWEEP: 1,
   OBSERVE: 1,
   KNOWLEDGE_SOURCE_SYNC: 1,
   INBOUND_SWEEP: 1,
@@ -467,6 +484,8 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // so a death here is the loop itself gone: the ceiling keeps deciding on a figure frozen at the
   // last poll, under-refusing by everything spent since, and nothing on the console moves.
   SPEND_CEILING_POLL: "error",
+  OCCURRENCE_ROUND: "warn",
+  OCCURRENCE_SWEEP: "warn",
   // `warn`: what died is the automatic second attempt. The customer's message going unanswered is the
   // delivery's own `error` line, which the recovery writes when it ends with the row still DEAD and its
   // dead-letter hook writes when it dies (../chatwoot/recover-delivery.ts, `announceDeadRecovery`).
@@ -514,6 +533,96 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   SNOOZED_FOLLOWUP: "error",
 };
 
+// What a kind's death costs, in the words the operator reads on the dead-letter line and in its
+// alert, ahead of the raw error: a bare "statement timeout" reads as noise while a tenant's follow-ups
+// have stopped. Exhaustive, so a new kind does not compile until someone writes what losing it means.
+export const JOB_DEATH_CONSEQUENCE: Record<SchedulerJobKind, string> = {
+  FOLLOWUP: "this conversation's inactivity follow-up will not be sent",
+  FOLLOWUP_SWEEP:
+    "no new follow-up will be armed for this tenant until the sweep runs again",
+  WEBHOOK_RETRY: "a subscriber's outbound webhook events stop being retried",
+  DEBOUNCE: "a customer's message burst will not be answered",
+  RAG_INGEST: "a knowledge document stays unindexed with no way to retry it",
+  HEARTBEAT: "outbound webhook heartbeats stop",
+  FLOWLOG_SWEEP: "flow log retention stops and the table grows without bound",
+  APPOINTMENT_REMINDER: "the customer will not be reminded of the appointment",
+  REDIRECT_FOLLOWUP: "the channel redirect follow-up will not be sent",
+  MEMORY_COMPACT: "this attendance's memory summary is lost",
+  OTHER_INBOX_SUMMARY:
+    "the other-inbox summary stays empty until the next turn arms it again",
+  INGEST_MESSAGE: "a customer message will never reach the agent",
+  INGEST_FALLBACK: "a customer message will never reach the agent",
+  DELIVERY_SWEEP: "stranded Chatwoot deliveries stop being recovered",
+  RECONCILE_SWEEP: "conversation state stops being reconciled with Chatwoot",
+  DELIVERY_RECOVERY: "the automatic second attempt at a delivery is gone",
+  TAKEOVER_RECOVERY:
+    "a conversation a person answered may stay pending on the bot",
+  HUMAN_REPLY_RECOVERY: "the second attempt at appending a human reply is gone",
+  SPEND_CEILING_POLL:
+    "the spend ceiling keeps deciding on the last figure it polled",
+  OCCURRENCE_ROUND: "an occurrence monitor round did not run",
+  OCCURRENCE_SWEEP: "occurrence monitors stop being swept",
+  OBSERVE: "a conversation's labels were not refreshed",
+  MEDIA_TEXT_FALLBACK:
+    "the text standing in for a lost customer reply was lost too",
+  KNOWLEDGE_SOURCE_SYNC: "the knowledge source keeps its last synced content",
+  INBOUND_SWEEP: "stranded inbound events stop being retried",
+  INBOUND_REDISPATCH: "an accepted inbound event will never be processed",
+  NOTHING_TO_ANSWER: "a pending conversation stays with nobody on it",
+  SUGGESTION_REVIEW: "the suggestion goes to the pending list unreviewed",
+  CLIENT_ANON_SWEEP: "expired anonymous client sessions stop being cleared",
+  DOCUMENT_APPROVAL_EXPIRY: "an overdue approval request keeps its old status",
+  DOCUMENT_APPROVAL_OUTCOME:
+    "the customer will not be told the approval decision",
+  SNOOZED_FOLLOWUP: "this snoozed conversation's follow-up will not be sent",
+};
+
+// Kinds that must never stay DEAD: one row per tenant that reschedules itself forever, whose death
+// stops a whole class of work for the tenant and that only a restart could revive, and then with the
+// budget already spent. Past the budget such a row backs off and keeps announcing each
+// failure instead (./service.ts `failJob`, ./worker.ts). True for every kind armed as one fixed
+// dedupe key per tenant (or per monitor) with `rearm: "same-work"` that reschedules itself on every
+// pass; false for a unit of work, which must still die or it retries without end, and for a sweep that
+// spends a provider per run (OCCURRENCE_ROUND), whose retry every few minutes would bill forever.
+export const JOB_NEVER_DEAD: Record<SchedulerJobKind, boolean> = {
+  FOLLOWUP: false,
+  FOLLOWUP_SWEEP: true,
+  WEBHOOK_RETRY: false,
+  DEBOUNCE: false,
+  RAG_INGEST: false,
+  HEARTBEAT: true,
+  FLOWLOG_SWEEP: true,
+  APPOINTMENT_REMINDER: false,
+  REDIRECT_FOLLOWUP: false,
+  MEMORY_COMPACT: false,
+  OTHER_INBOX_SUMMARY: false,
+  INGEST_MESSAGE: false,
+  INGEST_FALLBACK: false,
+  DELIVERY_SWEEP: true,
+  RECONCILE_SWEEP: true,
+  DELIVERY_RECOVERY: false,
+  TAKEOVER_RECOVERY: false,
+  HUMAN_REPLY_RECOVERY: false,
+  SPEND_CEILING_POLL: true,
+  OCCURRENCE_ROUND: false,
+  OCCURRENCE_SWEEP: true,
+  OBSERVE: false,
+  MEDIA_TEXT_FALLBACK: false,
+  KNOWLEDGE_SOURCE_SYNC: false,
+  INBOUND_SWEEP: true,
+  INBOUND_REDISPATCH: false,
+  NOTHING_TO_ANSWER: false,
+  SUGGESTION_REVIEW: false,
+  CLIENT_ANON_SWEEP: true,
+  DOCUMENT_APPROVAL_EXPIRY: false,
+  DOCUMENT_APPROVAL_OUTCOME: false,
+  SNOOZED_FOLLOWUP: false,
+};
+
+// The longest a never-dead kind waits between attempts once past its budget: long enough not to
+// hammer whatever is failing, short enough that the work resumes within minutes of the cause going.
+export const NEVER_DEAD_MAX_BACKOFF_MS = 5 * 60_000;
+
 // The base of `backoffMs` in ./service.ts for one kind's retries. With `MAX_ATTEMPTS` 5 a failing
 // job gets four backoffs, each between half and all of `base * 2^attempt`: 37 seconds in all at the
 // 2s base, enough for a blip. The recovery family uses one minute (about 18 minutes in all): each is
@@ -539,6 +648,8 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   DELIVERY_SWEEP: 2_000,
   RECONCILE_SWEEP: 2_000,
   SPEND_CEILING_POLL: 2_000,
+  OCCURRENCE_ROUND: 2_000,
+  OCCURRENCE_SWEEP: 2_000,
   DELIVERY_RECOVERY: 60_000,
   TAKEOVER_RECOVERY: 60_000,
   HUMAN_REPLY_RECOVERY: 60_000,

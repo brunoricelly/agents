@@ -7,7 +7,12 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
 import {
   markUndisclosed,
@@ -21,6 +26,12 @@ import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
+import {
+  isSignatureConfigProblem,
+  parseSignatureConfig,
+  signatureCoversBody,
+  signatureCoversId,
+} from "@/modules/webhooks/inbound/signed-message";
 import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { calendarConfigRangeProblem } from "./calendar-config-ranges";
 import { CATALOG, getCatalogEntry } from "./catalog";
@@ -28,6 +39,9 @@ import {
   CHATWOOT_ERP_CATALOG_TYPE,
   chatwootErpConfigSchema,
 } from "./erp-config";
+import { isFetchBackProblem, parseFetchBackConfig } from "./fetch-back";
+import { fetchBackToolProblem } from "./fetch-back-run";
+import { SPREADSHEET_ID_PATTERN } from "./toolpacks/google-sheets";
 import type { CatalogEntry } from "./types";
 
 // Integration instances: the per-tenant activation of a catalog entry. Creation mints the opaque
@@ -96,6 +110,99 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
   }
 }
 
+function fetchBackRefusal(field: string, problem: string): AppError {
+  const path = field ? `config.fetchBack.${field}` : "config.fetchBack";
+  return new AppError(
+    `${path} ${problem}`,
+    400,
+    "errors.integrationFetchBackUnusable",
+    { field: path, problem },
+    path,
+  );
+}
+
+// A GENERIC instance's consult-back, as far as the body can tell: the shape, and that the id it
+// looks up is one the instance's authentication vouches for (an HMAC message that does not sign
+// where the id comes from would let a captured signature look up any id).
+export function assertFetchBackConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+  strategy: InboundAuthStrategy | undefined,
+): void {
+  const parsed = parseFetchBackConfig(config.fetchBack);
+  if (parsed === undefined) return;
+  if (catalogType !== "GENERIC") {
+    throw fetchBackRefusal("", "is only for the generic webhook");
+  }
+  if (isFetchBackProblem(parsed)) {
+    throw fetchBackRefusal(parsed.field, parsed.problem);
+  }
+  const { source, name } = parsed.idFrom;
+  if (
+    strategy === "HMAC_SHA256" &&
+    !(source === "body"
+      ? signatureCoversBody(config.signature)
+      : signatureCoversId(config.signature, source, name))
+  ) {
+    throw fetchBackRefusal(
+      "idFrom",
+      `reads ${source}.${name}, which the signed message does not cover`,
+    );
+  }
+}
+
+// The tool half, which needs the tenant's rows: it exists here, is enabled, takes the id in a field
+// the model would fill, and renders nothing that only a conversation has.
+export async function assertFetchBackTool(
+  db: ScopedDb,
+  config: Record<string, unknown>,
+): Promise<void> {
+  const parsed = parseFetchBackConfig(config.fetchBack);
+  if (parsed === undefined || isFetchBackProblem(parsed)) return;
+  const tool = await db.toolDefinition.findUnique({
+    where: { id: parsed.toolId },
+    select: {
+      enabled: true,
+      urlTemplate: true,
+      headers: true,
+      query: true,
+      body: true,
+      inputSchema: true,
+    },
+  });
+  const problem = fetchBackToolProblem(tool, parsed.idArg);
+  if (problem) throw fetchBackRefusal("toolId", problem);
+}
+
+// What an HMAC instance signs when it is not the body. Refused whole, naming the field, by the same
+// parser the gate reads it with, so a stored config the gate would fail closed on cannot be written.
+// A toolpack's provider signs the way its catalog entry knows; the signed message is the generic
+// webhook's, where the operator describes a gateway the catalog does not.
+export function assertSignatureConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
+  const parsed = parseSignatureConfig(config.signature);
+  if (parsed === undefined) return;
+  const problem =
+    catalogType !== "GENERIC"
+      ? { field: "", problem: "is only for the generic webhook" }
+      : isSignatureConfigProblem(parsed)
+        ? parsed
+        : null;
+  if (!problem) return;
+  const field = problem.field
+    ? `config.signature.${problem.field}`
+    : "config.signature";
+  throw new AppError(
+    `${field} ${problem.problem}`,
+    400,
+    "errors.integrationSignatureUnusable",
+    { field, problem: problem.problem },
+    field,
+  );
+}
+
 // The operator's guidance for a GENERIC instance's events: trusted text that reaches the model
 // outside the data fence, on every event this instance delivers. Bounded because it rides every one
 // of those turns, and refused rather than repaired, like the header names above.
@@ -162,6 +269,55 @@ function assertConfigRanges(
   );
 }
 
+// The Sheets pack reads the spreadsheet and tab from the config, so a value it could never use is
+// refused at the write instead of stored and failing on every call. An instance without both has
+// nothing to work on, so a missing one is refused too.
+function assertSheetsConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): void {
+  if (catalogType !== "GOOGLE_SHEETS") return;
+  const missing = (field: string, why: string) =>
+    new AppError(
+      `${field} ${why}`,
+      422,
+      "errors.integrationSheetsConfigMissing",
+      { field },
+      field,
+    );
+  const invalid = (field: string, why: string) =>
+    new AppError(
+      `${field} ${why}`,
+      422,
+      "errors.integrationSheetsConfigInvalid",
+      { field },
+      field,
+    );
+  const blank = (v: unknown) =>
+    v === undefined || v === null || (typeof v === "string" && !v.trim());
+  const id = config.spreadsheetId;
+  const sheetId = config.sheetId;
+  if (blank(id))
+    throw missing(
+      "config.spreadsheetId",
+      "is required: choose the spreadsheet",
+    );
+  if (!(typeof id === "string" && SPREADSHEET_ID_PATTERN.test(id.trim())))
+    throw invalid(
+      "config.spreadsheetId",
+      "must be the spreadsheet id (the part of its URL between /d/ and /edit), not the URL",
+    );
+  if (blank(sheetId))
+    throw missing("config.sheetId", "is required: choose the tab");
+  if (
+    !(typeof sheetId === "number" && Number.isInteger(sheetId) && sheetId >= 0)
+  )
+    throw invalid(
+      "config.sheetId",
+      "must be the tab's numeric id (the gid in its URL), not its name",
+    );
+}
+
 // An inbound route that makes the agent message a customer cannot be left open (GENERIC). Checked
 // on create AND update, since a later PATCH to NONE opens the same door.
 function assertInboundAuthAllowed(
@@ -191,16 +347,41 @@ export function assertIntegrationWritable(
   // The row's config on update, so a number stored before the range check existed is not refused
   // when the same value is sent back.
   storedConfig?: Record<string, unknown>,
+  // The row's strategy on update, which the consult-back is checked against when the patch keeps it.
+  storedStrategy?: InboundAuthStrategy,
 ): void {
   if (params.config) {
     assertUsableHeaderNames(params.config);
+    assertSignatureConfig(catalogType, params.config);
     assertCatalogConfig(catalogType, params.config);
     assertConfigRanges(catalogType, params.config, storedConfig);
+    assertSheetsConfig(catalogType, params.config);
   }
-  assertInboundAuthAllowed(
-    getCatalogEntry(catalogType),
-    params.inboundAuthStrategy,
-  );
+  const entry = getCatalogEntry(catalogType);
+  assertInboundAuthAllowed(entry, params.inboundAuthStrategy);
+  if (params.config || params.inboundAuthStrategy) {
+    assertFetchBackConfig(
+      catalogType,
+      params.config ?? storedConfig ?? {},
+      params.inboundAuthStrategy ??
+        storedStrategy ??
+        (entry?.requiresInboundAuth ? entry.defaultInboundAuth : "NONE"),
+    );
+  }
+}
+
+// A create also stores what it was not sent: no config is stored as `{}`, which a Sheets instance
+// cannot work with either. An update without a config keeps the stored one, so it stays on
+// assertIntegrationWritable alone.
+export function assertIntegrationCreatable(
+  catalogType: string,
+  params: {
+    config?: Record<string, unknown>;
+    inboundAuthStrategy?: InboundAuthStrategy;
+  },
+): void {
+  assertIntegrationWritable(catalogType, params);
+  if (!params.config) assertSheetsConfig(catalogType, {});
 }
 
 // What the audit row carries: identity, policy and shape are PROJECTED, the rest is in
@@ -260,7 +441,7 @@ export async function createIntegrationInstance(
   if (!entry) {
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
-  assertIntegrationWritable(entry.catalogType, params);
+  assertIntegrationCreatable(entry.catalogType, params);
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;
@@ -272,6 +453,7 @@ export async function createIntegrationInstance(
       minted && params.inboundSecretRef
         ? await requireVaultRef(db, params.inboundSecretRef, "inboundSecretRef")
         : null;
+    await assertFetchBackTool(db, params.config ?? {});
     const row = await db.integrationInstance.create({
       data: {
         tenantId,
@@ -475,7 +657,9 @@ export async function updateIntegrationInstance(
       current.catalogType,
       params,
       (current.config ?? {}) as Record<string, unknown>,
+      current.inboundAuthStrategy,
     );
+    if (params.config) await assertFetchBackTool(db, params.config);
     const credentialRef = params.credentialRef
       ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;

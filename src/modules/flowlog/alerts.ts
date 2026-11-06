@@ -10,6 +10,7 @@ import {
   type FlowLevel,
   type FlowStage,
   pagesAlerts,
+  selectorOf,
 } from "./stages";
 
 // Alert fan-out for a warn/error execution-flow event. Called fire-and-forget from emitFlowEvent
@@ -178,6 +179,13 @@ export function causeKeyOf(ev: FlowEvent): string | null {
       ? `foreign_send:${agent}`
       : "foreign_send";
   }
+  // A setup to fix, one per agent: every window note of the day is the same missing template.
+  if (ev.stage === "service_window") {
+    const agent = detail.agent;
+    return typeof agent === "string" && /^[1-9][0-9]{0,18}$/.test(agent)
+      ? `service_window:${agent}`
+      : "service_window";
+  }
   // An answer to a stranded message that came late enough that the customer waited for it: a cause,
   // so it reaches a channel whatever its minimum level, and a run of them is one alert.
   if (ev.stage === "delivery") {
@@ -267,18 +275,32 @@ export async function dispatchAlertsForEvent(
   const causeKey = causeKeyOf(ev);
   await deliverAlert(ctx, base, {
     stage: ev.stage,
+    selector: selectorOf(ev.stage, ev.detail),
     // A cause alert is at least a `warn` on the row: the line can be an `info` (a run the job will
     // retry against a dead key), and what the operator reads is that something needs fixing.
     level: causeKey !== null && ev.level === "info" ? "warn" : ev.level,
     rank: LEVEL_RANK[ev.level] ?? 0,
     summary: alertSummary(ev),
     cause:
-      causeKey === null ? null : { key: causeKey, windowMs: causeWindowMs },
+      causeKey === null
+        ? null
+        : {
+            key: causeKey,
+            windowMs: causeKey.startsWith("service_window")
+              ? SERVICE_WINDOW_ALERT_WINDOW_MS
+              : causeWindowMs,
+          },
   });
 }
 
+// A backlog of window notes is one alert per agent per day, not one per cause window.
+export const SERVICE_WINDOW_ALERT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 interface AlertToDeliver {
   stage: FlowStage;
+  // What a channel's stage list is matched against (./stages.ts `selectorOf`), when it is not the
+  // stage itself: an observed guardrail trip is written as `guardrail` and selected apart.
+  selector?: string;
   level: FlowLevel;
   // The rank the channel's `minLevel` is compared with; a cause skips that comparison.
   rank: number;
@@ -315,7 +337,8 @@ async function deliverAlert(
       if (cause === null && (LEVEL_RANK[ch.minLevel] ?? 2) > alert.rank)
         continue;
       // stage allowlist (empty = all stages).
-      if (ch.stages.length > 0 && !ch.stages.includes(stage)) continue;
+      if (ch.stages.length > 0 && !ch.stages.includes(alert.selector ?? stage))
+        continue;
       // NOTE: Agents this channel leaves out. A line with no agent is never excluded: the list
       // names agents, and an unrouted or tenant-wide line belongs to none of them.
       if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))

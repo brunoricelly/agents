@@ -123,6 +123,10 @@ describe("native tools", () => {
     // whether its own next line is wanted.
     expect(withLine).toContain("will be delivered to the customer");
     expect(declaredSilent).toContain("No message will be sent");
+    // A placeholder is no line: the model is told nothing goes out, not that its "EMPTY" will.
+    expect(
+      String(await speaking.invoke({ customerMessage: "EMPTY" })),
+    ).toContain("No message will be sent");
 
     // The muted branch has no argument at all, so its note is not about a decision the model made:
     // it states the topology. Same requirement, though, that it does not read as an instruction.
@@ -2527,6 +2531,8 @@ describe("native tools", () => {
           model: "conversation_attribute",
           displayType: "list",
           values: ["new", "qualified"],
+          regexPattern: null,
+          regexCue: null,
         },
         {
           key: "plano",
@@ -2534,6 +2540,8 @@ describe("native tools", () => {
           model: "contact_attribute",
           displayType: "text",
           values: [],
+          regexPattern: null,
+          regexCue: null,
         },
       ],
     };
@@ -3333,7 +3341,7 @@ describe("the fence rule, over every native tool", () => {
           if (prop === "muted") return false;
           if (typeof prop !== "string") return undefined;
           // Pure string building, not a call to Chatwoot.
-          if (prop === "conversationUrl")
+          if (prop === "conversationKey" || prop === "conversationLink")
             return (id: number) => `https://cw.example/conversations/${id}`;
           const kind = CLIENT_READS.includes(prop)
             ? "read"

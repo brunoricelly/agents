@@ -12,20 +12,31 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { contactInboxThreadId } from "@/graph/checkpointer";
-import { isTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import {
   conversationStamp,
   HUMAN_HANDBACK_NOTE,
   isConversationDivider,
+  isMemoryHead,
   isNudgeTurn,
+  memoryHeadMessage,
+  nudgeMessage,
   stampedConversationId,
+  stampedSource,
+  UNDELIVERED_PROACTIVE_NOTE_HEAD,
 } from "@/graph/markers";
 import {
   type ApprovedDocumentDelivery,
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
+  nudgeOccasionKey,
   OPERATOR_EVENT_NOTE_PREFIX,
   OUTSIDE_WINDOW_NOTE_PREFIX,
   parseThreadId,
@@ -47,7 +58,9 @@ import { keyedQueueTail, withKeyedQueue } from "@/lib/locks";
 import * as tenancy from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { inactivityNudge } from "@/modules/followups/handlers";
 import { selectClosedPrefix } from "@/modules/memory/cut";
+import { parseTemplateDefinition } from "@/modules/service-window/service";
 import { dbProbeFailed } from "@/tests/db-gate";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -474,6 +487,7 @@ function stub() {
 async function closingLine(convId: number): Promise<Record<string, unknown>> {
   for (let i = 0; i < 100; i++) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -859,6 +873,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // infers "Follow-up" from the source nor guesses the bubble by time.
   async function originLine(convId: number) {
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -2061,6 +2076,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       // so the dashboard counts this silence with the rest.
       await settleFlowEvents();
       const toolLines = await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
         where: {
           tenantId,
           stage: "tool",
@@ -2113,6 +2129,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(modelCalls).toBe(0);
     await settleFlowEvents();
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4357,6 +4374,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // `outcome`/`step` are values several of them write, so a poll filtered by tenant alone can
     // exit on a neighbour's row and report a trail this turn never left.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -4535,6 +4553,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // And the trail carries no `messaged` line for this step. Checked after the run returned, so
     // there is no write left in flight: markFollowUp is called synchronously or not at all.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -6716,6 +6735,569 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // Outside the window each proactive kind sends its own template, a reminder fills it with
+  // its appointment, and a kind with no template of its own (and no default) stays a note.
+  describe("a template per proactive kind", () => {
+    // The newest window-note line of the tenant: which kind became a note, and why.
+    const lastWindowNote = async (chatwootConversationId: number) => {
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId },
+        select: { id: true },
+      });
+      const [row] = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "service_window" },
+        orderBy: { id: "desc" },
+        take: 1,
+      });
+      return row ? { level: row.level, detail: row.detail } : null;
+    };
+    const inboxAgent = async () =>
+      String(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: inboxDbId },
+            select: { agentId: true },
+          })
+        ).agentId,
+      );
+    const LEMBRETE = {
+      name: "lembrete_agendamento",
+      language: "pt_BR",
+      category: "UTILITY",
+      status: "APPROVED",
+      components: [
+        { type: "HEADER", format: "TEXT", text: "Sua visita {{1}}" },
+        { type: "BODY", text: "Olá, {{1}}! Dia {{2}} às {{3}}." },
+        {
+          type: "BUTTONS",
+          buttons: [{ type: "URL", text: "Ver", url: "https://x.test/{{1}}" }],
+        },
+      ],
+    };
+    const settings = {
+      serviceWindow: {
+        templates: {
+          appointment_reminder: {
+            name: "lembrete_agendamento",
+            params: ["cliente", "{{data_agendamento}}", "{{hora_agendamento}}"],
+            headerParams: ["{{dia_semana_agendamento}}"],
+            buttonParams: ["{{agenda}}"],
+          },
+        },
+      },
+    };
+    function templateStub() {
+      const s = stub();
+      const payloads: Array<Record<string, unknown>> = [];
+      const client = s.client as unknown as Record<string, unknown>;
+      client.sendTemplate = async (
+        _c: number,
+        payload: Record<string, unknown>,
+      ) => {
+        payloads.push(payload);
+        return {};
+      };
+      client.listTemplateDefinitions = async () =>
+        [LEMBRETE].map((d) => parseTemplateDefinition(d));
+      return { ...s, payloads };
+    }
+    const nudgeDeps = (
+      s: ReturnType<typeof templateStub>,
+      checkpointer = new MemorySaver(),
+    ) => ({
+      makeModel: (() =>
+        new FakeListChatModel({ responses: ["Lembrete!"] })) as never,
+      makeClient: async () => s.client,
+      checkpointer,
+      persistUsage: async () => {},
+    });
+    const reminder = {
+      source: "appointment_reminder",
+      kind: "reminder",
+      template: {
+        kind: "appointment_reminder",
+        offsetHours: 24,
+        appointment: {
+          startISO: "2026-10-23T01:30:00Z",
+          calendarLabel: "centro",
+        },
+      },
+    } as const;
+
+    test("memory keeps the template the customer read, not the draft it replaced", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7587, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7587`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: reminder,
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("templated");
+          const sent = (s.payloads[0] as { content: string }).content;
+          expect(sent).toContain("Dia 22/10/2026 às 22:30.");
+          const left = await turnLeftIn(saver, threadId);
+          expect(left.at(-1)).toEqual(["ai", sent]);
+          expect(left.some(([, text]) => text.includes("Lembrete!"))).toBe(
+            false,
+          );
+          // Stored WITH an id, so a later take-back or compaction can name it.
+          const stored = (
+            (
+              await buildThreadStateGraph(saver).getState({
+                configurable: { thread_id: threadId },
+              })
+            ).values as { messages: BaseMessage[] }
+          ).messages.at(-1);
+          expect(typeof stored?.id).toBe("string");
+        },
+        settings,
+      );
+    });
+
+    test("a turn that acted before its draft keeps the act and swaps only the draft for the template", async () => {
+      class LabelThenDraftModel extends BaseChatModel {
+        rounds = 0;
+        constructor() {
+          super({});
+        }
+        _llmType() {
+          return "fake-label-then-draft";
+        }
+        async _generate(): Promise<ChatResult> {
+          this.rounds += 1;
+          const message =
+            this.rounds === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "set_labels",
+                      args: { add: ["lembrete"], scope: "conversation" },
+                      id: "call_7589_label",
+                    },
+                  ],
+                })
+              : new AIMessage("Lembrete!");
+          return { generations: [{ text: "", message }] };
+        }
+      }
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7589, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7589`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: reminder,
+            base: appDb,
+            deps: {
+              ...nudgeDeps(s, saver),
+              makeModel: (() => new LabelThenDraftModel()) as never,
+            },
+          });
+          expect(outcome).toBe("templated");
+          const sent = (s.payloads[0] as { content: string }).content;
+          const left = await turnLeftIn(saver, threadId);
+          expect(left.map(([type]) => type).slice(-3)).toEqual([
+            "ai",
+            "tool",
+            "ai",
+          ]);
+          expect(left.at(-1)).toEqual(["ai", sent]);
+          expect(left.some(([, text]) => text.includes("Lembrete!"))).toBe(
+            false,
+          );
+        },
+        settings,
+      );
+    });
+
+    test("a thread another turn holds keeps the draft, and the template still goes", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7590, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7590`;
+          const client = s.client as unknown as Record<string, unknown>;
+          const send = client.sendTemplate as (
+            c: number,
+            p: Record<string, unknown>,
+          ) => Promise<unknown>;
+          client.sendTemplate = async (
+            c: number,
+            p: Record<string, unknown>,
+          ) => {
+            markTurnInFlight(threadId);
+            return send(c, p);
+          };
+          const warn = spyOn(logger, "warn");
+          try {
+            const outcome = await runAgentNudge({
+              tenantId,
+              threadId,
+              nudge: reminder,
+              base: appDb,
+              deps: nudgeDeps(s, saver),
+            });
+            expect(outcome).toBe("templated");
+            expect(s.payloads).toHaveLength(1);
+            expect((await turnLeftIn(saver, threadId)).at(-1)).toEqual([
+              "ai",
+              "Lembrete!",
+            ]);
+            expect(
+              warn.mock.calls.some(
+                (c) =>
+                  c[0] ===
+                    "agentNudge left the unsent draft in place of the %s: conv=%s reason=%s" &&
+                  c[1] === "template" &&
+                  c[3] === "another-invoke-is-reading",
+              ),
+            ).toBe(true);
+          } finally {
+            warn.mockRestore();
+            clearTurnInFlight(threadId);
+          }
+        },
+        settings,
+      );
+    });
+
+    test("inside the window the reply the customer received stays in memory as sent", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7588, null, new Date(Date.now() - 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7588`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: reminder,
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("messaged");
+          expect(s.payloads).toEqual([]);
+          expect((await turnLeftIn(saver, threadId)).at(-1)).toEqual([
+            "ai",
+            "Lembrete!",
+          ]);
+        },
+        settings,
+      );
+    });
+
+    test("a reminder outside the window sends the reminder's template, filled with its appointment", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7563, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7563`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                offsetHours: 24,
+                appointment: {
+                  startISO: "2026-10-23T01:30:00Z",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).toBe("templated");
+          expect(s.notes).toEqual([]);
+          expect(s.payloads).toHaveLength(1);
+          const p = s.payloads[0] as {
+            name: string;
+            content: string;
+            processedParams: unknown;
+          };
+          expect(p.name).toBe("lembrete_agendamento");
+          // A start in UTC read in the agent's zone (the product default, São Paulo): the evening before.
+          expect(p.processedParams).toEqual({
+            body: { "1": "cliente", "2": "22/10/2026", "3": "22:30" },
+            header: { "1": "quinta-feira" },
+            buttons: [{ type: "url", parameter: "centro" }],
+          });
+          expect(p.content).toContain("Dia 22/10/2026 às 22:30.");
+        },
+        settings,
+      );
+    });
+
+    test("an occasion retired while the template's definition is read sends nothing", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7565, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          let retired = false;
+          (
+            s.client as unknown as Record<string, unknown>
+          ).listTemplateDefinitions = async () => {
+            retired = true;
+            return [parseTemplateDefinition(LEMBRETE)];
+          };
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7565`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                appointment: {
+                  startISO: "2026-10-23T01:30:00Z",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            stillWanted: async () => !retired,
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).not.toBe("templated");
+          expect(s.payloads).toEqual([]);
+        },
+        settings,
+      );
+    });
+
+    // What the thread holds after a turn whose words became a note: the system note in the draft's
+    // place, never the draft as the agent's line.
+    const draftLeftAsSaid = (left: Array<[string, string]>) =>
+      left.some(([type, text]) => type === "ai" && text.includes("Lembrete!"));
+
+    test("a draft that became a note outside the window stays in memory as undelivered, not as said", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7591, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7591`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: {
+              source: "followup",
+              kind: "inactivity",
+              step: 1,
+              template: { kind: "followup" },
+            },
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("noted-window");
+          expect(s.notes).toHaveLength(1);
+          const left = await turnLeftIn(saver, threadId);
+          expect(draftLeftAsSaid(left)).toBe(false);
+          const [type, text] = left.at(-1) ?? [];
+          expect(type).toBe("human");
+          expect(text).toContain(UNDELIVERED_PROACTIVE_NOTE_HEAD);
+          expect(text).toContain("Lembrete!");
+        },
+        settings,
+      );
+    });
+
+    test("a draft that became a note because a person holds the conversation stays in memory as undelivered", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7592, null, new Date());
+          await suDb.conversation.updateMany({
+            where: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: 7592,
+            },
+            data: { status: "open", assigneeType: "User", assigneeId: 5 },
+          });
+          const s = templateStub();
+          const saver = new MemorySaver();
+          const threadId = `${tenantId}:${instanceId}:7592`;
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId,
+            nudge: {
+              source: "GENERIC",
+              kind: "agent_nudge",
+              text: "Pagamento confirmado.",
+            },
+            base: appDb,
+            deps: nudgeDeps(s, saver),
+          });
+          expect(outcome).toBe("noted");
+          const left = await turnLeftIn(saver, threadId);
+          expect(draftLeftAsSaid(left)).toBe(false);
+          const [type, text] = left.at(-1) ?? [];
+          expect(type).toBe("human");
+          expect(text).toContain(UNDELIVERED_PROACTIVE_NOTE_HEAD);
+          expect(text).toContain("Lembrete!");
+        },
+        settings,
+      );
+    });
+
+    test("a follow-up with no template of its own and no default stays an explained note", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7564, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7564`,
+            nudge: {
+              source: "followup",
+              kind: "inactivity",
+              step: 1,
+              template: { kind: "followup" },
+            },
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).toBe("noted-window");
+          expect(s.payloads).toEqual([]);
+          expect(s.notes).toHaveLength(1);
+          // A note instead of a send is not silent: a warn naming the kind, and that none was set.
+          expect(await lastWindowNote(7564)).toEqual({
+            level: "warn",
+            detail: {
+              agent: await inboxAgent(),
+              kind: "followup",
+              reason: "no_template",
+            },
+          });
+        },
+        settings,
+      );
+    });
+
+    test("an all-day booking has no time to fill, so a template that asks for one stays the note", async () => {
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          await seedConv(7566, null, new Date(Date.now() - 48 * 3_600_000));
+          const s = templateStub();
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7566`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                appointment: {
+                  startISO: "2026-10-23",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            base: appDb,
+            deps: nudgeDeps(s),
+          });
+          expect(outcome).toBe("noted-window");
+          expect(s.payloads).toEqual([]);
+          // A template was there; what it asked for came out empty.
+          expect(await lastWindowNote(7566)).toEqual({
+            level: "warn",
+            detail: {
+              agent: await inboxAgent(),
+              kind: "appointment_reminder",
+              reason: "blank_value",
+            },
+          });
+        },
+        settings,
+      );
+    });
+
+    test("a window that closes after the definition is read still sends a NAMED template keyed by name", async () => {
+      const named = {
+        name: "lembrete_agendamento",
+        language: "pt_BR",
+        status: "APPROVED",
+        parameter_format: "NAMED",
+        components: [
+          { type: "HEADER", format: "TEXT", text: "Visita {{dia}}" },
+          { type: "BODY", text: "{{quem}}: dia {{data}} às {{hora}}." },
+          {
+            type: "BUTTONS",
+            buttons: [
+              { type: "URL", text: "Ver", url: "https://x.test/{{1}}" },
+            ],
+          },
+        ],
+      };
+      await withGuardrails(
+        { enabled: false },
+        async () => {
+          const t0 = new Date();
+          await seedConv(7567, null, new Date(t0.getTime() - 23 * 3_600_000));
+          const s = templateStub();
+          let read = false;
+          (
+            s.client as unknown as Record<string, unknown>
+          ).listTemplateDefinitions = async () => {
+            read = true;
+            return [parseTemplateDefinition(named)];
+          };
+          const outcome = await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:7567`,
+            nudge: {
+              source: "appointment_reminder",
+              kind: "reminder",
+              template: {
+                kind: "appointment_reminder",
+                appointment: {
+                  startISO: "2026-10-23T01:30:00Z",
+                  calendarLabel: "centro",
+                },
+              },
+            },
+            base: appDb,
+            deps: {
+              ...nudgeDeps(s),
+              now: () => (read ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            },
+          });
+          expect(outcome).toBe("templated");
+          const p = s.payloads[0] as { processedParams: { body: unknown } };
+          expect(p.processedParams.body).toEqual({
+            quem: "cliente",
+            data: "22/10/2026",
+            hora: "22:30",
+          });
+        },
+        settings,
+      );
+    });
+  });
+
   // The other half of reading the window twice: the first reading still short-circuits, and what it
   // saves is not a model call but the operator's note. A promised line that cannot be sent is
   // written to the OPERATOR, and the judge's verdict governs what the CUSTOMER reads — so a policy
@@ -7196,6 +7778,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     // emitFlowEvent is fire-and-forget; `flowLogRows` settles the scheduled writes before it reads.
     const rows = await flowLogRows(suDb, {
+      orderBy: { id: "asc" },
       where: {
         tenantId,
         stage: "generate",
@@ -7714,5 +8297,424 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     });
     expect(outcome).toBe("stale");
     expect(s.order).toEqual([]);
+  });
+
+  test("a follow-up retried after the provider refused sends the model its directive once", async () => {
+    await seedConv(16_624, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    class Refusing extends BaseChatModel {
+      seen: BaseMessage[][] = [];
+      constructor(private failures: number) {
+        super({});
+      }
+      _llmType() {
+        return "refusing";
+      }
+      override bindTools() {
+        return this as never;
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        this.seen.push(messages);
+        if (this.seen.length <= this.failures) {
+          const err = new Error(
+            "429 You have no credits remaining",
+          ) as Error & {
+            status: number;
+          };
+          err.status = 429;
+          throw err;
+        }
+        return {
+          generations: [
+            { text: "", message: new AIMessage("Ainda tem interesse?") },
+          ],
+        };
+      }
+    }
+    const model = new Refusing(5);
+    const run = () =>
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:16624`,
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      }).catch(() => "threw");
+    const outcomes: string[] = [];
+    for (let i = 0; i < 6; i++) outcomes.push(String(await run()));
+
+    expect(outcomes).toEqual([
+      "threw",
+      "threw",
+      "threw",
+      "threw",
+      "threw",
+      "messaged",
+    ]);
+    expect((model.seen.at(-1) ?? []).filter(isNudgeTurn)).toHaveLength(1);
+    const tuple = await saver.getTuple({
+      configurable: { thread_id: `${tenantId}:${instanceId}:16624` },
+    });
+    const kept = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    ).filter(isNudgeTurn);
+    expect(kept.map(stampedSource)).toEqual([
+      nudgeOccasionKey(instanceId, 16_624, {
+        source: "ASAAS",
+        status: "paid",
+        value: 100,
+        currency: "BRL",
+      }),
+    ]);
+    expect(s.messages).toEqual([[16_624, "Ainda tem interesse?"]]);
+    await settleFlowEvents();
+    const repairs = (
+      await flowLogRows(suDb, {
+        orderBy: { id: "asc" },
+        where: {
+          tenantId,
+          stage: "memory",
+          threadId: `${tenantId}:${instanceId}:16624`,
+        },
+        select: { detail: true },
+      })
+    )
+      .map((r) => r.detail as { reason?: string; directives?: number })
+      .filter((d) => d?.reason === "repaired_unanswered_inputs");
+    expect(repairs.reduce((n, d) => n + (d.directives ?? 0), 0)).toBe(5);
+  });
+
+  test("a follow-up that keeps failing stores its directive once after every attempt", async () => {
+    await seedConv(16_627, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    let calls = 0;
+    class Refusing extends BaseChatModel {
+      _llmType() {
+        return "refusing";
+      }
+      override bindTools() {
+        return this as never;
+      }
+      async _generate(): Promise<ChatResult> {
+        calls += 1;
+        if (calls <= 3) {
+          const err = new Error("429 quota") as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return {
+          generations: [{ text: "", message: new AIMessage("Oi de novo!") }],
+        };
+      }
+    }
+    const model = new Refusing({});
+    const thread = `${tenantId}:${instanceId}:16627`;
+    const stored: string[][] = [];
+    for (let i = 0; i < 4; i++) {
+      await runAgentNudge({
+        tenantId,
+        threadId: thread,
+        runKey: "job:77",
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      }).catch(() => "threw");
+      const tuple = await saver.getTuple({
+        configurable: { thread_id: thread },
+      });
+      stored.push(
+        ((tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[])
+          .filter(isNudgeTurn)
+          .map((m) => m.id as string),
+      );
+    }
+    expect(stored).toEqual([
+      [expect.stringMatching(/^nudge:job:77:/)],
+      [expect.stringMatching(/^nudge:job:77:/)],
+      [expect.stringMatching(/^nudge:job:77:/)],
+      [expect.stringMatching(/^nudge:job:77:/)],
+    ]);
+    expect(s.messages).toEqual([[16_627, "Oi de novo!"]]);
+  });
+
+  // The residue an older version left: one directive per failed attempt of the inactivity follow-up,
+  // rendered by the real builder with the idle time of each attempt, a random id and no source.
+  // Two attempts were rendered after a person took over, and the operator edited the guidance midway.
+  async function seedLegacyFollowUps(thread: string, conv: number) {
+    const legacy = Array.from({ length: 60 }, (_, i) => {
+      const m = nudgeMessage(
+        renderNudge(
+          inactivityNudge({
+            idleMin: 40 + i * 30,
+            instructions:
+              i < 30 ? "Pergunte se ainda tem interesse." : "Ofereça ajuda.",
+            step: 1,
+            episodeStartedAt: null,
+          }),
+          i !== 10 && i !== 11,
+        ),
+        conv,
+      );
+      m.id = `legacy-${i}`;
+      return m;
+    });
+    await buildThreadStateGraph(saver16670(thread)).updateState(
+      { configurable: { thread_id: thread } },
+      {
+        messages: [
+          new HumanMessage({
+            id: "h1",
+            content: "quero um orçamento",
+            additional_kwargs: conversationStamp(conv),
+          }),
+          new AIMessage({ id: "a1", content: "Claro, me passa os detalhes." }),
+          ...legacy,
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+  }
+  const savers16670 = new Map<string, MemorySaver>();
+  const saver16670 = (thread: string) => {
+    const existing = savers16670.get(thread);
+    if (existing) return existing;
+    const created = new MemorySaver();
+    savers16670.set(thread, created);
+    return created;
+  };
+
+  for (const keyed of [false, true]) {
+    test(`a thread carrying an older version's follow-up attempts is healed by the next ${keyed ? "keyed" : "keyless"} follow-up`, async () => {
+      const conv = keyed ? 16_671 : 16_670;
+      await seedConv(conv, null);
+      const thread = `${tenantId}:${instanceId}:${conv}`;
+      await seedLegacyFollowUps(thread, conv);
+      const s = stub();
+      const seen: BaseMessage[][] = [];
+      class Answering extends BaseChatModel {
+        _llmType() {
+          return "answering";
+        }
+        override bindTools() {
+          return this as never;
+        }
+        async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+          seen.push(messages);
+          return {
+            generations: [
+              { text: "", message: new AIMessage("Ainda tem interesse?") },
+            ],
+          };
+        }
+      }
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: thread,
+        ...(keyed ? { runKey: "job:16670" } : {}),
+        nudge: inactivityNudge({
+          idleMin: 2000,
+          instructions: "Ofereça ajuda.",
+          step: 1,
+          episodeStartedAt: null,
+        }),
+        base: appDb,
+        deps: {
+          makeModel: () => new Answering({}) as never,
+          makeClient: s.makeClient,
+          checkpointer: saver16670(thread),
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("messaged");
+
+      // NOTE: the new directive carries a source either way, and every legacy attempt is the same
+      // event, so the model reads one directive and the thread keeps only the new one.
+      expect((seen[0] ?? []).filter(isNudgeTurn)).toHaveLength(1);
+      const tuple = await saver16670(thread).getTuple({
+        configurable: { thread_id: thread },
+      });
+      const kept = (
+        (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+      ).filter(isNudgeTurn);
+      expect(kept).toHaveLength(1);
+      expect(stampedSource(kept[0] as BaseMessage)).not.toBeNull();
+      expect(s.messages).toEqual([[conv, "Ainda tem interesse?"]]);
+    });
+  }
+
+  test("a customer message between two attempts keeps the retried directive after it", async () => {
+    await seedConv(16_628, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    let calls = 0;
+    class FailOnce extends BaseChatModel {
+      _llmType() {
+        return "fail-once";
+      }
+      override bindTools() {
+        return this as never;
+      }
+      async _generate(): Promise<ChatResult> {
+        calls += 1;
+        if (calls === 1) {
+          const err = new Error("429 quota") as Error & { status: number };
+          err.status = 429;
+          throw err;
+        }
+        return {
+          generations: [{ text: "", message: new AIMessage("Tudo certo?") }],
+        };
+      }
+    }
+    const model = new FailOnce({});
+    const thread = `${tenantId}:${instanceId}:16628`;
+    const run = () =>
+      runAgentNudge({
+        tenantId,
+        threadId: thread,
+        runKey: "job:78",
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => model as never,
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      }).catch(() => "threw");
+    expect(await run()).toBe("threw");
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: thread } },
+      { messages: [new HumanMessage({ id: "h-between", content: "oi?" })] },
+      THREAD_STATE_NODE,
+    );
+    expect(await run()).toBe("messaged");
+    const tuple = await saver.getTuple({ configurable: { thread_id: thread } });
+    const kinds = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    ).map((m) =>
+      isNudgeTurn(m)
+        ? "directive"
+        : m.id === "h-between"
+          ? "customer"
+          : m.getType(),
+    );
+    expect(kinds).toEqual(["customer", "directive", "ai"]);
+  });
+
+  test("a memory head that inherited a directive's id is not replaced by the retry", async () => {
+    await seedConv(16_630, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    const thread = `${tenantId}:${instanceId}:16630`;
+    const nudge = {
+      source: "ASAAS" as const,
+      status: "paid",
+      value: 100,
+      currency: "BRL",
+    };
+    const key = `nudge:job:80:${nudgeOccasionKey(instanceId, 16_630, nudge)}`;
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: thread } },
+      { messages: [memoryHeadMessage("Resumo do atendimento anterior", key)] },
+      THREAD_STATE_NODE,
+    );
+    await runAgentNudge({
+      tenantId,
+      threadId: thread,
+      runKey: "job:80",
+      nudge,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: ["Pagamento confirmado!"],
+          }) as never,
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const tuple = await saver.getTuple({ configurable: { thread_id: thread } });
+    const messages = (tuple?.checkpoint.channel_values.messages ??
+      []) as BaseMessage[];
+    expect(messages.filter(isMemoryHead).map((m) => m.id)).toEqual([key]);
+    expect(messages.filter(isNudgeTurn)).toHaveLength(1);
+  });
+
+  test("the next step of a ladder on the same job does not overwrite the step a tool ended", async () => {
+    await seedConv(16_629, null);
+    const saver = new MemorySaver();
+    const s = stub();
+    const thread = `${tenantId}:${instanceId}:16629`;
+    const step1 = inactivityNudge({
+      idleMin: 60,
+      instructions: "Passo 1",
+      step: 1,
+      episodeStartedAt: null,
+    });
+    const step2 = inactivityNudge({
+      idleMin: 120,
+      instructions: "Passo 2",
+      step: 2,
+      episodeStartedAt: null,
+    });
+    const key1 = `nudge:job:79:${nudgeOccasionKey(instanceId, 16_629, step1)}`;
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: thread } },
+      {
+        messages: [
+          new HumanMessage({
+            id: key1,
+            content: "Passo 1",
+            additional_kwargs: nudgeMessage("", 16_629).additional_kwargs,
+          }),
+          new AIMessage({
+            id: "a-tool",
+            content: "",
+            tool_calls: [
+              { id: "c1", name: "skip_reply", args: {}, type: "tool_call" },
+            ],
+          }),
+          new ToolMessage({ id: "t-1", content: "ok", tool_call_id: "c1" }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    await runAgentNudge({
+      tenantId,
+      threadId: thread,
+      runKey: "job:79",
+      nudge: step2,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Ainda por aí?"] }) as never,
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const tuple = await saver.getTuple({ configurable: { thread_id: thread } });
+    const ids = (
+      (tuple?.checkpoint.channel_values.messages ?? []) as BaseMessage[]
+    )
+      .filter(isNudgeTurn)
+      .map((m) => m.id as string);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(key1);
+    expect(ids[1]).not.toBe(key1);
   });
 });

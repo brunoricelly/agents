@@ -112,9 +112,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // learn by trying, re-measure instead of summing) is in docs/mcp.md, "Full admin surface".
 // Includes `monitoring.engine` and the `decisions` block (questions, rules): they are configured only
 // through REST and MCP until the console has a screen for them, so their shape has to be in
-// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 36_320,
-// fallbacks' timeouts and voice, voice `calls`, one-or-many preconditions and `setLabels.removal` in.
-const SETTINGS_SCHEMA_CEILING = 36_400;
+// tools/list, and `snoozedFollowUp` too (the step shape it shares with `followUp`). Measured at 37_492
+// with `calls`, `setLabels.removal`, the writable list and the service window's per-kind templates.
+const SETTINGS_SCHEMA_CEILING = 37_770;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -201,6 +201,23 @@ describe("MCP tool descriptions", () => {
     }
   });
 
+  // What a trim of integration_create must keep: the pointer that sends a caller looking for a
+  // payment gateway to the GENERIC catalog entry (which carries the config keys), and the rules that
+  // refuse or change the call.
+  test("integration_create keeps the GENERIC pointer and its rules through a trim", async () => {
+    const d = (await descriptions()).get("integration_create") as string;
+    for (const kept of [
+      "integration_catalog",
+      "GENERIC",
+      "payment gateways",
+      "vault entry NAMES",
+      "not returned",
+      "dry_run is false",
+    ]) {
+      expect([kept, d.includes(kept)]).toEqual([kept, true]);
+    }
+  });
+
   // The whole tools/list payload, description and schema, is published on every session before a
   // client knows whether any of it is used. A ceiling on one tool's schema lets a second heavy schema
   // land anywhere else and pass, so the totals are ratcheted too, with headroom smaller than one
@@ -213,22 +230,18 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    // Measured at 35_244 with the 15 dashboard tools and the six dashboard_source tools (Pro only),
-    // conversation_decisions_test, inbox_bind_voice, the voice kind on agent_create and
-    // agent_call_floor, plus the client channel SDK's four client app tools and the audience filter
-    // on the log and metrics tools; 33_086 on the Free tree before the SDK. 35_532 with the three
-    // dashboard_embed_link tools (Pro only), whose job is a new secret-bearing link and cannot be
-    // folded into another tool's description.
-    expect(desc).toBeLessThanOrEqual(35_610);
-    // Measured at 82_062 with `limits.maxProactivePerDay`, `snoozedFollowUp` and `otherInboxes` on
-    // agent_settings_set, the document template writes, issued_document_list's search and cursor, the
-    // proactive_breaker tools, the voice binding and kind, the tts timeout and fallback voice,
-    // agent_call_floor's draft, the guardrails' onFailure and endpoint check, the `calls` numbers
-    // ranged, the dashboard and dashboard_source tools (Pro only), tv_rotation and tv_seconds
-    // (ranged) on dashboard_update, and the client channel SDK's app tools and audience filter.
-    // 74_540 on the Free tree before the SDK. 82_753 with the three dashboard_embed_link tools
-    // (Pro only), 83_226 with one-or-many preconditions, 83_420 with `setLabels.removal`.
-    expect(schema).toBeLessThanOrEqual(83_500);
+    // Measured at 36_777 on the tree that ships, the dashboard, occurrence, voice and client channel
+    // tools included, each cut to the sentence a caller cannot learn by trying (the raises are in git).
+    expect(desc).toBeLessThanOrEqual(36_900);
+    // Measured at 82_062 with the agent_settings_set additions (limits, follow-ups, other inboxes,
+    // guardrails, tts), the document, proactive_breaker, voice and dashboard tools, and the client
+    // channel SDK's app tools (74_540 on the Free tree before the SDK); 84_599 with the
+    // dashboard_embed_link tools and the label settings; 87_056 with the occurrence tools; 88_026
+    // with the four occurrence monitor tools and `monitor_id` on the four occurrence tools; 88_157
+    // with the hold and how long a theme stays new on occurrences_set, two settings of the monitor;
+    // 88_437 with occurrence_flag_episodes_list, the flag history, a read no other tool does;
+    // 89_036 with dashboard_theme_conversations and dashboard_embed_link_update.
+    expect(schema).toBeLessThanOrEqual(89_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

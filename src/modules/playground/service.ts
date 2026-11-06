@@ -13,7 +13,7 @@ import {
   loadDetachedConfig,
 } from "@/graph/detached-turn";
 import { lastAssistantText, recursionLimitFor } from "@/graph/graph";
-import { sentAtStamp } from "@/graph/markers";
+import { playgroundNudgeMarker, sentAtStamp } from "@/graph/markers";
 import type { FallbackFailedInfo, ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { type AgentNudge, renderNudge } from "@/graph/nudge";
@@ -1042,7 +1042,16 @@ async function runPlaygroundTurnOnce(
         },
         flow,
         systemPrompt: loaded.systemPrompt,
+        logValues: loaded.logToolValues,
         customerMessage: text,
+        inputContext: async () => {
+          const st = await graph.getState({
+            configurable: { thread_id: threadId },
+          });
+          const msgs = (st?.values as { messages?: unknown } | undefined)
+            ?.messages;
+          return Array.isArray(msgs) ? (msgs as BaseMessage[]) : [];
+        },
         makeModel: params.deps?.makeModel,
         langfuseCfg: loaded.langfuseCfg,
       })
@@ -1566,6 +1575,7 @@ async function runPlaygroundFollowupOnce(
             // NOTE: the turn's id, as on a user turn: a reopened session finds the follow-up's
             // usage through it.
             id: turnId,
+            additional_kwargs: playgroundNudgeMarker(),
           }),
         ],
       },
@@ -1626,6 +1636,7 @@ async function runPlaygroundFollowupOnce(
         },
         flow,
         systemPrompt: loaded.systemPrompt,
+        logValues: loaded.logToolValues,
         makeModel: params.deps?.makeModel,
         langfuseCfg: loaded.langfuseCfg,
         proactive: true,

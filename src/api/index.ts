@@ -7,6 +7,7 @@ import { authController } from "@/api/features/auth/auth.controller";
 import { brandingController } from "@/api/features/branding/branding.controller";
 import { healthController } from "@/api/features/health/health.controller";
 import { i18nController } from "@/api/features/i18n/i18n.controller";
+import { passkeysController } from "@/api/features/passkeys/passkeys.controller";
 import { realtimeController } from "@/api/features/realtime/realtime.controller";
 import { updatesController } from "@/api/features/updates/updates.controller";
 import { agentsController } from "@/api/v1/agents.controller";
@@ -41,6 +42,7 @@ import {
   oauthMcpCallbackController,
   oauthMcpVaultController,
 } from "@/api/v1/oauth-mcp.controller";
+import { occurrencesController } from "@/api/v1/occurrences.controller";
 import { tenantSettingsController } from "@/api/v1/tenant-settings.controller";
 import { toolsController } from "@/api/v1/tools.controller";
 import { v1Controller } from "@/api/v1/v1.controller";
@@ -235,6 +237,7 @@ const api = new Elysia()
     }),
   )
   .use(authController)
+  .use(passkeysController)
   .use(healthController)
   .use(i18nController)
   .use(updatesController)
@@ -247,6 +250,7 @@ const api = new Elysia()
   .use(codeToolsController)
   .use(mcpConnectionsController)
   .use(businessHoursController)
+  .use(occurrencesController)
   .use(experimentsController)
   .use(vaultController)
   .use(oauthGoogleVaultController)

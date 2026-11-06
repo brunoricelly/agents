@@ -52,6 +52,7 @@ import {
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { takesCalls } from "@/modules/voice-call/channel";
+import { AdvancedAddresses } from "./channels/AdvancedAddresses";
 
 type DeploymentData = Awaited<
   ReturnType<typeof api.api.v1.chatwoot.deployment.get>
@@ -236,7 +237,7 @@ function InboxObserversStrip({
                   "Reconnect observer {{name}}: its bot no longer exists on Chatwoot, so it receives nothing",
                   { name: a.name },
                 )}
-                className="rounded text-text-muted hover:text-text-primary disabled:opacity-60"
+                className="text-text-muted hover:text-text-primary rounded disabled:opacity-60"
                 onClick={() => run(() => onObserve(a.id))}
               >
                 <RefreshCw className="h-3 w-3" aria-hidden="true" />
@@ -252,7 +253,7 @@ function InboxObserversStrip({
                   name: a.name,
                 },
               )}
-              className="rounded text-text-muted hover:text-text-primary disabled:opacity-60"
+              className="text-text-muted hover:text-text-primary rounded disabled:opacity-60"
               onClick={() => run(() => onUnobserve(a.id))}
             >
               <X className="h-3 w-3" aria-hidden="true" />
@@ -267,7 +268,7 @@ function InboxObserversStrip({
               type="button"
               disabled={pending || candidates.length === 0}
               aria-label={t("channels.addObserver", "Add observer")}
-              className="flex items-center gap-1 rounded-md border border-border border-dashed px-2 py-1 text-text-muted text-xs hover:text-text-primary disabled:opacity-60"
+              className="border-border text-text-muted hover:text-text-primary flex items-center gap-1 rounded-md border border-dashed px-2 py-1 text-xs disabled:opacity-60"
             >
               {pending ? (
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -281,7 +282,7 @@ function InboxObserversStrip({
             <DropdownMenuPrimitive.Content
               align="end"
               sideOffset={4}
-              className="z-50 max-h-72 w-56 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+              className="border-border bg-bg-secondary z-50 max-h-72 w-56 overflow-y-auto rounded-lg border p-1 shadow-lg"
             >
               {candidates.map((a) => (
                 <DropdownMenuPrimitive.Item
@@ -338,19 +339,19 @@ function InboxAgentPicker({
           type="button"
           disabled={pending}
           aria-label={label}
-          className="flex min-h-8 w-56 shrink-0 items-center justify-between gap-2 rounded-md border border-border-hover bg-bg-tertiary px-2.5 py-1 text-sm text-text-primary transition-colors focus:border-border-focus focus:outline-none focus:ring-2 focus:ring-accent-soft disabled:opacity-60"
+          className="border-border-hover bg-bg-tertiary text-text-primary focus:border-border-focus focus:ring-accent-soft flex min-h-8 w-56 shrink-0 items-center justify-between gap-2 rounded-md border px-2.5 py-1 text-sm transition-colors focus:ring-2 focus:outline-none disabled:opacity-60"
         >
           <span className={cn("truncate", { "text-text-muted": !current })}>
             {current ? current.name : t("channels.noAgent", "No agent")}
           </span>
           {pending ? (
             <Loader2
-              className="h-4 w-4 shrink-0 animate-spin text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0 animate-spin"
               aria-hidden="true"
             />
           ) : (
             <ChevronDown
-              className="h-4 w-4 shrink-0 text-text-muted"
+              className="text-text-muted h-4 w-4 shrink-0"
               aria-hidden="true"
             />
           )}
@@ -360,7 +361,7 @@ function InboxAgentPicker({
         <DropdownMenuPrimitive.Content
           align="end"
           sideOffset={4}
-          className="z-50 max-h-72 w-56 overflow-y-auto rounded-lg border border-border bg-bg-secondary p-1 shadow-lg"
+          className="border-border bg-bg-secondary z-50 max-h-72 w-56 overflow-y-auto rounded-lg border p-1 shadow-lg"
         >
           <DropdownMenuPrimitive.Item
             className={pickerItemCls}
@@ -371,7 +372,7 @@ function InboxAgentPicker({
             </span>
             {value === null && (
               <Check
-                className="h-4 w-4 shrink-0 text-accent"
+                className="text-accent h-4 w-4 shrink-0"
                 aria-hidden="true"
               />
             )}
@@ -385,7 +386,7 @@ function InboxAgentPicker({
               <span className="flex-1 truncate">{a.name}</span>
               {value === a.id && (
                 <Check
-                  className="h-4 w-4 shrink-0 text-accent"
+                  className="text-accent h-4 w-4 shrink-0"
                   aria-hidden="true"
                 />
               )}
@@ -424,7 +425,7 @@ function ChannelsSkeleton() {
             {CHANNELS_INBOX_KEYS.map((key) => (
               <li
                 key={key}
-                className="flex items-center justify-between gap-4 border-border border-b px-4 py-3 last:border-b-0"
+                className="border-border flex items-center justify-between gap-4 border-b px-4 py-3 last:border-b-0"
               >
                 <div className="flex min-w-0 flex-col gap-1.5">
                   <Skeleton className="h-4 w-40" />
@@ -442,8 +443,18 @@ function ChannelsSkeleton() {
 
 // Three writes on this page, three forms. The names are the keys of each body, which is what the
 // route refuses by (`refused body.baseUrl`, `refused body.accountIds.0`).
-const CONNECT_FIELDS = ["baseUrl", "adminToken"] as const;
-const TOKEN_FIELDS = ["adminToken"] as const;
+const CONNECT_FIELDS = [
+  "baseUrl",
+  "adminToken",
+  "webhookBaseUrl",
+  "publicUrl",
+] as const;
+const TOKEN_FIELDS = [
+  "baseUrl",
+  "adminToken",
+  "webhookBaseUrl",
+  "publicUrl",
+] as const;
 const ACCOUNTS_FIELDS = ["accountIds"] as const;
 
 export function ChannelsPage() {
@@ -472,6 +483,10 @@ export function ChannelsPage() {
   // Connect form (base URL + admin token, entered once).
   const [baseUrl, setBaseUrl] = useState("");
   const [adminToken, setAdminToken] = useState("");
+  // The connection's two optional addresses, in both the connect and the edit form: the base this
+  // Chatwoot calls the agents on, and the address people open it on. Empty means the default.
+  const [webhookBaseUrl, setWebhookBaseUrl] = useState("");
+  const [publicUrl, setPublicUrl] = useState("");
   // Three writes, three forms, three holders: the connect modal, the token modal, and the account
   // picker each save on their own, and a refusal about one must not mark another's input.
   const connectRefusal = useFieldRefusal(
@@ -481,8 +496,8 @@ export function ChannelsPage() {
   const accountsRefusal = useFieldRefusal(
     manageModal.isOpen ? ACCOUNTS_FIELDS : [],
   );
-  const connectRef = useRef({ baseUrl, adminToken });
-  connectRef.current = { baseUrl, adminToken };
+  const connectRef = useRef({ baseUrl, adminToken, webhookBaseUrl, publicUrl });
+  connectRef.current = { baseUrl, adminToken, webhookBaseUrl, publicUrl };
   const [connecting, setConnecting] = useState(false);
 
   // Every account the deployment's token can reach (from /profile), listed inline under the instance
@@ -497,6 +512,10 @@ export function ChannelsPage() {
   const [newToken, setNewToken] = useState("");
   const newTokenRef = useRef(newToken);
   newTokenRef.current = newToken;
+  // The base URL as typed in "Edit connection": a new address of the same Chatwoot.
+  const [editBaseUrl, setEditBaseUrl] = useState("");
+  const editBaseUrlRef = useRef(editBaseUrl);
+  editBaseUrlRef.current = editBaseUrl;
   const [savingToken, setSavingToken] = useState(false);
 
   // Per-inbox bot existence on Chatwoot (live reconcile). "missing" = bound here but the persona's
@@ -668,6 +687,8 @@ export function ChannelsPage() {
           : `https://${connectParam}`,
       );
       setAdminToken("");
+      setWebhookBaseUrl("");
+      setPublicUrl("");
       // The component outlives the dialog, so a mark from the last session is still held here.
       connectRefusal.clear();
       connectModal.open();
@@ -682,7 +703,8 @@ export function ChannelsPage() {
     );
   }, [connectParam, loading, isSuperAdmin, deployment]);
 
-  const baseUrl0 = deployment?.baseUrl ?? "";
+  // Links a person follows go to the address people open this Chatwoot on, not to a private base.
+  const baseUrl0 = deployment?.publicUrl || deployment?.baseUrl || "";
   // The host the operator must re-type to confirm a teardown (e.g. "chat.example.com").
   const deploymentHost = (() => {
     if (!deployment) return "";
@@ -696,6 +718,8 @@ export function ChannelsPage() {
   function openConnect() {
     setBaseUrl("");
     setAdminToken("");
+    setWebhookBaseUrl("");
+    setPublicUrl("");
     // Every opening, not just the one driven by `?connect=`. The mark expires by VALUE, so a holder
     // carried across a cancel comes back the moment the operator retypes the URL that was refused —
     // an old server sentence under a box, before anything has been sent.
@@ -713,6 +737,8 @@ export function ChannelsPage() {
       const sent = {
         baseUrl: baseUrl.trim(),
         adminToken: adminToken.trim(),
+        webhookBaseUrl: webhookBaseUrl.trim() || null,
+        publicUrl: publicUrl.trim() || null,
       };
       const { data, error: err } =
         await api.api.v1.chatwoot.deployment.post(sent);
@@ -728,6 +754,8 @@ export function ChannelsPage() {
         const placed = connectRefusal.capture(err, "", sent, {
           baseUrl: connectRef.current.baseUrl.trim(),
           adminToken: connectRef.current.adminToken.trim(),
+          webhookBaseUrl: connectRef.current.webhookBaseUrl.trim() || null,
+          publicUrl: connectRef.current.publicUrl.trim() || null,
         });
         if (placed === null) return;
         showToast(
@@ -858,28 +886,64 @@ export function ChannelsPage() {
 
   function openToken() {
     setNewToken("");
+    setEditBaseUrl(deployment?.baseUrl ?? "");
+    setWebhookBaseUrl(deployment?.webhookBaseUrl ?? "");
+    setPublicUrl(deployment?.publicUrl ?? "");
     // The component outlives the dialog, so a mark from the last session is still held here.
     tokenRefusal.clear();
     tokenModal.open();
   }
 
   async function saveToken() {
-    if (!newToken.trim()) return;
+    if (!connectionDirty) return;
     setSavingToken(true);
+    // Only what changed goes out: an untouched address is not re-sent, and an empty token field keeps
+    // the stored token.
+    const sent = {
+      ...(baseUrlMoved ? { baseUrl: editBaseUrl.trim() } : {}),
+      ...(newToken.trim() ? { adminToken: newToken.trim() } : {}),
+      ...(webhookBaseUrl.trim() !== (deployment?.webhookBaseUrl ?? "")
+        ? { webhookBaseUrl: webhookBaseUrl.trim() || null }
+        : {}),
+      ...(publicUrl.trim() !== (deployment?.publicUrl ?? "")
+        ? { publicUrl: publicUrl.trim() || null }
+        : {}),
+    };
     try {
-      const sent = { adminToken: newToken.trim() };
       const { error: err } = await api.api.v1.chatwoot.deployment.patch(sent);
       if (err) throw err;
       tokenRefusal.clear();
-      showToast(t("channels.tokenSaved", "Token updated."), "success");
+      showToast(
+        t("channels.connectionSaved", "Connection updated."),
+        "success",
+      );
       tokenModal.close();
       void load();
     } catch (e) {
       const toast = tokenRefusal.capture(
         e,
-        t("channels.tokenSaveError", "Could not update the token (check it)."),
-        { adminToken: newToken.trim() },
-        { adminToken: newTokenRef.current.trim() },
+        t(
+          "channels.connectionSaveError",
+          "Could not update the connection (check the token and the addresses).",
+        ),
+        sent,
+        {
+          ...("baseUrl" in sent
+            ? { baseUrl: editBaseUrlRef.current.trim() }
+            : {}),
+          ...(newTokenRef.current.trim()
+            ? { adminToken: newTokenRef.current.trim() }
+            : {}),
+          ...("webhookBaseUrl" in sent
+            ? {
+                webhookBaseUrl:
+                  connectRef.current.webhookBaseUrl.trim() || null,
+              }
+            : {}),
+          ...("publicUrl" in sent
+            ? { publicUrl: connectRef.current.publicUrl.trim() || null }
+            : {}),
+        },
       );
       if (toast) showToast(toast, "error");
     } finally {
@@ -1197,7 +1261,27 @@ export function ChannelsPage() {
   }
 
   const baseUrlInvalid = !isValidHttpUrl(baseUrl);
-  const connectDirty = baseUrl.trim() !== "" || adminToken.trim() !== "";
+  // The two optional addresses: empty is fine (the default), anything else must be a clean http(s)
+  // base, the same rule the server applies.
+  const optionalUrlInvalid = (v: string) =>
+    v.trim() !== "" && (!isValidHttpUrl(v) || /[?#]/.test(v));
+  const webhookBaseUrlInvalid = optionalUrlInvalid(webhookBaseUrl);
+  const publicUrlInvalid = optionalUrlInvalid(publicUrl);
+  // Compared the way the server stores it, so a trailing slash alone is not a move.
+  const baseUrlMoved =
+    editBaseUrl.trim().replace(/\/+$/, "") !==
+    (deployment?.baseUrl ?? "").replace(/\/+$/, "");
+  const editBaseUrlInvalid = !isValidHttpUrl(editBaseUrl);
+  const connectionDirty =
+    baseUrlMoved ||
+    newToken.trim() !== "" ||
+    webhookBaseUrl.trim() !== (deployment?.webhookBaseUrl ?? "") ||
+    publicUrl.trim() !== (deployment?.publicUrl ?? "");
+  const connectDirty =
+    baseUrl.trim() !== "" ||
+    adminToken.trim() !== "" ||
+    webhookBaseUrl.trim() !== "" ||
+    publicUrl.trim() !== "";
 
   // Accounts are ordered alphabetically by name (the #id breaks ties / orders the unnamed), so the
   // page list and the manage modal show the same, stable order regardless of connection order.
@@ -1254,12 +1338,12 @@ export function ChannelsPage() {
   return (
     <PageContainer className="flex flex-col gap-6">
       <header className="flex items-center gap-3">
-        <RadioTower className="h-6 w-6 text-accent" aria-hidden="true" />
+        <RadioTower className="text-accent h-6 w-6" aria-hidden="true" />
         <div>
-          <h1 className="font-semibold text-text-primary text-xl">
+          <h1 className="text-text-primary text-xl font-semibold">
             {t("channels.title", "Channels")}
           </h1>
-          <p className="mt-0.5 text-sm text-text-muted">
+          <p className="text-text-muted mt-0.5 text-sm">
             {t(
               "channels.subtitle",
               "Connect Chatwoot accounts and decide which agent answers each inbox.",
@@ -1275,8 +1359,8 @@ export function ChannelsPage() {
         skeleton={<ChannelsSkeleton />}
       >
         <section className="flex flex-col gap-3">
-          <h2 className="flex items-center gap-2 font-medium text-text-primary">
-            <Plug className="h-4 w-4 text-accent" aria-hidden="true" />
+          <h2 className="text-text-primary flex items-center gap-2 font-medium">
+            <Plug className="text-accent h-4 w-4" aria-hidden="true" />
             {t("channels.instance", "Chatwoot instance")}
           </h2>
 
@@ -1310,27 +1394,27 @@ export function ChannelsPage() {
             // The deployment is the section container; its accounts are nested sub-rows inside the
             // same card so they read as belonging to this one Chatwoot instance.
             <Card className="overflow-hidden p-0">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-border border-b bg-bg-tertiary/40 px-4 py-3">
+              <div className="border-border bg-bg-tertiary/40 flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
                 <div className="flex min-w-0 items-center gap-2">
                   <ServiceLogo
                     service="chatwoot"
-                    className="h-5 w-5 shrink-0 text-text-secondary"
+                    className="text-text-secondary h-5 w-5 shrink-0"
                   />
-                  <span className="truncate font-medium text-text-primary">
+                  <span className="text-text-primary truncate font-medium">
                     {deployment.baseUrl}
                   </span>
                   <Tooltip
                     content={t("channels.openInChatwoot", "Open in Chatwoot")}
                   >
                     <a
-                      href={deployment.baseUrl.replace(/\/+$/, "")}
+                      href={baseUrl0.replace(/\/+$/, "")}
                       target="_blank"
                       rel="noopener noreferrer"
                       aria-label={t(
                         "channels.openInChatwoot",
                         "Open in Chatwoot",
                       )}
-                      className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                      className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
                     >
                       <ExternalLink
                         className="h-3.5 w-3.5"
@@ -1350,7 +1434,7 @@ export function ChannelsPage() {
                     </Button>
                     <Button variant="secondary" size="sm" onClick={openToken}>
                       <KeyRound className="h-4 w-4" aria-hidden="true" />
-                      {t("channels.editToken", "Edit token")}
+                      {t("channels.editConnection", "Edit connection")}
                     </Button>
                     <Button
                       variant="danger"
@@ -1369,7 +1453,7 @@ export function ChannelsPage() {
 
               {activeAccounts.length === 0 ? (
                 <div className="flex flex-col items-center gap-3 px-4 py-8 text-center">
-                  <p className="text-sm text-text-muted">
+                  <p className="text-text-muted text-sm">
                     {isSuperAdmin
                       ? t(
                           "channels.noActiveAccounts",
@@ -1395,10 +1479,10 @@ export function ChannelsPage() {
                   {activeAccounts.map((acct) => (
                     <li
                       key={acct.id}
-                      className="flex items-center justify-between gap-4 border-border border-b py-3 pr-4 pl-8 last:border-b-0"
+                      className="border-border flex items-center justify-between gap-4 border-b py-3 pr-4 pl-8 last:border-b-0"
                     >
                       <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="truncate text-sm text-text-primary">
+                        <span className="text-text-primary truncate text-sm">
                           {accountLabel(acct.accountName, acct.accountId)}
                         </span>
                         <Badge variant="secondary">{`#${acct.accountId}`}</Badge>
@@ -1416,7 +1500,7 @@ export function ChannelsPage() {
                               "channels.openDashboard",
                               "Open dashboard in Chatwoot",
                             )}
-                            className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                            className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
                           >
                             <ExternalLink
                               className="h-3.5 w-3.5"
@@ -1438,7 +1522,7 @@ export function ChannelsPage() {
                               "channels.createInbox",
                               "Create inbox in Chatwoot",
                             )}
-                            className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                            className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors"
                           >
                             <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                           </a>
@@ -1456,7 +1540,7 @@ export function ChannelsPage() {
                               "channels.syncInboxes",
                               "Sync inboxes",
                             )}
-                            className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+                            className="text-text-muted hover:bg-bg-hover hover:text-text-primary inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors disabled:opacity-50"
                           >
                             <RefreshCw className="h-4 w-4" aria-hidden="true" />
                           </button>
@@ -1476,7 +1560,7 @@ export function ChannelsPage() {
                                 "channels.removeAccountTitle",
                                 "Remove account",
                               )}
-                              className="inline-flex shrink-0 items-center justify-center rounded p-1 text-text-muted transition-colors hover:bg-error/10 hover:text-error disabled:opacity-50"
+                              className="text-text-muted hover:bg-error/10 hover:text-error inline-flex shrink-0 items-center justify-center rounded p-1 transition-colors disabled:opacity-50"
                             >
                               <Trash2 className="h-4 w-4" aria-hidden="true" />
                             </button>
@@ -1493,11 +1577,11 @@ export function ChannelsPage() {
 
         <section className="flex flex-col gap-3">
           <div>
-            <h2 className="flex items-center gap-2 font-medium text-text-primary">
-              <InboxIcon className="h-4 w-4 text-accent" aria-hidden="true" />
+            <h2 className="text-text-primary flex items-center gap-2 font-medium">
+              <InboxIcon className="text-accent h-4 w-4" aria-hidden="true" />
               {t("channels.inboxes", "Inboxes")}
             </h2>
-            <p className="mt-0.5 text-text-muted text-xs">
+            <p className="text-text-muted mt-0.5 text-xs">
               {t(
                 "channels.inboxesHelp",
                 'Assigning an agent connects the bot to that inbox; "No agent" leaves it silent.',
@@ -1523,7 +1607,7 @@ export function ChannelsPage() {
               return (
                 <div key={acct.id} className="flex flex-col gap-1.5">
                   {showAccountHeaders && (
-                    <div className="flex items-center gap-1.5 px-1 text-text-muted text-xs">
+                    <div className="text-text-muted flex items-center gap-1.5 px-1 text-xs">
                       <ServiceLogo
                         service="chatwoot"
                         className="h-3.5 w-3.5 shrink-0"
@@ -1570,7 +1654,7 @@ export function ChannelsPage() {
                             // rows are gone. So the chips and their remove buttons stay here;
                             // only adding, which needs the account, does not.
                             <div className="flex flex-col items-end gap-1.5">
-                              <span className="shrink-0 text-text-muted text-xs">
+                              <span className="text-text-muted shrink-0 text-xs">
                                 {t(
                                   "channels.accountDisconnectedOff",
                                   "Account disconnected",
@@ -1681,7 +1765,13 @@ export function ChannelsPage() {
             <Button
               onClick={connectDeployment}
               loading={connecting}
-              disabled={!baseUrl.trim() || baseUrlInvalid || !adminToken.trim()}
+              disabled={
+                !baseUrl.trim() ||
+                baseUrlInvalid ||
+                !adminToken.trim() ||
+                webhookBaseUrlInvalid ||
+                publicUrlInvalid
+              }
             >
               {t("common.connect", "Connect")}
             </Button>
@@ -1692,10 +1782,10 @@ export function ChannelsPage() {
           <div className="flex justify-center">
             <ServiceLogo
               service="chatwoot"
-              className="h-8 w-8 text-text-secondary"
+              className="text-text-secondary h-8 w-8"
             />
           </div>
-          <p className="text-center text-sm text-text-muted">
+          <p className="text-text-muted text-center text-sm">
             {t(
               "channels.connectDesc",
               "Enter your Chatwoot URL and admin token once. We validate them and then let you pick which accounts to answer.",
@@ -1732,13 +1822,38 @@ export function ChannelsPage() {
               onChange={(e) => setAdminToken(e.target.value)}
             />
           </FormField>
+          <AdvancedAddresses
+            webhookBaseUrl={webhookBaseUrl}
+            publicUrl={publicUrl}
+            onWebhookBaseUrl={setWebhookBaseUrl}
+            onPublicUrl={setPublicUrl}
+            webhookBaseUrlError={
+              webhookBaseUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : connectRefusal.at(
+                    "webhookBaseUrl",
+                    webhookBaseUrl.trim() || null,
+                  )
+            }
+            publicUrlError={
+              publicUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : connectRefusal.at("publicUrl", publicUrl.trim() || null)
+            }
+          />
         </div>
       </Modal>
 
       <Modal
         modal={tokenModal}
-        unsavedChanges={newToken.trim() !== ""}
-        title={t("channels.editTokenTitle", "Edit admin token")}
+        unsavedChanges={connectionDirty}
+        title={t("channels.editConnectionTitle", "Edit Chatwoot connection")}
         footer={
           <div className="flex justify-end gap-2">
             <Button
@@ -1751,7 +1866,12 @@ export function ChannelsPage() {
             <Button
               onClick={saveToken}
               loading={savingToken}
-              disabled={!newToken.trim()}
+              disabled={
+                !connectionDirty ||
+                editBaseUrlInvalid ||
+                webhookBaseUrlInvalid ||
+                publicUrlInvalid
+              }
             >
               {t("common.save", "Save")}
             </Button>
@@ -1759,15 +1879,32 @@ export function ChannelsPage() {
         }
       >
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-text-muted">
+          <p className="text-text-muted text-sm">
             {t(
-              "channels.editTokenDesc",
-              "Paste a new admin token. It is validated against your Chatwoot and shared by every account.",
+              "channels.editConnectionDesc",
+              "A new admin token is validated against your Chatwoot and shared by every account. Leave it empty to keep the current one.",
             )}
           </p>
           <FormField
+            label={t("channels.baseUrl", "Base URL")}
+            description={t(
+              "channels.editBaseUrlHint",
+              "For a new address of this same Chatwoot (same token user and accounts). To use another Chatwoot, create a new connection.",
+            )}
+            error={
+              editBaseUrlInvalid
+                ? t("common.invalidUrl", "Must be a valid http(s) URL.")
+                : tokenRefusal.at("baseUrl", editBaseUrl.trim())
+            }
+          >
+            <Input
+              value={editBaseUrl}
+              onChange={(e) => setEditBaseUrl(e.target.value)}
+              placeholder="https://chat.example.com"
+            />
+          </FormField>
+          <FormField
             label={t("channels.adminToken", "Admin access token")}
-            required
             description={t(
               "channels.adminTokenHint",
               "Stored encrypted, never shown again.",
@@ -1781,6 +1918,31 @@ export function ChannelsPage() {
               onChange={(e) => setNewToken(e.target.value)}
             />
           </FormField>
+          <AdvancedAddresses
+            webhookBaseUrl={webhookBaseUrl}
+            publicUrl={publicUrl}
+            onWebhookBaseUrl={setWebhookBaseUrl}
+            onPublicUrl={setPublicUrl}
+            webhookBaseUrlError={
+              webhookBaseUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : tokenRefusal.at(
+                    "webhookBaseUrl",
+                    webhookBaseUrl.trim() || null,
+                  )
+            }
+            publicUrlError={
+              publicUrlInvalid
+                ? t(
+                    "channels.addressInvalid",
+                    "Must be an http(s) address with no query or fragment.",
+                  )
+                : tokenRefusal.at("publicUrl", publicUrl.trim() || null)
+            }
+          />
         </div>
       </Modal>
 
@@ -1810,7 +1972,7 @@ export function ChannelsPage() {
       >
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
-            <p className="text-sm text-text-muted">
+            <p className="text-text-muted text-sm">
               {t(
                 "channels.manageDesc",
                 "Pick which of this Chatwoot's accounts this workspace answers. Active ones are managed from the list; removing one there frees it for another workspace.",
@@ -1832,7 +1994,7 @@ export function ChannelsPage() {
             </p>
           )}
           {manageRows.length === 0 ? (
-            <p className="py-6 text-center text-sm text-text-muted">
+            <p className="text-text-muted py-6 text-center text-sm">
               {t(
                 "channels.noAccounts",
                 "No accounts found. Make sure your Chatwoot user is a member of the account.",
@@ -1873,12 +2035,12 @@ export function ChannelsPage() {
                           <Check className="h-3.5 w-3.5" aria-hidden="true" />
                         )}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+                      <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
                         {row.name}
                       </span>
                       <Badge variant="secondary">{`#${row.id}`}</Badge>
                       {active && (
-                        <span className="shrink-0 text-text-muted text-xs">
+                        <span className="text-text-muted shrink-0 text-xs">
                           {t("channels.statusActive", "Active")}
                         </span>
                       )}

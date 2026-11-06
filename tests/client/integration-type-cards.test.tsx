@@ -16,6 +16,7 @@ const CATALOG = [
   "CHATWOOT_ERP",
   "GOOGLE_CALENDAR",
   "GOOGLE_DRIVE",
+  "GOOGLE_SHEETS",
   "RESEND",
 ].map((catalogType) => ({ catalogType, label: catalogType, description: "" }));
 

@@ -10,6 +10,7 @@ import { runModelCall } from "@/graph/model-limit";
 import {
   buildGuardrailSystemPrompt,
   customerMessageForReview,
+  fenceContext,
   fenceCustomerMessage,
   type GuardrailPromptParams,
   judgesAnything,
@@ -209,14 +210,22 @@ async function invokeForVerdict(
   // Same verdict, in the dialect this endpoint speaks. See ./verdict and graph/model-config: asking
   // in the wrong one is not a soft failure, it is a refusal on every screen.
   const schema = mode === "openapi" ? VERDICT_SCHEMA_OPENAPI : VERDICT_SCHEMA;
+  // `output-format` sends the schema as Anthropic's `output_config.format`. The adapter's
+  // default there is a forced tool call, which the 5-5 generation refuses with a 400, and its
+  // jsonSchema method throws when handed `strict`.
+  const how =
+    mode === "output-format"
+      ? { method: "jsonSchema" as const }
+      : {
+          name: schema.title,
+          // NOTE: `strict` is what turns the schema from a request into a constraint on OpenAI;
+          // Gemini's adapter ignores the flag and was checked to accept it rather than throw.
+          strict: true,
+        };
   try {
     const res = (await model
       .withStructuredOutput(schema, {
-        name: schema.title,
-        // NOTE: `strict` is what turns the schema from a request into a constraint on OpenAI; the
-        // other adapter on the list ignores the flag (Anthropic forces the tool call), and both
-        // were checked to accept the option rather than throw.
-        strict: true,
+        ...how,
         // NOTE: keeps the model's own text reachable when the schema produced nothing, which is what
         // lets `readVerdict` recover a verdict an adapter's parser could not build. See verdict.ts
         // for how far that reaches on each adapter.
@@ -254,7 +263,9 @@ async function runAnalysis(
   // there it would read as one more instruction from the operator, and the customer writes it. The
   // text under review keeps its bare shape, so a call with the check off is unchanged by the fence.
   const customer = fenceCustomerMessage(params);
+  const context = fenceContext(params);
   const messages: BaseMessage[] = [new SystemMessage(system)];
+  if (context !== null) messages.push(new HumanMessage(context));
   if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {

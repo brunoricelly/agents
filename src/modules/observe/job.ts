@@ -45,7 +45,6 @@ import {
 } from "@/modules/chatwoot/instance";
 import { labelsNarrated } from "@/modules/chatwoot/label-activity";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
-import { providerReservesEchoIds } from "@/modules/chatwoot/normalize";
 import {
   readWindowRows,
   renderTranscript,
@@ -887,7 +886,7 @@ export function fillContextOf(
     contact?: { customAttributes?: unknown } | null;
   } | null,
   displayId: number,
-  client: Pick<ChatwootClient, "conversationUrl">,
+  client: Pick<ChatwootClient, "conversationLink">,
 ): FillContext {
   const bag = (v: unknown): Record<string, unknown> =>
     v && typeof v === "object" && !Array.isArray(v)
@@ -909,9 +908,10 @@ export function fillContextOf(
       ...(Number.isInteger(inbox) && context.inbox_id
         ? { inbox_id: inbox }
         : {}),
-      // A client without the dashboard's address (a test double) has no link to give.
-      ...(typeof client.conversationUrl === "function"
-        ? { link: client.conversationUrl(displayId) }
+      // A client without the dashboard's address (a test double) has no link to give. The link is the
+      // one a person follows: the connection's public address when it has one.
+      ...(typeof client.conversationLink === "function"
+        ? { link: client.conversationLink(displayId) }
         : {}),
     },
     conversationAttributes: bag(conv?.customAttributes),
@@ -1004,7 +1004,7 @@ export async function readObserveEvidence(p: {
   );
   const transcript = transcriptFromRows(rows, p.windowMessages, {
     ownBotIds,
-    trustPhoneEcho: providerReservesEchoIds(conv?.inbox?.provider ?? null),
+    whatsappProvider: conv?.inbox?.provider ?? null,
   });
   // Read off the SAME rows, after the reset boundary like everything else: a note about the episode
   // the operator wiped is not part of this one either.
@@ -1704,6 +1704,8 @@ export async function runObserve(
         // NOTE: the tick's frame says the model answers nobody, so the tool budget's wrap-up says the
         // same: finish with a tool, or stop, never "responda ao cliente".
         noReplyChannel: true,
+        // A step that grew it wrote nothing somewhere, so the turn goes on (graph.ts `endsOnWrites`).
+        noEffectCount: () => noEffect,
         // NOTE: nobody waits on an observation this second, so its model call yields to replies under
         // contention, within the background's share and aging bound; a wait past the threshold is
         // written, at info, so a starved observer shows in the Logs.

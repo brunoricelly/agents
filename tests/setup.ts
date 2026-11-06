@@ -198,6 +198,16 @@ process.env.JWT_SECRET = "test-secret-key-for-testing-only";
 // `/auth/google` regardless of the developer's local `.env` and so tests can
 // exercise the enabled-mode code path.
 process.env.GOOGLE_CLIENT_ID = "test-google-client.apps.googleusercontent.com";
+// NOTE: the signup policy comes from each developer's `.env` (a local instance often restricts
+// sign-up to its own domain there), and a test that creates accounts would pass or fail by whose
+// machine runs it. Pinned to the defaults here; a test that exercises a rule sets it on `config`
+// itself and restores it. tests/signup-policy-pin.test.ts proves the pin against an exported one.
+process.env.SIGNUP_ENABLED = "false";
+process.env.ALLOWED_SIGNUP_DOMAINS = "";
+process.env.ADMIN_SIGNUP_DOMAINS = "";
+// Passkeys at their default (off) for the same reason; a test that drives them turns them on on
+// `config` and restores it.
+process.env.PASSKEYS_ENABLED = "false";
 // Force the rate-limit budgets, for the same reason as the line above. Two test files read
 // WHICH limiter answered from the ceiling it advertises, so a `.env` tuning one would fail a correct
 // app with the exact signature of a limiter collision. The GLOBAL budget is pinned HIGH, the one

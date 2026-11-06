@@ -8,6 +8,7 @@ import {
   readOutsideAllowedLabels,
   readProtectedLabels,
   readToolGuidance,
+  readWritableAttributes,
 } from "@/modules/agents/tool-guidance";
 import { readToolPreconditionsForDisplay } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
@@ -114,6 +115,9 @@ export interface BehaviorSettings {
     outsideAllowed: ReturnType<typeof readOutsideAllowedLabels>;
     removal: ReturnType<typeof readLabelRemoval>;
   };
+  setCustomAttribute: {
+    allowed: ReturnType<typeof readWritableAttributes>;
+  };
   toolPreconditions: ReturnType<typeof readToolPreconditionsForDisplay>;
   monitoring: ReturnType<typeof readMonitoringConfig>;
 }
@@ -152,6 +156,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "kanban",
   "toolGuidance",
   "setLabels",
+  "setCustomAttribute",
   "toolPreconditions",
   "monitoring",
 ] as const;
@@ -201,6 +206,7 @@ export function readBehaviorSettings(
       outsideAllowed: readOutsideAllowedLabels(settings),
       removal: readLabelRemoval(settings),
     },
+    setCustomAttribute: { allowed: readWritableAttributes(settings) },
     toolPreconditions: readToolPreconditionsForDisplay(settings),
     monitoring: readMonitoringConfig(settings),
   };
@@ -240,6 +246,7 @@ export interface BehaviorSettingsPatch {
   kanban?: Record<string, unknown>;
   toolGuidance?: Record<string, unknown>;
   setLabels?: Record<string, unknown>;
+  setCustomAttribute?: Record<string, unknown>;
   toolPreconditions?: Record<string, unknown>;
   monitoring?: Record<string, unknown>;
 }
@@ -261,7 +268,7 @@ const ATOMIC_FIELDS: Record<string, readonly string[]> = {
 // Merge a patch into a stored block key by key, at any depth: a sub-object replaced by a shallow
 // spread would be re-read FILLED WITH DEFAULTS. Two objects merge; anything else, arrays included
 // (a list patch means the new list), replaces.
-function mergeBlock(
+export function mergeBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
   depth = 1,
@@ -358,7 +365,9 @@ export function mergeBehaviorSettings(
     }
   }
 
-  // Write the normalized blocks back, derived from the key list so a new block cannot miss it.
+  // Write the normalized blocks back, derived from the key list so a new block cannot miss it, and
+  // only the blocks the patch named: one it did not name stays exactly as stored, absent included,
+  // since written through its reader it would carry today's defaults and stop following them.
   // The exceptions are handled after the loop.
   const normalized = readBehaviorSettings(next) as unknown as Record<
     string,
@@ -369,15 +378,19 @@ export function mergeBehaviorSettings(
     "grounding",
     ...TOOL_KEYED_BLOCKS,
   ]);
+  const named = (key: string) =>
+    (patch as Record<string, unknown>)[key] !== undefined;
   for (const key of BEHAVIOR_SETTINGS_KEYS) {
-    if (WRITTEN_BACK_SEPARATELY.has(key)) continue;
+    if (WRITTEN_BACK_SEPARATELY.has(key) || !named(key)) continue;
     next[key] = normalized[key];
   }
   // Through the storable projection, not the read shape: `observability.fullDetail` is DERIVED, and
   // this line is what would persist it.
-  next.observability = storableObservability(
-    normalized.observability as ReturnType<typeof readObservabilityConfig>,
-  );
+  if (named("observability")) {
+    next.observability = storableObservability(
+      normalized.observability as ReturnType<typeof readObservabilityConfig>,
+    );
+  }
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch
   // touched grounding so the operator can clear it).

@@ -5,6 +5,7 @@ import "./asaas";
 import "./chatwoot-erp";
 import "./google-calendar";
 import "./google-drive";
+import "./google-sheets";
 import "./resend";
 
 export {
