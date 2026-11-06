@@ -1,4 +1,3 @@
-import type { TFunction } from "i18next";
 import { Pencil, Plus, Send, Trash2, Webhook } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";

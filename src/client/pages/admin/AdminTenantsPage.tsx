@@ -123,7 +123,7 @@ function CreateTenantModal({
     >
       {invite ? (
         <div className="space-y-4">
-          <p className="text-sm text-text-secondary">
+          <p className="text-text-secondary text-sm">
             {t(
               "tenant.inviteReady",
               "The tenant was created. Copy this one-time invitation link now.",

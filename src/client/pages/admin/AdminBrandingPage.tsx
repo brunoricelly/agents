@@ -148,8 +148,8 @@ function AssetControl({
   const uploadLabel = t("branding.uploadAsset", "Upload {{label}}", { label });
   const removeLabel = t("branding.removeAsset", "Remove {{label}}", { label });
   return (
-    <div className="rounded-lg border border-border bg-bg-tertiary/40 p-3">
-      <div className="mb-3 flex min-h-16 items-center justify-center rounded-md border border-border/70 bg-bg-primary/40 p-2">
+    <div className="border-border bg-bg-tertiary/40 rounded-lg border p-3">
+      <div className="border-border/70 bg-bg-primary/40 mb-3 flex min-h-16 items-center justify-center rounded-md border p-2">
         {configured ? (
           <img
             src={brandingAssetUrl(kind, variant, version)}
@@ -160,14 +160,14 @@ function AssetControl({
             )}
           />
         ) : (
-          <Image className="h-6 w-6 text-text-muted" aria-hidden="true" />
+          <Image className="text-text-muted h-6 w-6" aria-hidden="true" />
         )}
       </div>
-      <p className="mb-2 font-medium text-sm text-text-primary capitalize">
+      <p className="text-text-primary mb-2 text-sm font-medium capitalize">
         {label}
       </p>
       <div className="flex flex-wrap gap-2">
-        <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border-hover bg-bg-tertiary px-3 font-medium text-sm text-text-primary hover:bg-bg-hover">
+        <label className="border-border-hover bg-bg-tertiary text-text-primary hover:bg-bg-hover inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border px-3 text-sm font-medium">
           <Upload className="h-4 w-4" aria-hidden="true" />
           {configured
             ? t("common.replace", "Replace")
@@ -383,12 +383,12 @@ export function AdminBrandingEditor({
     <div className="space-y-6 pt-2">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Palette className="h-6 w-6 text-accent" aria-hidden="true" />
+          <Palette className="text-accent h-6 w-6" aria-hidden="true" />
           <div>
-            <h1 className="font-semibold text-text-primary text-xl">
+            <h1 className="text-text-primary text-xl font-semibold">
               {t("branding.title", "Branding")}
             </h1>
-            <p className="mt-0.5 text-sm text-text-muted">
+            <p className="text-text-muted mt-0.5 text-sm">
               {t(
                 "branding.subtitle",
                 "Customize the app's global appearance (name, colors, logo, favicon).",
@@ -415,7 +415,7 @@ export function AdminBrandingEditor({
           {error && (
             <p
               role="alert"
-              className="rounded-md border border-error bg-error-soft p-3 text-error text-sm"
+              className="border-error bg-error-soft text-error rounded-md border p-3 text-sm"
             >
               {error}
             </p>
@@ -424,10 +424,10 @@ export function AdminBrandingEditor({
             <div className="space-y-6">
               <Card className="space-y-4">
                 <div>
-                  <h2 className="font-semibold text-text-primary">
+                  <h2 className="text-text-primary font-semibold">
                     {t("branding.identity", "Identity")}
                   </h2>
-                  <p className="text-sm text-text-muted">
+                  <p className="text-text-muted text-sm">
                     {t(
                       "branding.identityHint",
                       "Names and footer links shown across the deployment.",
@@ -511,10 +511,10 @@ export function AdminBrandingEditor({
               <Card className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-semibold text-text-primary">
+                    <h2 className="text-text-primary font-semibold">
                       {t("branding.colors", "Colors")}
                     </h2>
-                    <p className="text-sm text-text-muted">
+                    <p className="text-text-muted text-sm">
                       {t(
                         "branding.colorsHint",
                         "Use one brand color or tune each accent token by theme.",
@@ -566,7 +566,7 @@ export function AdminBrandingEditor({
                         onChange={(event) =>
                           setForm({ ...form, brandColor: event.target.value })
                         }
-                        className="h-9 w-12 rounded border border-border bg-bg-secondary"
+                        className="border-border bg-bg-secondary h-9 w-12 rounded border"
                       />
                       <Input
                         value={form.brandColor ?? ""}
@@ -582,8 +582,8 @@ export function AdminBrandingEditor({
                   </FormField>
                 ) : (
                   <div className="grid gap-5 lg:grid-cols-2">
-                    <div className="space-y-3 rounded-lg border border-border bg-bg-tertiary/30 p-4">
-                      <h3 className="font-medium text-text-primary">
+                    <div className="border-border bg-bg-tertiary/30 space-y-3 rounded-lg border p-4">
+                      <h3 className="text-text-primary font-medium">
                         {t("branding.lightTheme", "Light theme")}
                       </h3>
                       {refusal.at("tokensLight", form.tokensLight) && (
@@ -613,8 +613,8 @@ export function AdminBrandingEditor({
                         </FormField>
                       ))}
                     </div>
-                    <div className="space-y-3 rounded-lg border border-border bg-bg-tertiary/30 p-4">
-                      <h3 className="font-medium text-text-primary">
+                    <div className="border-border bg-bg-tertiary/30 space-y-3 rounded-lg border p-4">
+                      <h3 className="text-text-primary font-medium">
                         {t("branding.darkTheme", "Dark theme")}
                       </h3>
                       {refusal.at("tokensDark", form.tokensDark) && (
@@ -651,10 +651,10 @@ export function AdminBrandingEditor({
 
             <Card className="h-fit space-y-4">
               <div>
-                <h2 className="font-semibold text-text-primary">
+                <h2 className="text-text-primary font-semibold">
                   {t("branding.assets", "Assets")}
                 </h2>
-                <p className="text-sm text-text-muted">
+                <p className="text-text-muted text-sm">
                   {t(
                     "branding.assetsHint",
                     "Provide dark and light variants. PNG, JPEG, WebP, SVG and ICO are accepted.",

@@ -1511,13 +1511,55 @@ export function dropUnusableImportedSettingsInPlace(
       : undefined;
   };
   const budget = { left: IMPORT_READING_CHECKS };
+  // Zod reports one issue per wrong array element. For a caller-sized list that is wholly unusable,
+  // asking it to materialize those issues costs the memory and time of the list again. The guardrails
+  // reader drops every non-string competitor, so an all-non-string list has exactly the same reading as
+  // an empty one. Prove the rest of the block is valid before taking this linear, allocation-bounded
+  // path; mixed lists still use the general path, which preserves the reader's bounded window.
+  const bulkTaken = new Map<string, ImportTaken>();
+  const guardrails = plainObject(bag.guardrails);
+  const competitors = guardrails?.competitors;
+  if (Array.isArray(competitors) && competitors.length > IMPORT_PATHS_KEPT) {
+    let allUnusable = true;
+    for (const competitor of competitors) {
+      if (typeof competitor === "string") {
+        allUnusable = false;
+        break;
+      }
+    }
+    if (allUnusable) {
+      const candidate = { ...guardrails, competitors: [] };
+      const schemaAccepts =
+        BEHAVIOR_PATCH_SHAPE.guardrails.safeParse(candidate).success;
+      const refinement = BLOCK_REFINEMENTS.guardrails?.safeParse(candidate);
+      if (schemaAccepts && refinement?.success !== false) {
+        const taken = newTaken();
+        taken.count = competitors.length;
+        for (
+          let i = 0;
+          i < Math.min(competitors.length, IMPORT_PATHS_KEPT);
+          i += 1
+        ) {
+          taken.paths.push(`guardrails.competitors.${i}`);
+        }
+        competitors.length = 0;
+        bulkTaken.set("guardrails", taken);
+      }
+    }
+  }
   const byBlock = new Map<string, ClosedValueIssue[]>();
   for (const issue of closedValueIssues(bag)) {
     const list = byBlock.get(issue.block) ?? [];
     list.push(issue);
     byBlock.set(issue.block, list);
   }
-  for (const [block, issues] of byBlock) {
+  // Schema order is also warning order. Bulk paths join at their block's place rather than jumping
+  // ahead of invalid values in earlier blocks.
+  for (const block of Object.keys(BEHAVIOR_PATCH_SHAPE)) {
+    const bulk = bulkTaken.get(block);
+    if (bulk) absorbTaken(dropped, bulk);
+    const issues = byBlock.get(block);
+    if (!issues) continue;
     const reading = readBlock(block, bag[block]);
     const allowance = {
       left: Math.min(

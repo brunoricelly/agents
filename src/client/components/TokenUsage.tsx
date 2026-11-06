@@ -1,4 +1,3 @@
-import type { TFunction } from "i18next";
 import { Gauge } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";

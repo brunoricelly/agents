@@ -35,7 +35,7 @@ describe("the integration kind is a group of cards", () => {
     const inputs = [
       ...g.querySelectorAll<HTMLInputElement>('input[type="radio"]'),
     ];
-    expect(inputs.length).toBe(6);
+    expect(inputs.length).toBe(7);
     expect(inputs.filter((i) => i.checked).length).toBe(1);
     const label = (i: HTMLInputElement) =>
       (i.closest("label")?.textContent ?? "").trim();
@@ -49,7 +49,7 @@ describe("the integration kind is a group of cards", () => {
         ?.querySelectorAll("[data-choice-hint]").length;
       expect(lines).toBe(1);
     }
-    fireEvent.click(inputs[5] as HTMLInputElement);
+    fireEvent.click(inputs[6] as HTMLInputElement);
     expect(picked.join(",")).toBe("RESEND");
   });
 });

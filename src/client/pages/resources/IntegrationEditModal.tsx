@@ -1464,7 +1464,7 @@ export function IntegrationEditModal({
                     ))}
                   </Select>
                   {chatwootAccountsError && (
-                    <p className="mt-1 text-danger text-xs">
+                    <p className="text-danger mt-1 text-xs">
                       {t(
                         "integrations.config.chatwootAccountsError",
                         "Could not load Chatwoot accounts. Reopen this form after checking Channels.",
@@ -1472,7 +1472,7 @@ export function IntegrationEditModal({
                     </p>
                   )}
                   {!chatwootAccountsError && chatwootAccounts.length === 0 && (
-                    <p className="mt-1 text-text-muted text-xs">
+                    <p className="text-text-muted mt-1 text-xs">
                       {t(
                         "integrations.config.chatwootAccountsEmpty",
                         "Connect a Chatwoot account under Channels first.",
